@@ -116,6 +116,18 @@ _Avoid_: backlog, inbox
 Model work the owner is waiting on right now, such as a tutor reply or grading a copy. It takes priority over a Generation Run for the GPU.
 _Avoid_: interactive job, foreground task
 
+**Focus Session**:
+A timed work block, 25 minutes by default, that counts only active time and only if something was done in it.
+_Avoid_: pomodoro, study session
+
+**Daily Goal**:
+How many Focus Sessions the owner aims to complete in a day.
+_Avoid_: target, quota
+
+**Streak**:
+The run of consecutive days the Daily Goal was met. One missed day per week is forgiven.
+_Avoid_: combo, chain
+
 ## Relationships
 
 - An **Approval** or rejection recorded on a **Trace** is both a signal and an eval case for improving the **Harness**.
