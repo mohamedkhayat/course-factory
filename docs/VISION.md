@@ -2,8 +2,6 @@
 
 This file describes what comes after v1, so a later session can pick any part up without the original conversations. These are descriptions, not specs. Each section gets its own planning effort when its turn comes.
 
-Lines marked are Claude's fill-ins. They haven't been confirmed by the owner yet.
-
 ## 1. More than one user
 
 v1 is single-user. Later, other people use it too.
