@@ -8,6 +8,18 @@ The vocabulary of course-factory: an app that turns study material into interact
 Everything generated from one body of study material: an ordered list of Chapters, plus the Exams and Labs that sit beside them.
 _Avoid_: module, class, subject
 
+**Goal**:
+What a Course is for: Cram (an exam is coming, so content is ranked by Exam Weight and aimed at the exam date) or Deep (learn it properly, in the professor's order, with full proofs and extensions). Every Course has exactly one Goal, and it can be switched.
+_Avoid_: mode, track, profile
+
+**Exam Weight**:
+How often a topic appears in a Course's Past papers.
+_Avoid_: frequency, importance
+
+**Priority**:
+The owner's per-Chapter adjustment on top of the Goal: focus, normal, light, or skip.
+_Avoid_: weight (that is Exam Weight)
+
 **Chapter**:
 An ordered part of a Course, made of an ordered list of Sections.
 _Avoid_: unit, lesson, milestone
