@@ -33,6 +33,9 @@ class FakeModel:
             "write_section": self._section,
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
             "tutor": lambda prompt, files: "Une fonction est « convexe » si... [cours.pdf p.1] [made_up.pdf p.2]",
+            "derive_scheme": lambda prompt, files: {"scheme": [{"step": "Poser le pas", "points": 1}, {"step": "Calculer", "points": 1}]},
+            "transcribe_copy": lambda prompt, files: {"text": f"écrit à la main ({len(files)} images)"},
+            "grade_answer": self._grade,
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
             "rebuild_past_paper": lambda prompt, files: {
                 "title": "Examen 2024", "duration_min": 120, "chapters": ["Convexité", "Inconnu"], "questions": [
@@ -53,6 +56,13 @@ class FakeModel:
     @staticmethod
     def pages_of(prompt: str) -> list[dict]:
         return json.loads(prompt.split("PAGES:", 1)[1].rsplit("\nSECTION: ", 1)[0])
+
+    @staticmethod
+    def _grade(prompt, files):
+        """Full marks on the first step (claimed too high, to test clamping), nothing on the others."""
+        scheme = json.loads(prompt.split("Marking scheme:\n", 1)[1].split("\n\nThe student's answer:", 1)[0])
+        return {"steps": [{"step": s["step"], "awarded": 99 if i == 0 else 0, "comment": "ok" if i == 0 else "missing"}
+                          for i, s in enumerate(scheme)]}
 
     def _section(self, prompt, files):
         page = self.pages_of(prompt)[0]

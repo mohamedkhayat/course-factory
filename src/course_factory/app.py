@@ -12,7 +12,7 @@ from pydantic import BaseModel, model_validator
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
-from . import learner, tutor
+from . import grading, learner, tutor
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
@@ -367,4 +367,5 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
 
     app.include_router(learner.router(ctx))
     app.include_router(tutor.router(ctx))
+    app.include_router(grading.router(ctx))
     return app

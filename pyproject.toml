@@ -15,6 +15,7 @@ dependencies = [
     "pillow>=13.0.0",
     "pydantic>=2.14.3",
     "pypdfium2>=5.15.1",
+    "python-multipart>=0.0.33",
     "sentence-transformers>=6.2.0",
     "sqlite-vec>=0.1.9",
     "sympy>=1.14.0",

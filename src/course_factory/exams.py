@@ -104,7 +104,8 @@ def copy_json(ctx: Ctx, row) -> dict:
     deadline = dt.datetime.fromisoformat(row["deadline"])
     out = {"id": row["id"], "exam_id": row["exam_id"], "started_at": row["started_at"], "deadline": row["deadline"],
            "remaining_seconds": max(0, int((deadline - now()).total_seconds())) if not row["handed_in_at"] else 0,
-           "answers": json.loads(row["answers"]), "handed_in_at": row["handed_in_at"]}
+           "answers": json.loads(row["answers"]), "handed_in_at": row["handed_in_at"],
+           "grade": json.loads(row["grade"]) if row["grade"] else None}
     if row["handed_in_at"]:  # the correction is shown only after hand-in
         out["correction"] = load_exam(ctx, row["exam_id"], with_answers=True)
     return out
