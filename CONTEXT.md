@@ -28,6 +28,18 @@ _Avoid_: widget, template
 The escape hatch: a Block of free Markdown with math, used when no Component fits the content.
 _Avoid_: raw block, HTML block
 
+**Source**:
+One file of study material imported into a Course, such as a PDF, a notebook, or a data file. Sources are copies; the original folder is never touched.
+_Avoid_: document, upload, file
+
+**Role**:
+What a Source is for in its Course: course notes, exercise sheet, lab, past exam, correction, personal notes, or data.
+_Avoid_: type, category
+
+**Pairing**:
+The link between a Source and the Source holding its correction, such as a TD and its corrigé.
+_Avoid_: match, link
+
 **Citation**:
 A pointer from a Block to an exact place in the source material: a file, a page, and optionally a short quote.
 _Avoid_: reference, source link
