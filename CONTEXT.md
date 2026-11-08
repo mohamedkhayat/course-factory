@@ -24,6 +24,14 @@ _Avoid_: widget, card, element
 A reusable piece of course UI, such as a theorem box or a quiz, that declares the shape of content it accepts. Components are code; Blocks are data.
 _Avoid_: widget, template
 
+**App View**:
+A part of the app that every Course gets and that is not built from Blocks: the tutor panel, Exam mode, the Lab notebook, Copy grading, Review.
+_Avoid_: page, screen, component
+
+**Catalogue**:
+The set of Components that content may use. Only Components in the Catalogue can appear in a Block.
+_Avoid_: library, registry
+
 **Prose Block**:
 The escape hatch: a Block of free Markdown with math, used when no Component fits the content.
 _Avoid_: raw block, HTML block
