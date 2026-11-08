@@ -59,3 +59,23 @@ _Avoid_: rubric, barème
 **Lab**:
 A coding exercise at Course level, usually from a TP, that lists the Chapters it covers.
 _Avoid_: TP, notebook, Application Lab
+
+**Generation Run**:
+One pass of turning material into a Course, which pauses at Approval Gates and can resume after a stop.
+_Avoid_: job, build, pipeline run
+
+**Approval Gate**:
+A point in a Generation Run where it waits for the owner to approve, edit or reject what was produced.
+_Avoid_: checkpoint, review step
+
+**Harness**:
+Everything that shapes the local model's work apart from its weights: prompts, skills, tool guidance and checks. It is versioned as a whole.
+_Avoid_: prompts, config
+
+**Trace**:
+The record of one model step: the Harness version, inputs, output, check results, and what the owner did with it.
+_Avoid_: log, event
+
+## Relationships
+
+- An **Approval** or rejection recorded on a **Trace** is both a signal and an eval case for improving the **Harness**.
