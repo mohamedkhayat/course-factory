@@ -37,8 +37,24 @@ Whether a Block is From source (taken from the material, and must carry at least
 _Avoid_: provenance (reserved for who made a Component)
 
 **Exam**:
-A timed paper at Course level that lists the Chapters it covers. It is not inside a Chapter.
+A timed paper at Course level: a title, a duration, the Chapters it covers, and an ordered list of Questions. It is either a Past paper or a Mock exam.
 _Avoid_: test, quiz
+
+**Past paper**:
+An Exam rebuilt faithfully from a real exam in the material, with its correction taken from the corrigé.
+_Avoid_: annale, old exam
+
+**Mock exam**:
+A new Exam the model writes in the style of the Past papers, covering the same recurring question types.
+_Avoid_: practice test, sample exam
+
+**Question**:
+One item of an Exam: a statement, its points, a model answer, and optionally a Marking scheme.
+_Avoid_: exercise (an exercise lives in a Section)
+
+**Marking scheme**:
+Which steps of a Question's answer earn which points, so a copy can be graded step by step.
+_Avoid_: rubric, barème
 
 **Lab**:
 A coding exercise at Course level, usually from a TP, that lists the Chapters it covers.
