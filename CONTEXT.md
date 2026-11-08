@@ -124,6 +124,14 @@ _Avoid_: flashcard, note
 Going through the Cards due today. When an exam date is set, every Card comes due at least once before it.
 _Avoid_: revision, study (too broad)
 
+**Copy**:
+The owner's handwritten work on a Question or an exercise, as ink, photos or a PDF, handed in for grading.
+_Avoid_: submission, answer sheet
+
+**Paired Device**:
+A device on the home network, such as a tablet, that the owner has allowed to use the app with a one-time code. The host machine itself needs no pairing.
+_Avoid_: client, remote
+
 **Focus Session**:
 A timed work block, 25 minutes by default, that counts only active time and only if something was done in it.
 _Avoid_: pomodoro, study session
