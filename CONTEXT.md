@@ -28,6 +28,14 @@ _Avoid_: widget, template
 The escape hatch: a Block of free Markdown with math, used when no Component fits the content.
 _Avoid_: raw block, HTML block
 
+**Citation**:
+A pointer from a Block to an exact place in the source material: a file, a page, and optionally a short quote.
+_Avoid_: reference, source link
+
+**Origin**:
+Whether a Block is From source (taken from the material, and must carry at least one Citation) or Model-added (written by the model, Citations optional, always marked as such).
+_Avoid_: provenance (reserved for who made a Component)
+
 **Exam**:
 A timed paper at Course level that lists the Chapters it covers. It is not inside a Chapter.
 _Avoid_: test, quiz
