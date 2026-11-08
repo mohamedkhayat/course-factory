@@ -32,6 +32,7 @@ class FakeModel:
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
             "write_section": self._section,
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
+            "tutor": lambda prompt, files: "Une fonction est « convexe » si... [cours.pdf p.1] [made_up.pdf p.2]",
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
             "rebuild_past_paper": lambda prompt, files: {
                 "title": "Examen 2024", "duration_min": 120, "chapters": ["Convexité", "Inconnu"], "questions": [
@@ -73,6 +74,12 @@ class FakeModel:
         self.prompts.append((step, prompt))
         out = self.handlers[step](prompt, files)
         return out if isinstance(out, str) else json.dumps(out)
+
+
+    def stream(self, step, prompt, files, workdir):
+        text = self(step, prompt, files, workdir)
+        for i in range(0, len(text), 12):
+            yield text[i : i + 12]
 
 
 class FakeSearch:
