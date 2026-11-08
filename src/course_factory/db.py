@@ -30,4 +30,17 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    conn.executescript(OUTLINE_SCHEMA)
     return conn
+
+OUTLINE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chapters (
+  id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), position INTEGER NOT NULL,
+  title TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal', exam_hits INTEGER NOT NULL DEFAULT 0,
+  exam_weight REAL NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'planned'
+);
+CREATE TABLE IF NOT EXISTS sections (
+  id INTEGER PRIMARY KEY, chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL, title TEXT NOT NULL, pages TEXT NOT NULL DEFAULT '[]'
+);
+"""

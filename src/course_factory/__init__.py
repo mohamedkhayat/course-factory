@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 def main() -> None:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")  # bge models come from the local HF cache only
     import uvicorn
 
     from .app import create_app

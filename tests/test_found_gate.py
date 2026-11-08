@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from conftest import FakeSearch
 from course_factory.app import create_app
 
 
@@ -70,9 +71,9 @@ def test_cram_needs_exam_date(client, material):
 
 
 def test_run_resumes_after_restart(data_dir, model, material):
-    with TestClient(create_app(data_dir, model)) as c:
+    with TestClient(create_app(data_dir, model, FakeSearch())) as c:
         cid = start(c, material)
-    with TestClient(create_app(data_dir, model)) as c:
+    with TestClient(create_app(data_dir, model, FakeSearch())) as c:
         assert c.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
         assert c.post(f"/api/courses/{cid}/gates/found", json={"goal": "deep"}).status_code == 200
         assert c.get(f"/api/courses/{cid}").json()["goal"] == "deep"

@@ -9,7 +9,10 @@ from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
 from . import db as dbm
-from .generation import Gate, Role, build_graph, run_status, thread
+from . import search as searchm
+from .context import Ctx, Gate, Priority, Role
+from .generation import build_graph, run_status, thread
+from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import Backend, record_owner_action
 
 SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
@@ -44,14 +47,29 @@ class FoundDecision(BaseModel):
         return self
 
 
+class ChapterEdit(ChapterPlan):
+    priority: Priority = "normal"
+
+
+class OutlineEdit(BaseModel):
+    chapters: list[ChapterEdit]
+
+
+class GoalChange(FoundDecision):
+    pass
+
+
 def source_json(row: sqlite3.Row) -> dict:
     return dict(row) | {"excluded": bool(row["excluded"])}
 
 
-def create_app(data_dir: Path, backend: Backend) -> FastAPI:
+def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchModels | None = None) -> FastAPI:
     data_dir.mkdir(parents=True, exist_ok=True)
     db = dbm.connect(data_dir / "course-factory.db")
-    graph = build_graph(db, backend, data_dir, sqlite3.connect(data_dir / "langgraph.db", check_same_thread=False))
+    models = search_models or searchm.LocalSearchModels()
+    searchm.setup(db, models.dim)
+    ctx = Ctx(db, backend, data_dir, models)
+    graph = build_graph(ctx, sqlite3.connect(data_dir / "langgraph.db", check_same_thread=False))
     app = FastAPI(title="course-factory")
     advancing: set[int] = set()  # Courses whose Run is executing right now
     lock = threading.Lock()
@@ -125,8 +143,7 @@ def create_app(data_dir: Path, backend: Backend) -> FastAPI:
 
     @app.patch("/api/courses/{cid}/sources/{sid}")
     def edit_source(cid: int, sid: int, body: SourceEdit):
-        if status(cid)["gate"] != "found":
-            raise HTTPException(409, "Run is not waiting at the found gate")
+        require_gate(cid, "found")
         if db.execute("SELECT 1 FROM sources WHERE id=? AND course_id=?", (sid, cid)).fetchone() is None:
             raise HTTPException(404, "no such Source")
         changes = body.model_dump(exclude_unset=True)
@@ -144,6 +161,44 @@ def create_app(data_dir: Path, backend: Backend) -> FastAPI:
         record_owner_action(db, cid, "found", decision, "approved")
         tasks.add_task(advance, cid, Command(resume=decision))
         return {"ok": True}
+
+    def require_gate(cid: int, gate: Gate):
+        if status(cid)["gate"] != gate:
+            raise HTTPException(409, f"Run is not waiting at the {gate} gate")
+
+    @app.patch("/api/courses/{cid}")
+    def change_goal(cid: int, body: GoalChange):
+        course_or_404(cid)
+        if status(cid)["gate"] == "found":
+            raise HTTPException(409, "choose the Goal by approving the found gate")
+        db.execute("UPDATE courses SET goal=?, exam_date=? WHERE id=?", (body.goal, body.exam_date and body.exam_date.isoformat(), cid))
+        return dict(course_or_404(cid))
+
+    @app.get("/api/courses/{cid}/outline")
+    def get_outline(cid: int):
+        course_or_404(cid)
+        return {"chapters": load_outline(ctx, cid)}
+
+    @app.put("/api/courses/{cid}/outline")
+    def edit_outline(cid: int, body: OutlineEdit):
+        require_gate(cid, "outline")
+        if not body.chapters:
+            raise HTTPException(422, "an outline needs at least one Chapter")
+        record_owner_action(db, cid, "outline", body.model_dump(), "edited")
+        save_outline(ctx, cid, OutlinePlan(chapters=list(body.chapters)), [c.priority for c in body.chapters])
+        return {"chapters": load_outline(ctx, cid)}
+
+    @app.post("/api/courses/{cid}/gates/outline")
+    def approve_outline(cid: int, tasks: BackgroundTasks):
+        claim(cid, "outline")
+        record_owner_action(db, cid, "outline", {}, "approved")
+        tasks.add_task(advance, cid, Command(resume={"approved": True}))  # an empty resume value is ignored by LangGraph
+        return {"ok": True}
+
+    @app.get("/api/courses/{cid}/search")
+    def search(cid: int, q: str, k: int = 8):
+        course_or_404(cid)
+        return searchm.search(db, models, cid, q, k)
 
     @app.get("/api/courses/{cid}/traces")
     def get_traces(cid: int):

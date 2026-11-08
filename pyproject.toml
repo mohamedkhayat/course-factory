@@ -14,6 +14,9 @@ dependencies = [
     "pillow>=13.0.0",
     "pydantic>=2.14.3",
     "pypdfium2>=5.15.1",
+    "sentence-transformers>=6.2.0",
+    "sqlite-vec>=0.1.9",
+    "torch>=2.15.0",
     "uvicorn>=0.54.0",
 ]
 
@@ -30,3 +33,11 @@ dev = [
     "pyright>=1.1.414",
     "pytest>=9.2.0",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
