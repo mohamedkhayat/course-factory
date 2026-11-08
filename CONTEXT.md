@@ -116,6 +116,14 @@ _Avoid_: backlog, inbox
 Model work the owner is waiting on right now, such as a tutor reply or grading a copy. It takes priority over a Generation Run for the GPU.
 _Avoid_: interactive job, foreground task
 
+**Card**:
+One spaced-repetition item made from a Block or a Question: a recall prompt or an auto-graded question. It unlocks once its Section has been read.
+_Avoid_: flashcard, note
+
+**Review**:
+Going through the Cards due today. When an exam date is set, every Card comes due at least once before it.
+_Avoid_: revision, study (too broad)
+
 **Focus Session**:
 A timed work block, 25 minutes by default, that counts only active time and only if something was done in it.
 _Avoid_: pomodoro, study session
