@@ -2,9 +2,10 @@
 
 import json
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from .catalogue import describe
+from . import components
+from .catalogue import CATALOGUE, describe
 from .checks import check_blocks
 from .context import Ctx
 from .pi_step import StepFailed, run_pi_step
@@ -17,6 +18,20 @@ LANGUAGE_RULE = ("Keep source statements, definitions and exercise wording in th
 
 class SectionDraft(BaseModel):
     blocks: list[dict] = Field(min_length=1)  # checked one by one so a bad Block doesn't sink the Section
+    proposals: list[dict] = []  # new Components, checked one by one too
+
+
+def catalogue_text(ctx: Ctx) -> str:
+    return "\n".join(x for x in (describe(), components.describe_custom(ctx.db)) if x)
+
+
+def fallback_markdown(data) -> str:
+    """How a Block shows when its Component isn't live: its fields as Markdown."""
+    if isinstance(data, dict):
+        return "\n\n".join(f"**{k.replace('_', ' ')}**\n\n{fallback_markdown(v)}" for k, v in data.items())
+    if isinstance(data, list):
+        return "\n".join(f"- {fallback_markdown(v)}" for v in data)
+    return str(data)
 
 
 class RepairedBlock(BaseModel):
@@ -67,7 +82,12 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         draft = run_pi_step(db, ctx.backend, "write_section", {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-            "pages": pages, "catalogue": describe(), "language": LANGUAGE_RULE}, SectionDraft, ctx.course_dir(cid), course_id=cid)
+            "pages": pages, "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, SectionDraft, ctx.course_dir(cid), course_id=cid)
+        for raw in draft.proposals:
+            try:
+                components.propose(ctx, cid, components.ComponentProposal.model_validate(raw))
+            except ValidationError:
+                pass  # a malformed proposal is dropped; Blocks that use it get flagged
         for pos, raw in enumerate(draft.blocks):
             block, flags = checked_block(ctx, cid, raw, pages)
             db.execute("INSERT INTO blocks (section_id, position, component, data, citations, origin, status, flags) VALUES (?,?,?,?,?,?,?,?)",
@@ -81,7 +101,8 @@ def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | 
     """Checks a Block, asks the model to repair it up to REPAIRS times, then judges grounding.
     Returns the last Block and {"errors": [...], "warnings": [...]}; errors mean the Block is flagged."""
     sources = source_pages(ctx, cid)
-    (block,), (errors,) = check_blocks([raw], sources)
+    extra = components.schemas(ctx.db)
+    (block,), (errors,) = check_blocks([raw], sources, extra)
     if note:
         errors = [f"owner note: {note}"]
     for _ in range(REPAIRS):
@@ -89,12 +110,13 @@ def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | 
             break
         try:
             fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {"block": block, "errors": errors, "pages": pages,
-                                "catalogue": describe(), "language": LANGUAGE_RULE}, RepairedBlock, ctx.course_dir(cid), course_id=cid)
+                                "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, RepairedBlock, ctx.course_dir(cid), course_id=cid)
         except StepFailed as e:
             errors = errors + [str(e)]
             break
-        (block,), (errors,) = check_blocks([fixed.block], sources)
-    warnings = []
+        (block,), (errors,) = check_blocks([fixed.block], sources, extra)
+    state_errors, warnings = components.status_flags(ctx.db, block["component"]) if not errors else ([], [])
+    errors = errors + state_errors
     if not errors and block["origin"] == "from_source":
         cited = page_texts(ctx, cid, block["citations"])
         try:
@@ -109,7 +131,8 @@ def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | 
 
 def block_json(row) -> dict:
     return {"id": row["id"], "position": row["position"], "component": row["component"], "data": json.loads(row["data"]),
-            "citations": json.loads(row["citations"]), "origin": row["origin"], "status": row["status"], "flags": json.loads(row["flags"])}
+            "citations": json.loads(row["citations"]), "origin": row["origin"], "status": row["status"], "flags": json.loads(row["flags"]),
+            **({} if row["component"] in CATALOGUE else {"fallback_markdown": fallback_markdown(json.loads(row["data"]))})}
 
 
 def load_chapter(ctx: Ctx, chid: int) -> dict:

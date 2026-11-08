@@ -15,9 +15,12 @@ Rules:
 - For an Iteration Table give only the method, f, vars, x0, step and iterations. The app computes the rows.
 - origin is "from_source" when the Block restates the pages; it then needs citations [{"source","page","quote"?}] to the pages below. Use "model_added" for your own explanations, intuitions and extra exercises.
 - Use prose only when no other Component fits.
+- Rarely, when no Component can express something essential (not just style), propose a new one in "proposals":
+  {"name": "snake_case", "description": "what it shows", "why": "why no Component fits", "schema": {JSON Schema of its data},
+   "samples": [1-3 example data objects]}, and use its name as the Block's component. Never propose one the Catalogue already covers.
 
 Answer with only this JSON object:
-{"blocks": [{"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1, "quote": "..."}], "origin": "from_source"}]}
+{"blocks": [{"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1, "quote": "..."}], "origin": "from_source"}], "proposals": []}
 
 Chapter: {{chapter}}
 The source pages for this Section:

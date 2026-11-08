@@ -15,7 +15,7 @@ from pydantic import BaseModel, model_validator
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
-from . import grading, labs, learner, tutor
+from . import components, grading, labs, learner, tutor
 from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
@@ -299,11 +299,12 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     def edit_block(cid: int, bid: int, body: BlockEdit):
         row = block_or_404(cid, bid)
         draft = {"component": row["component"], "data": body.data, "citations": json.loads(row["citations"]), "origin": row["origin"]}
-        (block,), (errors,) = check_blocks([draft], chm.source_pages(ctx, cid))
+        (block,), (errors,) = check_blocks([draft], chm.source_pages(ctx, cid), components.schemas(db))
         if errors:
             raise HTTPException(422, {"errors": errors})
         record_owner_action(db, cid, "chapter_review", {"block": bid, "data": body.data}, "edited")
-        return save_block(bid, block, {"errors": [], "warnings": []})
+        state_errors, warnings = components.status_flags(db, row["component"])
+        return save_block(bid, block, {"errors": state_errors, "warnings": warnings})
 
     @app.post("/api/courses/{cid}/blocks/{bid}/approve")
     def approve_block(cid: int, bid: int):
@@ -400,6 +401,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         learner.unlock_exam_cards(ctx, cid, row["exam_id"])
         return exm.copy_json(ctx, copy_or_404(cid, copy_id))
 
+    app.include_router(components.router(ctx))
     app.include_router(learner.router(ctx))
     app.include_router(tutor.router(ctx))
     app.include_router(grading.router(ctx))

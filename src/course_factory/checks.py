@@ -2,6 +2,7 @@
 sympy-verified claims. Also computes the numbers the app owns (Iteration Table rows)."""
 
 import json
+import jsonschema
 import re
 import subprocess
 from pathlib import Path
@@ -130,8 +131,19 @@ def expr_errors(component: str, data: dict) -> list[str]:
     return []
 
 
-def check_blocks(raw: list[dict], sources: dict[str, int]) -> tuple[list[dict], list[list[str]]]:
-    """Validates and normalises Blocks. Returns (blocks, errors per Block); sources maps name -> page count."""
+def schema_errors(schema: dict, data: dict) -> list[str]:
+    try:
+        jsonschema.validate(data, schema)
+        return []
+    except jsonschema.ValidationError as e:
+        return [f"{'.'.join(map(str, e.absolute_path)) or 'data'}: {e.message}"]
+    except jsonschema.SchemaError as e:
+        return [f"the Component's schema is invalid: {e.message}"]
+
+
+def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict] | None = None) -> tuple[list[dict], list[list[str]]]:
+    """Validates and normalises Blocks. Returns (blocks, errors per Block); sources maps name -> page count,
+    extra maps a model-made Component's name to its JSON Schema."""
     blocks, errors = [], []
     for item in raw:
         errs: list[str] = []
@@ -142,7 +154,10 @@ def check_blocks(raw: list[dict], sources: dict[str, int]) -> tuple[list[dict], 
                            "origin": "model_added"})
             errors.append([f"not a Block: {e}"])
             continue
-        data, errs = validate_data(draft.component, draft.data)
+        if extra and draft.component in extra:
+            data, errs = draft.data, schema_errors(extra[draft.component], draft.data)
+        else:
+            data, errs = validate_data(draft.component, draft.data)
         block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin}
         for c in draft.citations:
             if not 1 <= c.page <= sources.get(c.source, 0):

@@ -49,6 +49,7 @@ class FakeModel:
             "transcribe_copy": lambda prompt, files: {"text": f"écrit à la main ({len(files)} images)"},
             "grade_answer": self._grade,
             "build_lab": lambda prompt, files: LAB,
+            "build_component": lambda prompt, files: {"code": (Path(__file__).parent / "components" / "good.tsx").read_text()},
             "repair_lab_step": lambda prompt, files: {"step": {**json.loads(prompt.split("STEP:", 1)[1]),
                                                                "check": "assert y == 3, 'y should be 3'"}},
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},

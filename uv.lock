@@ -341,6 +341,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "fsrs" },
+    { name = "jsonschema" },
     { name = "jupyter-client" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
@@ -369,6 +370,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.162.2" },
     { name = "fsrs", specifier = ">=6.3.2" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "jupyter-client", specifier = ">=8.10.0" },
     { name = "langgraph", specifier = ">=1.2.20" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3" },

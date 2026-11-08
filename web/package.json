@@ -1,1 +1,1 @@
-{"name":"course-factory-web","private":true,"type":"module","dependencies":{"jsdom":"^26.1.0","katex":"^0.16.22","mermaid":"^11.6.0"}}
+{"name":"course-factory-web","private":true,"type":"module","dependencies":{"@types/react":"^19.1.13","@types/react-dom":"^19.1.9","esbuild":"^0.25.10","jsdom":"^26.1.0","katex":"^0.16.22","mermaid":"^11.6.0","playwright":"^1.63.0","react":"^19.1.0","react-dom":"^19.1.0","typescript":"^5.9.3"}}
