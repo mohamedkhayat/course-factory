@@ -208,3 +208,11 @@ def test_resume_regenerates_only_unfinished_chapters(client, material, model):
     assert sections_written(model) == [GRADIENT, EXERCICES]
     assert {c["status"] for c in chapters(client, cid).values()} == {"in_review"}
     assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+
+
+def test_run_progress_streams_until_the_run_stops(client, material, model):
+    cid = to_outline_gate(client, material, model)
+    body = client.get(f"/api/courses/{cid}/run/events").text
+    events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+    assert body.startswith("event: status") and events[-1]["gate"] == "outline"
+    assert client.get("/api/courses/999/run/events").status_code == 404

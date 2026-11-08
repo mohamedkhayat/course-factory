@@ -2,11 +2,13 @@ import datetime as dt
 import json
 import sqlite3
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
@@ -23,6 +25,7 @@ from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import Backend, record_owner_action
 
 SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
+RUN_POLL = 0.5
 
 
 class NewCourse(BaseModel):
@@ -156,6 +159,24 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     @app.get("/api/courses/{cid}/run")
     def get_run(cid: int):
         return status(cid)
+
+    @app.get("/api/courses/{cid}/run/events")
+    def run_events(cid: int):
+        """Server-sent Run progress: a "status" event on each change, until the Run stops (gate, done or failed)."""
+        course_or_404(cid)
+
+        def events():
+            last = None
+            while True:
+                s = status(cid)
+                if s != last:
+                    yield tutor.sse("status", s)
+                    last = s
+                if s["status"] != "running" and cid not in advancing:
+                    return
+                time.sleep(RUN_POLL)
+
+        return StreamingResponse(events(), media_type="text/event-stream")
 
     @app.post("/api/courses/{cid}/run/retry")
     def retry_run(cid: int, tasks: BackgroundTasks):
