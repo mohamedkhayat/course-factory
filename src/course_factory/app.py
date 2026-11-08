@@ -12,6 +12,7 @@ from pydantic import BaseModel, model_validator
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
+from . import learner
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
@@ -361,6 +362,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         if row["handed_in_at"]:
             raise HTTPException(409, "this Copy was already handed in")
         db.execute("UPDATE copies SET handed_in_at=? WHERE id=?", (exm.now().isoformat(), copy_id))
+        learner.unlock_exam_cards(ctx, cid, row["exam_id"])
         return exm.copy_json(ctx, copy_or_404(cid, copy_id))
 
+    app.include_router(learner.router(ctx))
     return app

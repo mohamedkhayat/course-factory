@@ -219,6 +219,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "fsrs" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "pillow" },
@@ -242,6 +243,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.162.2" },
+    { name = "fsrs", specifier = ">=6.3.2" },
     { name = "langgraph", specifier = ">=1.2.20" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.3" },
     { name = "pillow", specifier = ">=13.0.0" },
@@ -294,6 +296,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a3/1d/d730c664fcb4f1d264a722722a3134cf0881854f73c1fd58abf87572f232/filelock-4.2.9.tar.gz", hash = "sha256:96530b7c538d4ea08493ab067247aab7948c54d8cd622cce711c97cccc5d9896", size = 663116, upload-time = "2026-11-04T18:37:10.014Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/00/05/76184fe08339723d643ab47887a8e4de8f2921ca4e008617ab7490af7857/filelock-4.2.9-py3-none-any.whl", hash = "sha256:a379c50a729e5b68c8519a4d26489f755d9769960a236ecd838190e2a78db2e9", size = 164734, upload-time = "2026-11-04T18:37:08.273Z" },
+]
+
+[[package]]
+name = "fsrs"
+version = "6.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7f/cf/3995867b03de059624aa49634d62895eef211f909b322c4a478dcd858bd8/fsrs-6.3.2.tar.gz", hash = "sha256:7fe79947ceb92ca35fdca3dfa511a239be15b317cde63d6643a2da6110844d91", size = 32766, upload-time = "2026-08-09T04:36:03.074Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/b9/c815e796480dd22441886f06b23f249a7ff2e3f41fc9bfaa428332e34b49/fsrs-6.3.2-py3-none-any.whl", hash = "sha256:bc55066c821164b1cff6d75b17a3ed8e86cfd45789e3d775cfcb895319ce9ba4", size = 22837, upload-time = "2026-08-09T04:36:01.932Z" },
 ]
 
 [[package]]
