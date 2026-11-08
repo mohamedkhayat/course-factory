@@ -11,6 +11,7 @@ from pydantic import BaseModel, model_validator
 
 from . import chapters as chm
 from . import db as dbm
+from . import exams as exm
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
@@ -68,6 +69,10 @@ class BlockEdit(BaseModel):
 
 class RegenerateNote(BaseModel):
     note: str
+
+
+class CopyAnswers(BaseModel):
+    answers: dict[str, str]  # Question id -> typed answer (Markdown)
 
 
 def source_json(row: sqlite3.Row) -> dict:
@@ -294,5 +299,68 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         course_or_404(cid)
         return [chm.load_chapter(ctx, r["id"]) for r in db.execute(
             "SELECT id FROM chapters WHERE course_id=? AND status='published' ORDER BY position", (cid,))]
+
+    def exam_or_404(cid: int, eid: int) -> sqlite3.Row:
+        row = db.execute("SELECT * FROM exams WHERE id=? AND course_id=?", (eid, cid)).fetchone()
+        if row is None:
+            raise HTTPException(404, "no such Exam")
+        return row
+
+    def copy_or_404(cid: int, copy_id: int) -> sqlite3.Row:
+        row = db.execute("SELECT c.* FROM copies c JOIN exams e ON e.id=c.exam_id WHERE c.id=? AND e.course_id=?", (copy_id, cid)).fetchone()
+        if row is None:
+            raise HTTPException(404, "no such Copy")
+        return row
+
+    @app.get("/api/courses/{cid}/exams")
+    def list_exams(cid: int):
+        course_or_404(cid)
+        return [{k: e[k] for k in ("id", "kind", "title", "duration_min")} | {"chapters": json.loads(e["chapters"])}
+                for e in db.execute("SELECT * FROM exams WHERE course_id=? ORDER BY kind DESC, id", (cid,))]
+
+    @app.get("/api/courses/{cid}/exams/{eid}")
+    def get_exam(cid: int, eid: int):
+        """Exam mode's sheet: no model answers or Marking schemes."""
+        exam_or_404(cid, eid)
+        return exm.load_exam(ctx, eid, with_answers=False)
+
+    @app.post("/api/courses/{cid}/exams/{eid}/copies", status_code=201)
+    def start_copy(cid: int, eid: int):
+        exam = exam_or_404(cid, eid)
+        start = exm.now()
+        deadline = start + dt.timedelta(minutes=exam["duration_min"])
+        copy_id = db.execute("INSERT INTO copies (exam_id, started_at, deadline) VALUES (?,?,?)",
+                             (eid, start.isoformat(), deadline.isoformat())).lastrowid
+        return exm.copy_json(ctx, db.execute("SELECT * FROM copies WHERE id=?", (copy_id,)).fetchone())
+
+    @app.get("/api/courses/{cid}/copies/{copy_id}")
+    def get_copy(cid: int, copy_id: int):
+        return exm.copy_json(ctx, copy_or_404(cid, copy_id))
+
+    def open_copy(cid: int, copy_id: int) -> sqlite3.Row:
+        row = copy_or_404(cid, copy_id)
+        if row["handed_in_at"]:
+            raise HTTPException(409, "this Copy was handed in")
+        if exm.now() > dt.datetime.fromisoformat(row["deadline"]) + dt.timedelta(seconds=exm.GRACE_SECONDS):
+            raise HTTPException(409, "time is up: hand the Copy in")
+        return row
+
+    @app.put("/api/courses/{cid}/copies/{copy_id}/answers")
+    def save_answers(cid: int, copy_id: int, body: CopyAnswers):
+        row = open_copy(cid, copy_id)
+        valid = {str(r["id"]) for r in db.execute("SELECT id FROM questions WHERE exam_id=?", (row["exam_id"],))}
+        if unknown := set(body.answers) - valid:
+            raise HTTPException(422, f"not Questions of this Exam: {sorted(unknown)}")
+        answers = json.loads(row["answers"]) | body.answers
+        db.execute("UPDATE copies SET answers=? WHERE id=?", (json.dumps(answers, ensure_ascii=False), copy_id))
+        return exm.copy_json(ctx, copy_or_404(cid, copy_id))
+
+    @app.post("/api/courses/{cid}/copies/{copy_id}/hand-in")
+    def hand_in(cid: int, copy_id: int):
+        row = copy_or_404(cid, copy_id)
+        if row["handed_in_at"]:
+            raise HTTPException(409, "this Copy was already handed in")
+        db.execute("UPDATE copies SET handed_in_at=? WHERE id=?", (exm.now().isoformat(), copy_id))
+        return exm.copy_json(ctx, copy_or_404(cid, copy_id))
 
     return app

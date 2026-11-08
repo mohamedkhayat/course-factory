@@ -48,4 +48,16 @@ CREATE TABLE IF NOT EXISTS blocks (
   position INTEGER NOT NULL, component TEXT NOT NULL, data TEXT NOT NULL, citations TEXT NOT NULL DEFAULT '[]',
   origin TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ok', flags TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS exams (
+  id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), kind TEXT NOT NULL,
+  title TEXT NOT NULL, duration_min INTEGER NOT NULL, chapters TEXT NOT NULL DEFAULT '[]', source_id INTEGER REFERENCES sources(id)
+);
+CREATE TABLE IF NOT EXISTS questions (
+  id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE, position INTEGER NOT NULL,
+  statement TEXT NOT NULL, points REAL NOT NULL, model_answer TEXT NOT NULL, scheme TEXT, flags TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS copies (
+  id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL REFERENCES exams(id), started_at TEXT NOT NULL, deadline TEXT NOT NULL,
+  answers TEXT NOT NULL DEFAULT '{}', files TEXT NOT NULL DEFAULT '[]', handed_in_at TEXT, grade TEXT
+);
 """

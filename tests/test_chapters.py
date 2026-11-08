@@ -57,7 +57,7 @@ def test_deep_generates_in_course_order(client, material, model):
 def test_section_prompt_has_cited_page_text_and_catalogue(client, material, model):
     generate(client, material, model)
     prompt = next(p for step, p in model.prompts if step == "write_section")
-    assert "page text of" in prompt and "iteration_table" in prompt and "language of the source pages" in prompt
+    assert "page text of" in prompt and "iteration_table" in prompt and "explanations, intuitions and hints in English" in prompt
 
 
 def test_chapters_wait_for_review_and_publishing_makes_them_readable(client, material, model):

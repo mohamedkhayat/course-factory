@@ -11,7 +11,8 @@ from .pi_step import StepFailed, run_pi_step
 
 REPAIRS = 3
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
-LANGUAGE_RULE = "Write in the language of the source pages. Keep the professor's notation."
+LANGUAGE_RULE = ("Keep source statements, definitions and exercise wording in the source language (usually French), "
+                 "with the professor's notation. Write your own explanations, intuitions and hints in English.")
 
 
 class SectionDraft(BaseModel):

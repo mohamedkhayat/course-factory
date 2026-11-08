@@ -33,6 +33,16 @@ class FakeModel:
             "write_section": self._section,
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
+            "rebuild_past_paper": lambda prompt, files: {
+                "title": "Examen 2024", "duration_min": 120, "chapters": ["Convexité", "Inconnu"], "questions": [
+                    {"statement": "Montrer que $f$ est convexe.", "points": 6, "model_answer": "Hessienne positive.",
+                     "scheme": [{"step": "Hessienne", "points": 4}, {"step": "Conclusion", "points": 2}]},
+                    {"statement": "Calculer $x_1$.", "points": 14, "model_answer": "$x_1 = 0.5$", "scheme": None}]},
+            "write_mock_exam": lambda prompt, files: {
+                "title": "Examen blanc " + prompt.split("Mock exam number ", 1)[1].split(" ", 1)[0], "duration_min": 90,
+                "chapters": ["Méthodes de descente"], "questions": [
+                    {"statement": "Appliquer le gradient.", "points": 20, "model_answer": "...",
+                     "scheme": [{"step": "Direction", "points": 10}, {"step": "Pas", "points": 10}]}]},
         }
 
     @staticmethod
@@ -52,7 +62,8 @@ class FakeModel:
                 {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}]}
 
     def _roles(self, prompt, files):
-        roles = {"TD1.pdf": ("exercise sheet", "TD1_corrige.pdf"), "TD1_corrige.pdf": ("correction", None)}
+        roles = {"TD1.pdf": ("exercise sheet", "TD1_corrige.pdf"), "TD1_corrige.pdf": ("correction", None),
+                 "examen_2024.pdf": ("past exam", "examen_2024_corrige.pdf"), "examen_2024_corrige.pdf": ("correction", None)}
         names = json.loads(prompt.split("SOURCES:", 1)[1])
         return {"sources": [{"name": s["name"], "role": roles.get(s["name"], ("course notes", None))[0],
                              "paired_with": roles.get(s["name"], (None, None))[1]} for s in names]}
