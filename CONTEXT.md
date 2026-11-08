@@ -76,6 +76,14 @@ _Avoid_: prompts, config
 The record of one model step: the Harness version, inputs, output, check results, and what the owner did with it.
 _Avoid_: log, event
 
+**Review Queue**:
+The model-made Components (and later, flagged Blocks) waiting for Claude Code to promote, fix or reject them. Claude Code works the queue from outside the app; the app itself never calls Claude.
+_Avoid_: backlog, inbox
+
+**Live work**:
+Model work the owner is waiting on right now, such as a tutor reply or grading a copy. It takes priority over a Generation Run for the GPU.
+_Avoid_: interactive job, foreground task
+
 ## Relationships
 
 - An **Approval** or rejection recorded on a **Trace** is both a signal and an eval case for improving the **Harness**.
