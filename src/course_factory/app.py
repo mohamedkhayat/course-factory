@@ -1,5 +1,6 @@
 import datetime as dt
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -8,8 +9,10 @@ from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
 from . import db as dbm
-from .generation import Role, build_graph, run_status, thread
-from .pi_step import Backend
+from .generation import Gate, Role, build_graph, run_status, thread
+from .pi_step import Backend, record_owner_action
+
+SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
 
 
 class NewCourse(BaseModel):
@@ -19,8 +22,15 @@ class NewCourse(BaseModel):
 
 class SourceEdit(BaseModel):
     role: Role | None = None
-    paired_with: int | None = None
+    paired_with: int | None = None  # null unpairs
     excluded: bool | None = None
+
+    @model_validator(mode="after")
+    def no_null_role_or_exclusion(self):
+        for field in ("role", "excluded"):
+            if field in self.model_fields_set and getattr(self, field) is None:
+                raise ValueError(f"{field} cannot be null")
+        return self
 
 
 class FoundDecision(BaseModel):
@@ -34,11 +44,17 @@ class FoundDecision(BaseModel):
         return self
 
 
+def source_json(row: sqlite3.Row) -> dict:
+    return dict(row) | {"excluded": bool(row["excluded"])}
+
+
 def create_app(data_dir: Path, backend: Backend) -> FastAPI:
     data_dir.mkdir(parents=True, exist_ok=True)
     db = dbm.connect(data_dir / "course-factory.db")
-    graph = build_graph(db, backend, data_dir, sqlite3.connect(data_dir / "checkpoints.db", check_same_thread=False))
+    graph = build_graph(db, backend, data_dir, sqlite3.connect(data_dir / "langgraph.db", check_same_thread=False))
     app = FastAPI(title="course-factory")
+    advancing: set[int] = set()  # Courses whose Run is executing right now
+    lock = threading.Lock()
 
     def course_or_404(cid: int) -> sqlite3.Row:
         row = db.execute("SELECT * FROM courses WHERE id=?", (cid,)).fetchone()
@@ -46,9 +62,32 @@ def create_app(data_dir: Path, backend: Backend) -> FastAPI:
             raise HTTPException(404, "no such Course")
         return row
 
-    def require_gate(cid: int, gate: str):
-        if run_status(graph, cid).get("gate") != gate:
-            raise HTTPException(409, f"Run is not waiting at the {gate} gate")
+    def status(cid: int) -> dict:
+        s = run_status(graph, cid, course_or_404(cid)["run_error"])
+        p = db.execute("SELECT COALESCE(SUM(s.pages),0) total, (SELECT COUNT(*) FROM pages p JOIN sources s2 ON s2.id=p.source_id "
+                       "WHERE s2.course_id=? AND p.text IS NOT NULL) done FROM sources s WHERE s.course_id=?", (cid, cid)).fetchone()
+        return {"error": None, **s, "pages_read": p["done"], "pages_total": p["total"]}
+
+    def claim(cid: int, gate: Gate | None):
+        """Reserve the Run so two requests can't advance it at once.
+
+        gate=None is a retry: allowed when the Run failed, or shows "running" with nothing executing it
+        (the app stopped mid-step)."""
+        with lock:
+            s = status(cid)
+            ok = s["status"] in ("failed", "running") if gate is None else s["gate"] == gate
+            if cid in advancing or not ok:
+                raise HTTPException(409, "Run is not stuck" if gate is None else f"Run is not waiting at the {gate} gate")
+            advancing.add(cid)
+
+    def advance(cid: int, payload):
+        try:
+            graph.invoke(payload, thread(cid))
+            db.execute("UPDATE courses SET run_error=NULL WHERE id=?", (cid,))
+        except Exception as e:  # the Run stays resumable from its last checkpoint; the owner retries
+            db.execute("UPDATE courses SET run_error=? WHERE id=?", (f"{type(e).__name__}: {e}"[:2000], cid))
+        finally:
+            advancing.discard(cid)
 
     @app.post("/api/courses", status_code=201)
     def create_course(body: NewCourse, tasks: BackgroundTasks):
@@ -57,7 +96,8 @@ def create_app(data_dir: Path, backend: Backend) -> FastAPI:
             raise HTTPException(422, "folder does not exist")
         cid = db.execute("INSERT INTO courses (name, folder) VALUES (?,?)", (body.name, str(folder.resolve()))).lastrowid
         assert cid is not None
-        tasks.add_task(lambda: graph.invoke({"course_id": cid}, thread(cid)))
+        advancing.add(cid)
+        tasks.add_task(advance, cid, {"course_id": cid})
         return {"id": cid}
 
     @app.get("/api/courses/{cid}")
@@ -66,21 +106,27 @@ def create_app(data_dir: Path, backend: Backend) -> FastAPI:
 
     @app.get("/api/courses/{cid}/run")
     def get_run(cid: int):
-        course_or_404(cid)
-        return run_status(graph, cid)
+        return status(cid)
+
+    @app.post("/api/courses/{cid}/run/retry")
+    def retry_run(cid: int, tasks: BackgroundTasks):
+        claim(cid, None)
+        db.execute("UPDATE courses SET run_error=NULL WHERE id=?", (cid,))
+        tasks.add_task(advance, cid, None)
+        return {"ok": True}
 
     @app.get("/api/courses/{cid}/found")
     def get_found(cid: int):
         course_or_404(cid)
-        sources = [dict(r) | {"excluded": bool(r["excluded"])} for r in
-                   db.execute("SELECT id, name, pages, role, paired_with, excluded FROM sources WHERE course_id=? ORDER BY name", (cid,))]
+        sources = [source_json(r) for r in db.execute(f"SELECT {SOURCE_COLUMNS} FROM sources WHERE course_id=? ORDER BY name", (cid,))]
         unreadable = [{"source": r["name"], "page": r["n"]} for r in db.execute(
             "SELECT s.name, p.n FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND p.readable=0 ORDER BY s.name, p.n", (cid,))]
         return {"sources": sources, "unreadable_pages": unreadable}
 
     @app.patch("/api/courses/{cid}/sources/{sid}")
     def edit_source(cid: int, sid: int, body: SourceEdit):
-        require_gate(cid, "found")
+        if status(cid)["gate"] != "found":
+            raise HTTPException(409, "Run is not waiting at the found gate")
         if db.execute("SELECT 1 FROM sources WHERE id=? AND course_id=?", (sid, cid)).fetchone() is None:
             raise HTTPException(404, "no such Source")
         changes = body.model_dump(exclude_unset=True)
@@ -89,16 +135,14 @@ def create_app(data_dir: Path, backend: Backend) -> FastAPI:
             raise HTTPException(422, "Pairing must point to another Source of this Course")
         for col, val in changes.items():  # col comes from SourceEdit's fixed field names
             db.execute(f"UPDATE sources SET {col}=? WHERE id=?", (int(val) if isinstance(val, bool) else val, sid))
-        row = db.execute("SELECT id, name, pages, role, paired_with, excluded FROM sources WHERE id=?", (sid,)).fetchone()
-        return dict(row) | {"excluded": bool(row["excluded"])}
+        return source_json(db.execute(f"SELECT {SOURCE_COLUMNS} FROM sources WHERE id=?", (sid,)).fetchone())
 
     @app.post("/api/courses/{cid}/gates/found")
     def approve_found(cid: int, body: FoundDecision, tasks: BackgroundTasks):
-        course_or_404(cid)
-        require_gate(cid, "found")
-        db.execute("INSERT INTO traces (course_id, step, harness_version, inputs, owner_action) VALUES (?,?,?,?,?)",
-                   (cid, "found_gate", "-", body.model_dump_json(), "approved"))
-        tasks.add_task(lambda: graph.invoke(Command(resume=body.model_dump(mode="json")), thread(cid)))
+        claim(cid, "found")
+        decision = body.model_dump(mode="json")
+        record_owner_action(db, cid, "found", decision, "approved")
+        tasks.add_task(advance, cid, Command(resume=decision))
         return {"ok": True}
 
     @app.get("/api/courses/{cid}/traces")

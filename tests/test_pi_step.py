@@ -59,3 +59,16 @@ def test_assistant_text_reads_pi_json_events():
         {"type": "agent_settled"},
     ]
     assert assistant_text("\n".join(map(json.dumps, events))) == '{"ok": true}'
+
+
+def test_backend_failure_is_traced_and_retried(conn, tmp_path):
+    calls = []
+
+    def backend(step, prompt, files, workdir):
+        calls.append(1)
+        if len(calls) == 1:
+            raise StepFailed("pi exited 1")
+        return '{"text": "x", "readable": true}'
+
+    run_pi_step(conn, backend, "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert [t["error"] for t in traces(conn)][0] == "pi exited 1"

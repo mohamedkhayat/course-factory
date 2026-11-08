@@ -76,3 +76,46 @@ def test_run_resumes_after_restart(data_dir, model, material):
         assert c.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
         assert c.post(f"/api/courses/{cid}/gates/found", json={"goal": "deep"}).status_code == 200
         assert c.get(f"/api/courses/{cid}").json()["goal"] == "deep"
+
+
+def test_failed_run_reports_failure_and_retry_resumes_without_rereading(client, material, model):
+    from course_factory.pi_step import StepFailed
+
+    def flaky(prompt, files):
+        if "TD1_corrige.pdf" in prompt and model.broken:
+            raise StepFailed("pi exited 1")
+        return {"text": "ok", "readable": True}
+
+    model.broken = True
+    model.handlers["read_page"] = flaky
+    cid = start(client, material)
+    run = client.get(f"/api/courses/{cid}/run").json()
+    assert run["status"] == "failed" and "pi exited 1" in run["error"]
+
+    reads_before = sum(1 for s, _ in model.calls if s == "read_page")
+    model.broken = False
+    assert client.post(f"/api/courses/{cid}/run/retry").status_code == 200
+    run = client.get(f"/api/courses/{cid}/run").json()
+    assert run["gate"] == "found" and run["error"] is None
+    assert sum(1 for s, _ in model.calls if s == "read_page") - reads_before == 3  # failed page + cours.pdf x2; TD1.pdf, read before the failure, is not reread
+    assert len(client.get(f"/api/courses/{cid}/found").json()["sources"]) == 4  # import not duplicated
+
+
+def test_run_reports_reading_progress(client, material):
+    cid = start(client, material)
+    run = client.get(f"/api/courses/{cid}/run").json()
+    assert run["pages_read"] == run["pages_total"] == 4
+
+
+def test_second_approval_is_rejected(client, material):
+    cid = start(client, material)
+    assert client.post(f"/api/courses/{cid}/gates/found", json={"goal": "deep"}).status_code == 200
+    assert client.post(f"/api/courses/{cid}/gates/found", json={"goal": "deep"}).status_code == 409
+
+
+def test_null_role_or_exclusion_is_rejected_but_unpairing_works(client, material):
+    cid = start(client, material)
+    td = next(s for s in client.get(f"/api/courses/{cid}/found").json()["sources"] if s["name"] == "TD1.pdf")
+    assert client.patch(f"/api/courses/{cid}/sources/{td['id']}", json={"excluded": None}).status_code == 422
+    assert client.patch(f"/api/courses/{cid}/sources/{td['id']}", json={"role": None}).status_code == 422
+    assert client.patch(f"/api/courses/{cid}/sources/{td['id']}", json={"paired_with": None}).json()["paired_with"] is None

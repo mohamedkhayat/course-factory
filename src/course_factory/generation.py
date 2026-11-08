@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from .pi_step import Backend, run_pi_step
 
+Gate = Literal["found", "outline"]
 Role = Literal["course notes", "exercise sheet", "lab", "past exam", "correction", "personal notes", "data"]
 DATA_SUFFIXES = {".csv", ".txt", ".json", ".xlsx", ".npy", ".mat", ".dat"}
 
@@ -51,7 +52,8 @@ def build_graph(db: sqlite3.Connection, backend: Backend, data_dir: Path, checkp
             shutil.copy2(f, dest / rel)
             pages = len(pdfium.PdfDocument(str(f))) if f.suffix.lower() == ".pdf" else 0
             role = "data" if f.suffix.lower() in DATA_SUFFIXES else None
-            db.execute("INSERT INTO sources (course_id, name, path, pages, role) VALUES (?,?,?,?,?)",
+            # data files have no pages to read, so their Role is known without the model
+            db.execute("INSERT OR IGNORE INTO sources (course_id, name, path, pages, role) VALUES (?,?,?,?,?)",
                        (cid, rel.as_posix(), str(dest / rel), pages, role))
         return {}
 
@@ -68,10 +70,10 @@ def build_graph(db: sqlite3.Connection, backend: Backend, data_dir: Path, checkp
                     continue
                 img = img_dir / f"{src['id']}-{n}.png"
                 pdf[n - 1].render(scale=2).to_pil().save(img)
-                r = run_pi_step(db, backend, "read_page", {"source": src["name"], "page": str(n)}, PageReading,
-                                img_dir, [img], course_id=cid)
+                reading = run_pi_step(db, backend, "read_page", {"source": src["name"], "page": str(n)}, PageReading,
+                                      img_dir, (img,), course_id=cid)
                 db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable) VALUES (?,?,?,?,?)",
-                           (src["id"], n, str(img), r.text, int(r.readable)))
+                           (src["id"], n, str(img), reading.text, int(reading.readable)))
         return {}
 
     def propose_roles(state: RunState):
@@ -118,7 +120,9 @@ def thread(course_id: int) -> RunnableConfig:
     return {"configurable": {"thread_id": f"course-{course_id}"}}
 
 
-def run_status(graph, course_id: int) -> dict:
+def run_status(graph, course_id: int, error: str | None = None) -> dict:
+    if error:
+        return {"status": "failed", "gate": None, "error": error}
     snap = graph.get_state(thread(course_id))
     if snap.interrupts:
         return {"status": "waiting", "gate": snap.interrupts[0].value["gate"]}

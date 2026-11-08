@@ -50,22 +50,28 @@ def parse_json(text: str) -> object:
 
 def run_pi_step[T: BaseModel](
     db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, schema: type[T],
-    workdir: Path, files: list[Path] = [], course_id: int | None = None,
+    workdir: Path, files: tuple[Path, ...] = (), course_id: int | None = None,
 ) -> T:
     version, prompt = harness_version(), render_prompt(step, inputs)
     error = "no attempt"
     for _ in range(ATTEMPTS):
         raw = None
         try:
-            raw = backend(step, prompt, files, workdir)
+            raw = backend(step, prompt, list(files), workdir)
             result = schema.model_validate(parse_json(raw))
-        except (ValidationError, json.JSONDecodeError) as e:
+        except (ValidationError, json.JSONDecodeError, StepFailed, subprocess.TimeoutExpired, OSError) as e:
             error = str(e)[:2000]
             _trace(db, course_id, step, version, inputs, files, raw, error)
             continue
         _trace(db, course_id, step, version, inputs, files, result.model_dump_json(), None)
         return result
     raise StepFailed(f"{step}: {error}")
+
+
+def record_owner_action(db: sqlite3.Connection, course_id: int, gate: str, decision: dict, action: str) -> None:
+    """A Trace for what the owner did at an Approval Gate."""
+    db.execute("INSERT INTO traces (course_id, step, harness_version, inputs, owner_action) VALUES (?,?,?,?,?)",
+               (course_id, f"{gate}_gate", harness_version(), json.dumps(decision, ensure_ascii=False), action))
 
 
 def _trace(db, course_id, step, version, inputs, files, output, error):

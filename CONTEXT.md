@@ -124,6 +124,10 @@ _Avoid_: checkpoint, review step
 Everything that shapes the local model's work apart from its weights: prompts, skills, tool guidance and checks. It is versioned as a whole.
 _Avoid_: prompts, config
 
+**Model step**:
+One call to the local model for one job, such as reading a page or proposing Roles. Every Model step writes a Trace.
+_Avoid_: step (that is a Lab Step), call, job
+
 **Trace**:
 The record of one model step: the Harness version, inputs, output, check results, and what the owner did with it.
 _Avoid_: log, event

@@ -4,12 +4,13 @@ from pathlib import Path
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS courses (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL,
-  goal TEXT, exam_date TEXT
+  goal TEXT, exam_date TEXT, run_error TEXT
 );
 CREATE TABLE IF NOT EXISTS sources (
   id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id),
   name TEXT NOT NULL, path TEXT NOT NULL, pages INTEGER NOT NULL DEFAULT 0,
-  role TEXT, paired_with INTEGER REFERENCES sources(id), excluded INTEGER NOT NULL DEFAULT 0
+  role TEXT, paired_with INTEGER REFERENCES sources(id), excluded INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (course_id, name)
 );
 CREATE TABLE IF NOT EXISTS pages (
   source_id INTEGER NOT NULL REFERENCES sources(id), n INTEGER NOT NULL,
