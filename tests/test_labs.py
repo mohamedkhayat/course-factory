@@ -21,7 +21,7 @@ def lab(client, with_tp, model):
 
 
 def run(client, cid, lab_id, code):
-    with client.websocket_connect(f"/api/courses/{cid}/labs/{lab_id}/run") as ws:
+    with client.websocket_connect(f"ws://127.0.0.1:8765/api/courses/{cid}/labs/{lab_id}/run") as ws:
         ws.send_json({"code": code})
         outputs = []
         while "done" not in (m := ws.receive_json()):

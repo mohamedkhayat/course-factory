@@ -71,9 +71,9 @@ def test_cram_needs_exam_date(client, material):
 
 
 def test_run_resumes_after_restart(data_dir, model, material):
-    with TestClient(create_app(data_dir, model, FakeSearch())) as c:
+    with TestClient(create_app(data_dir, model, FakeSearch()), base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as c:
         cid = start(c, material)
-    with TestClient(create_app(data_dir, model, FakeSearch())) as c:
+    with TestClient(create_app(data_dir, model, FakeSearch()), base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as c:
         assert c.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
         assert c.post(f"/api/courses/{cid}/gates/found", json={"goal": "deep"}).status_code == 200
         assert c.get(f"/api/courses/{cid}").json()["goal"] == "deep"

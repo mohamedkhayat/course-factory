@@ -1,13 +1,16 @@
 import datetime as dt
 import json
+import re
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+import pypdfium2 as pdfium
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
@@ -15,7 +18,7 @@ from pydantic import BaseModel, model_validator
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
-from . import components, grading, labs, learner, tutor
+from . import components, grading, ingest, labs, learner, pairing, tutor
 from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
@@ -184,6 +187,34 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         db.execute("UPDATE courses SET run_error=NULL WHERE id=?", (cid,))
         tasks.add_task(advance, cid, None)
         return {"ok": True}
+
+    def read_and_index(cid: int):
+        try:
+            ingest.read_pages(ctx, cid)  # only the new pages: reading is resumable
+            searchm.index_course(db, ctx.search, cid)
+        except Exception:
+            pass  # the Trace has it; the next upload retries the unread pages
+
+    @app.post("/api/courses/{cid}/sources", status_code=201)
+    def upload_notes(cid: int, tasks: BackgroundTasks, file: UploadFile = File(...)):
+        """A PDF of the owner's notes (from the tablet) becomes a new "personal notes" Source, then is read and indexed."""
+        course_or_404(cid)
+        data = file.file.read(grading.MAX_UPLOAD + 1)
+        if len(data) > grading.MAX_UPLOAD:
+            raise HTTPException(413, "file too large")
+        try:
+            pages = len(pdfium.PdfDocument(data))
+        except pdfium.PdfiumError:
+            raise HTTPException(422, "send a readable PDF")
+        stem = re.sub(r"[^\w.-]+", "_", Path(file.filename or "notes").stem)[:60] or "notes"
+        name = f"notes/{stem}-{uuid.uuid4().hex[:6]}.pdf"
+        path = ctx.course_dir(cid) / "sources" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        sid = db.execute("INSERT INTO sources (course_id, name, path, pages, role) VALUES (?,?,?,?,'personal notes')",
+                         (cid, name, str(path), pages)).lastrowid
+        tasks.add_task(read_and_index, cid)
+        return source_json(db.execute(f"SELECT {SOURCE_COLUMNS} FROM sources WHERE id=?", (sid,)).fetchone())
 
     @app.get("/api/courses/{cid}/found")
     def get_found(cid: int):
@@ -401,6 +432,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         learner.unlock_exam_cards(ctx, cid, row["exam_id"])
         return exm.copy_json(ctx, copy_or_404(cid, copy_id))
 
+    app.include_router(pairing.router(db))
+    app.add_middleware(pairing.PairingGuard, db=db)
     app.include_router(components.router(ctx))
     app.include_router(learner.router(ctx))
     app.include_router(tutor.router(ctx))

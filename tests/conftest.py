@@ -152,5 +152,6 @@ def data_dir(tmp_path):
 
 @pytest.fixture
 def client(data_dir, model):
-    with TestClient(create_app(data_dir, model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher())) as c:
+    with TestClient(create_app(data_dir, model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher()),
+                    base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as c:
         yield c
