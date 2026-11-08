@@ -2,6 +2,7 @@ import datetime as dt
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -12,7 +13,8 @@ from pydantic import BaseModel, model_validator
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
-from . import grading, learner, tutor
+from . import grading, labs, learner, tutor
+from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
@@ -80,12 +82,24 @@ def source_json(row: sqlite3.Row) -> dict:
     return dict(row) | {"excluded": bool(row["excluded"])}
 
 
-def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchModels | None = None) -> FastAPI:
+def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchModels | None = None,
+               labs_launcher: Callable[[int], Launcher] | None = None) -> FastAPI:
     data_dir.mkdir(parents=True, exist_ok=True)
     db = dbm.connect(data_dir / "course-factory.db")
     models = search_models or searchm.LocalSearchModels()
     searchm.setup(db, models.dim)
     ctx = Ctx(db, backend, data_dir, models)
+    app_labs = labs.router(ctx)  # creates the Lab tables the launcher below reads
+
+    def docker_launcher(cid: int) -> Launcher:
+        """The Course's pinned Lab Environment: the image id is fixed the first time a Lab runs."""
+        row = db.execute("SELECT image FROM lab_envs WHERE course_id=?", (cid,)).fetchone()
+        if row is None:
+            db.execute("INSERT OR IGNORE INTO lab_envs VALUES (?,?)", (cid, lab_image()))
+            row = db.execute("SELECT image FROM lab_envs WHERE course_id=?", (cid,)).fetchone()
+        return DockerLauncher(row["image"])
+
+    ctx.labs_launcher = labs_launcher or docker_launcher
     graph = build_graph(ctx, sqlite3.connect(data_dir / "langgraph.db", check_same_thread=False))
     app = FastAPI(title="course-factory")
     advancing: set[int] = set()  # Courses whose Run is executing right now
@@ -368,4 +382,5 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     app.include_router(learner.router(ctx))
     app.include_router(tutor.router(ctx))
     app.include_router(grading.router(ctx))
+    app.include_router(app_labs)
     return app

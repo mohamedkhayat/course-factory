@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from course_factory.app import create_app
+from course_factory.kernels import LocalLauncher
 
 
 def make_pdf(path: Path, pages: int) -> None:
@@ -13,6 +14,17 @@ def make_pdf(path: Path, pages: int) -> None:
     for _ in range(pages):
         pdf.new_page(595, 842)
     pdf.save(str(path))
+
+
+LAB = {"title": "TP1 : descente de gradient", "intro": "On implémente la descente de gradient.", "chapters": ["Méthodes de descente"],
+       "steps": [
+           {"statement": "Définir $f(x)=x^2$.", "starter": "def f(x):\n    pass", "solution": "def f(x):\n    return x**2",
+            "check": "assert f(3) == 9, 'f(3) should be 9'", "hints": ["Use **.", "return x**2"], "wrong": ["def f(x):\n    return 2*x"]},
+           {"statement": "Lire data/data.csv et poser y = somme des x + 2.", "starter": "y = None",
+            "solution": "import csv\ny = sum(int(r['x']) for r in csv.DictReader(open('data/data.csv'))) + 2",
+            "check": "assert True", "hints": [], "wrong": ["y = 2"]},  # too weak: repaired
+           {"statement": "Impossible.", "starter": "z = None", "solution": "z = 1/0", "check": "assert z == 1", "hints": [],
+            "wrong": ["z = 2"]}]}  # the Solution itself fails: left out
 
 
 class FakeModel:
@@ -36,6 +48,9 @@ class FakeModel:
             "derive_scheme": lambda prompt, files: {"scheme": [{"step": "Poser le pas", "points": 1}, {"step": "Calculer", "points": 1}]},
             "transcribe_copy": lambda prompt, files: {"text": f"écrit à la main ({len(files)} images)"},
             "grade_answer": self._grade,
+            "build_lab": lambda prompt, files: LAB,
+            "repair_lab_step": lambda prompt, files: {"step": {**json.loads(prompt.split("STEP:", 1)[1]),
+                                                               "check": "assert y == 3, 'y should be 3'"}},
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
             "rebuild_past_paper": lambda prompt, files: {
                 "title": "Examen 2024", "duration_min": 120, "chapters": ["Convexité", "Inconnu"], "questions": [
@@ -74,7 +89,8 @@ class FakeModel:
 
     def _roles(self, prompt, files):
         roles = {"TD1.pdf": ("exercise sheet", "TD1_corrige.pdf"), "TD1_corrige.pdf": ("correction", None),
-                 "examen_2024.pdf": ("past exam", "examen_2024_corrige.pdf"), "examen_2024_corrige.pdf": ("correction", None)}
+                 "examen_2024.pdf": ("past exam", "examen_2024_corrige.pdf"), "examen_2024_corrige.pdf": ("correction", None),
+                 "TP1.pdf": ("lab", None), "TP2.ipynb": ("lab", None), "data.csv": ("data", None)}
         names = json.loads(prompt.split("SOURCES:", 1)[1])
         return {"sources": [{"name": s["name"], "role": roles.get(s["name"], ("course notes", None))[0],
                              "paired_with": roles.get(s["name"], (None, None))[1]} for s in names]}
@@ -135,5 +151,5 @@ def data_dir(tmp_path):
 
 @pytest.fixture
 def client(data_dir, model):
-    with TestClient(create_app(data_dir, model, FakeSearch())) as c:
+    with TestClient(create_app(data_dir, model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher())) as c:
         yield c
