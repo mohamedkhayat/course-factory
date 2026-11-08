@@ -86,6 +86,7 @@ def test_every_card_comes_due_before_the_exam(client, material, model, clock):
     client.put(f"/api/courses/{cid}/place", json={"section_id": sections[0]["id"]})
     card = client.get(f"/api/courses/{cid}/cards/due").json()[0]
     eve = dt.datetime(2027, 1, 14, 8, 0).astimezone()
+    due = clock["now"]
     for _ in range(8):  # always "Facile": FSRS alone would push it months out
         due = dt.datetime.fromisoformat(client.post(f"/api/courses/{cid}/cards/{card['id']}/review", json={"rating": "Facile"}).json()["due"])
         assert due <= eve
