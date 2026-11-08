@@ -20,6 +20,7 @@ class FakeModel:
 
     def __init__(self):
         self.calls: list[tuple[str, list[Path]]] = []
+        self.prompts: list[tuple[str, str]] = []
         self.handlers = {
             "read_page": lambda prompt, files: {"text": f"page text of {files[0].name}", "readable": True},
             "propose_roles": self._roles,
@@ -29,7 +30,26 @@ class FakeModel:
                 {"title": "Méthodes de descente", "exam_hits": 1, "sections": [
                     {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}]},
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
+            "write_section": self._section,
+            "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
+            "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
         }
+
+    @staticmethod
+    def section_of(prompt: str) -> str:
+        return prompt.rsplit("SECTION: ", 1)[1].strip()
+
+    @staticmethod
+    def pages_of(prompt: str) -> list[dict]:
+        return json.loads(prompt.split("PAGES:", 1)[1].rsplit("\nSECTION: ", 1)[0])
+
+    def _section(self, prompt, files):
+        page = self.pages_of(prompt)[0]
+        return {"blocks": [
+            {"component": "theorem_box", "origin": "from_source", "citations": [{"source": page["source"], "page": page["page"]}],
+             "data": {"kind": "definition", "title": self.section_of(prompt), "statement": "Un ensemble est convexe si..."}},
+            {"component": "quiz", "origin": "model_added", "data": {"questions": [
+                {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}]}
 
     def _roles(self, prompt, files):
         roles = {"TD1.pdf": ("exercise sheet", "TD1_corrige.pdf"), "TD1_corrige.pdf": ("correction", None)}
@@ -39,6 +59,7 @@ class FakeModel:
 
     def __call__(self, step, prompt, files, workdir):
         self.calls.append((step, files))
+        self.prompts.append((step, prompt))
         out = self.handlers[step](prompt, files)
         return out if isinstance(out, str) else json.dumps(out)
 

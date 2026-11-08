@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -8,9 +9,11 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
+from . import chapters as chm
 from . import db as dbm
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
+from .checks import check_blocks
 from .generation import build_graph, run_status, thread
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import Backend, record_owner_action
@@ -57,6 +60,14 @@ class OutlineEdit(BaseModel):
 
 class GoalChange(FoundDecision):
     pass
+
+
+class BlockEdit(BaseModel):
+    data: dict
+
+
+class RegenerateNote(BaseModel):
+    note: str
 
 
 def source_json(row: sqlite3.Row) -> dict:
@@ -204,5 +215,84 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     def get_traces(cid: int):
         course_or_404(cid)
         return [dict(r) for r in db.execute("SELECT * FROM traces WHERE course_id=? ORDER BY id", (cid,))]
+
+    def chapter_or_404(cid: int, chid: int) -> sqlite3.Row:
+        row = db.execute("SELECT * FROM chapters WHERE id=? AND course_id=?", (chid, cid)).fetchone()
+        if row is None:
+            raise HTTPException(404, "no such Chapter")
+        return row
+
+    def block_or_404(cid: int, bid: int) -> sqlite3.Row:
+        row = db.execute("SELECT b.*, c.status chapter_status, s.pages section_pages FROM blocks b JOIN sections s ON s.id=b.section_id "
+                         "JOIN chapters c ON c.id=s.chapter_id WHERE b.id=? AND c.course_id=?", (bid, cid)).fetchone()
+        if row is None:
+            raise HTTPException(404, "no such Block")
+        if row["chapter_status"] not in ("in_review", "published"):
+            raise HTTPException(409, "the Block's Chapter is still generating")
+        return row
+
+    def save_block(bid: int, block: dict, flags: dict):
+        db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=? WHERE id=?",
+                   (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
+                    block["origin"], "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False), bid))
+        return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
+
+    @app.get("/api/courses/{cid}/chapters/{chid}")
+    def get_chapter(cid: int, chid: int):
+        chapter_or_404(cid, chid)
+        return chm.load_chapter(ctx, chid)
+
+    @app.get("/api/courses/{cid}/review")
+    def review_list(cid: int):
+        """Chapters waiting for review, flagged Blocks first."""
+        course_or_404(cid)
+        out = []
+        for ch in db.execute("SELECT id FROM chapters WHERE course_id=? AND status='in_review' ORDER BY position", (cid,)):
+            chapter = chm.load_chapter(ctx, ch["id"])
+            blocks = [b | {"section": s["title"]} for s in chapter["sections"] for b in s["blocks"]]
+            out.append({"id": chapter["id"], "title": chapter["title"],
+                        "blocks": sorted(blocks, key=lambda b: (b["status"] != "flagged", not b["flags"]))})
+        return out
+
+    @app.put("/api/courses/{cid}/blocks/{bid}")
+    def edit_block(cid: int, bid: int, body: BlockEdit):
+        row = block_or_404(cid, bid)
+        draft = {"component": row["component"], "data": body.data, "citations": json.loads(row["citations"]), "origin": row["origin"]}
+        (block,), (errors,) = check_blocks([draft], chm.source_pages(ctx, cid))
+        if errors:
+            raise HTTPException(422, {"errors": errors})
+        record_owner_action(db, cid, "chapter_review", {"block": bid, "data": body.data}, "edited")
+        return save_block(bid, block, {"errors": [], "warnings": []})
+
+    @app.post("/api/courses/{cid}/blocks/{bid}/approve")
+    def approve_block(cid: int, bid: int):
+        block_or_404(cid, bid)
+        record_owner_action(db, cid, "chapter_review", {"block": bid}, "approved")
+        db.execute("UPDATE blocks SET status='ok' WHERE id=?", (bid,))
+        return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
+
+    @app.post("/api/courses/{cid}/blocks/{bid}/regenerate")
+    def regenerate_block(cid: int, bid: int, body: RegenerateNote):
+        row = block_or_404(cid, bid)
+        record_owner_action(db, cid, "chapter_review", {"block": bid, "note": body.note}, "regenerated")
+        current = chm.block_json(row)
+        pages = chm.page_texts(ctx, cid, json.loads(row["section_pages"]))
+        block, flags = chm.checked_block(ctx, cid, current, pages, note=body.note)
+        return save_block(bid, block, flags)
+
+    @app.post("/api/courses/{cid}/chapters/{chid}/publish")
+    def publish_chapter(cid: int, chid: int):
+        if chapter_or_404(cid, chid)["status"] != "in_review":
+            raise HTTPException(409, "only a Chapter under review can be published")
+        record_owner_action(db, cid, "chapter_review", {"chapter": chid}, "published")
+        db.execute("UPDATE chapters SET status='published' WHERE id=?", (chid,))
+        return {"ok": True}
+
+    @app.get("/api/courses/{cid}/reader")
+    def reader(cid: int):
+        """What the learner can read: published Chapters only, in course order."""
+        course_or_404(cid)
+        return [chm.load_chapter(ctx, r["id"]) for r in db.execute(
+            "SELECT id FROM chapters WHERE course_id=? AND status='published' ORDER BY position", (cid,))]
 
     return app

@@ -8,7 +8,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import ingest, outline, search
+from . import chapters, ingest, outline, search
 from .context import Ctx
 
 
@@ -35,11 +35,6 @@ def build_graph(ctx: Ctx, langgraph_db: sqlite3.Connection):
         interrupt({"gate": "outline"})
         return {}
 
-    def chapter_review(state: RunState):
-        # shortcut: Chapter generation is the next slice; the Run parks here until it exists.
-        interrupt({"gate": "chapter_review"})
-        return {}
-
     steps = [
         ("import_sources", node(ingest.import_sources)),
         ("read_pages", node(ingest.read_pages)),
@@ -48,7 +43,7 @@ def build_graph(ctx: Ctx, langgraph_db: sqlite3.Connection):
         ("index_passages", node(lambda c, cid: search.index_course(c.db, c.search, cid))),
         ("propose_outline", node(outline.propose_outline)),
         ("outline_gate", outline_gate),
-        ("chapter_review", chapter_review),
+        ("generate_chapters", node(chapters.generate_chapters)),
     ]
     g = StateGraph(RunState)
     for name, fn in steps:
