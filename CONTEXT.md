@@ -17,8 +17,16 @@ An ordered part of a Chapter, made of an ordered list of Blocks.
 _Avoid_: page, lesson, topic
 
 **Block**:
-One use of a component inside a Section: which component it is, the content it shows as data, and citations to the source pages that content came from.
+One use of a Component inside a Section: which Component, its content as data that fits that Component's shape, and citations to the source pages. A Block holds no code and never contains another Block.
 _Avoid_: widget, card, element
+
+**Component**:
+A reusable piece of course UI, such as a theorem box or a quiz, that declares the shape of content it accepts. Components are code; Blocks are data.
+_Avoid_: widget, template
+
+**Prose Block**:
+The escape hatch: a Block of free Markdown with math, used when no Component fits the content.
+_Avoid_: raw block, HTML block
 
 **Exam**:
 A timed paper at Course level that lists the Chapters it covers. It is not inside a Chapter.
