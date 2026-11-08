@@ -40,6 +40,10 @@ _Avoid_: type, category
 The link between a Source and the Source holding its correction, such as a TD and its corrigé.
 _Avoid_: match, link
 
+**Passage**:
+A searchable piece of one page's transcription. Every Passage belongs to exactly one page, so a search hit is already a Citation.
+_Avoid_: chunk, snippet, document
+
 **Citation**:
 A pointer from a Block to an exact place in the source material: a file, a page, and optionally a short quote.
 _Avoid_: reference, source link
