@@ -41,7 +41,7 @@ function Graph({ fns, range }: { fns: { f: (x: number) => number; label: string 
       {fns.length > 1 && (
         <figcaption className="flex flex-wrap gap-4 text-sm">
           {fns.map((f, i) => (
-            <span key={i} className="flex items-center gap-1.5"><span className="h-0.5 w-4" style={{ background: COLORS[i % 4] }} />{f.label}</span>
+            <span key={i} className="flex items-center gap-1.5"><span className="h-0.5 w-4" style={{ background: COLORS[i % 4] }} />{f.label && <MdLine>{f.label}</MdLine>}</span>
           ))}
         </figcaption>
       )}

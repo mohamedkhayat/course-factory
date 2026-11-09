@@ -184,7 +184,8 @@ function Diagram({ data }: P) {
   useEffect(() => {
     import("mermaid").then(({ default: mermaid }) => {
       mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
-      return mermaid.render(id, data.mermaid);
+      // mermaid renders math only between $$; the model writes single $
+      return mermaid.render(id, data.mermaid.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, "$$$$$1$$$$"));
     }).then((r) => setSvg(r.svg)).catch(() => setSvg(""));
   }, [data.mermaid, id, dark]);
   return (
