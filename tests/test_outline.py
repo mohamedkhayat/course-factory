@@ -18,12 +18,12 @@ def worded_pages(model):
         "text": next(v for k, v in words.items() if f"SOURCE: {k}" in prompt), "readable": True}
 
 
-def test_found_approval_leads_to_outline_gate_with_exam_weight(client, material, model):
+def test_found_approval_leads_to_outline_gate(client, material, model):
     cid = to_outline_gate(client, material, model)
     assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "outline"
     chapters = client.get(f"/api/courses/{cid}/outline").json()["chapters"]
     assert [c["title"] for c in chapters] == ["Convexité", "Méthodes de descente"]
-    assert [c["exam_weight"] for c in chapters] == [0.75, 0.25]
+    assert [c["exam_weight"] for c in chapters] == [0, 0]  # known once the past papers are rebuilt
     assert all(c["priority"] == "normal" for c in chapters)
     # references to unknown Sources or pages past the end are dropped
     assert chapters[0]["sections"][0]["pages"] == [{"source": "cours.pdf", "page": 1}]
@@ -48,9 +48,9 @@ def test_search_finds_cited_page_and_skips_excluded(client, material, model, wor
 def test_owner_edits_outline_then_approves(client, material, model):
     cid = to_outline_gate(client, material, model)
     edited = {"chapters": [
-        {"title": "Méthodes de descente", "priority": "focus", "exam_hits": 1,
+        {"title": "Méthodes de descente", "priority": "focus",
          "sections": [{"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}]}]},
-        {"title": "Convexité", "priority": "skip", "exam_hits": 3, "sections": []}]}
+        {"title": "Convexité", "priority": "skip", "sections": []}]}
     r = client.put(f"/api/courses/{cid}/outline", json=edited)
     assert r.status_code == 200, r.text
     chapters = r.json()["chapters"]

@@ -2,10 +2,10 @@ You are writing Mock exam number {{number}} for a course, in the style of its pa
 
 Language: {{language}}
 
-Statements and model answers are Markdown with $inline$ and $$display$$ KaTeX. Give each question its points and a Marking scheme whose points add up to the question's points.
+Statements and model answers are Markdown with $inline$ and $$display$$ KaTeX. Give each question the Chapter it tests ("chapter", its exact title), its points and a Marking scheme whose points add up to the question's points.
 
 Answer with only this JSON object:
-{"title": "...", "duration_min": 90, "chapters": ["<chapter title>"], "questions": [{"statement": "...", "points": 4, "model_answer": "...", "scheme": [{"step": "...", "points": 2}]}]}
+{"title": "...", "duration_min": 90, "chapters": ["<chapter title>"], "questions": [{"statement": "...", "points": 4, "model_answer": "...", "chapter": "<chapter title>", "scheme": [{"step": "...", "points": 2}]}]}
 
 The Chapters with their Exam Weight:
 CHAPTERS:{{chapters}}

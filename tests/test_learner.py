@@ -105,6 +105,16 @@ def test_sat_exam_questions_become_cards(client, material, model):
     assert fronts == ["Appliquer le gradient."]
 
 
+def test_questions_unlock_once_their_chapter_is_read(client, material, model):
+    cid, _ = published(client, material, model)
+    descente = next(c for c in client.get(f"/api/courses/{cid}/reader").json() if c["title"] == "Méthodes de descente")
+    fronts = lambda: [c["front"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]
+    client.put(f"/api/courses/{cid}/place", json={"section_id": descente["sections"][0]["id"]})
+    assert "Appliquer le gradient." not in fronts()  # half the Chapter read
+    client.put(f"/api/courses/{cid}/place", json={"section_id": descente["sections"][1]["id"]})
+    assert fronts().count("Appliquer le gradient.") == 2  # one per Mock exam
+
+
 def test_focus_session_counts_active_time_and_only_with_an_action(client, material, model, clock):
     cid, sections = published(client, material, model)
     empty = client.post("/api/focus", json={"course_id": cid}).json()
@@ -123,6 +133,7 @@ def test_focus_session_counts_active_time_and_only_with_an_action(client, materi
     st = client.get(f"/api/stats?course_id={cid}").json()
     assert st["today_sessions"] == 1 and st["daily_goal"] == 4 and st["streak"] == 1
     assert st["exam_countdown_days"] == (dt.date(2027, 1, 15) - learner.today()).days
+    assert sum(st["heatmap"].values()) == 5  # the empty Session's 10 minutes don't count
     first_chapter = next(c for c in chapters(client, cid).values() if c["sections"][0]["id"] == sections[0]["id"])
     assert st["minutes_per_chapter"] == {str(first_chapter["id"]): 5}
     assert sum(st["heatmap"].values()) == 5

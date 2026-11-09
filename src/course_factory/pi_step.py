@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -115,15 +116,15 @@ def run_pi_step[T: BaseModel](
     version, prompt = harness_version(), render_prompt(step, inputs)
     error = "no attempt"
     for _ in range(ATTEMPTS):
-        raw = None
+        raw, start = None, time.monotonic()
         try:
             raw = call_backend(backend, step, prompt, list(files), workdir, live)
             result = schema.model_validate(parse_json(raw))
         except (ValidationError, json.JSONDecodeError, StepFailed, subprocess.TimeoutExpired, OSError) as e:
             error = str(e)[:2000]
-            _trace(db, course_id, step, version, inputs, files, raw, error)
+            _trace(db, course_id, step, version, inputs, files, raw, error, start)
             continue
-        _trace(db, course_id, step, version, inputs, files, result.model_dump_json(), None)
+        _trace(db, course_id, step, version, inputs, files, result.model_dump_json(), None, start)
         return result
     raise StepFailed(f"{step}: {error}")
 
@@ -131,7 +132,7 @@ def run_pi_step[T: BaseModel](
 def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, workdir: Path,
                    files: tuple[Path, ...] = (), course_id: int | None = None) -> Iterator[str]:
     """Live work with a free-text answer: yields text chunks as they arrive, then writes one Trace."""
-    version, prompt, chunks = harness_version(), render_prompt(step, inputs), []
+    version, prompt, chunks, start = harness_version(), render_prompt(step, inputs), [], time.monotonic()
     stream = getattr(backend, "stream", None)
     try:
         for _ in range(QUEUE_RETRIES):
@@ -146,9 +147,9 @@ def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: 
         else:
             raise StepFailed(f"{step}: no lane after {QUEUE_RETRIES} waits")
     except Exception as e:
-        _trace(db, course_id, step, version, inputs, files, "".join(chunks) or None, str(e)[:2000])
+        _trace(db, course_id, step, version, inputs, files, "".join(chunks) or None, str(e)[:2000], start)
         raise
-    _trace(db, course_id, step, version, inputs, files, "".join(chunks), None)
+    _trace(db, course_id, step, version, inputs, files, "".join(chunks), None, start)
 
 
 def record_owner_action(db: sqlite3.Connection, course_id: int, gate: str, decision: dict, action: str) -> None:
@@ -157,11 +158,26 @@ def record_owner_action(db: sqlite3.Connection, course_id: int, gate: str, decis
                (course_id, f"{gate}_gate", harness_version(), json.dumps(decision, ensure_ascii=False), action))
 
 
-def _trace(db, course_id, step, version, inputs, files, output, error):
-    db.execute(
-        "INSERT INTO traces (course_id, step, harness_version, inputs, output, error) VALUES (?,?,?,?,?,?)",
-        (course_id, step, version, json.dumps({**inputs, "files": [str(f) for f in files]}, ensure_ascii=False), output, error),
-    )
+_last = threading.local()
+
+
+def last_trace_id() -> int | None:
+    """The Trace this thread's last model step wrote, to attach its check results to."""
+    return getattr(_last, "id", None)
+
+
+def attach_checks(db: sqlite3.Connection, trace_id: int | None, checks) -> None:
+    """Stores what the checks found in a step's output (errors, warnings, proofs) on its Trace."""
+    if trace_id is not None:
+        db.execute("UPDATE traces SET checks=? WHERE id=?", (json.dumps(checks, ensure_ascii=False), trace_id))
+
+
+def _trace(db, course_id, step, version, inputs, files, output, error, start):
+    _last.id = db.execute(
+        "INSERT INTO traces (course_id, step, harness_version, inputs, output, error, duration_ms) VALUES (?,?,?,?,?,?,?)",
+        (course_id, step, version, json.dumps({**inputs, "files": [str(f) for f in files]}, ensure_ascii=False), output, error,
+         int((time.monotonic() - start) * 1000)),
+    ).lastrowid
 
 
 class PiBackend:

@@ -14,7 +14,7 @@ from .chapters import LANGUAGE_RULE, page_texts
 from .context import Ctx
 from .kernels import Kernel
 from .learner import record
-from .pi_step import StepFailed, run_pi_step
+from .pi_step import StepFailed, attach_checks, last_trace_id, run_pi_step
 
 REPAIRS = 3
 
@@ -96,6 +96,7 @@ def build_labs(ctx: Ctx, cid: int) -> None:
             pages = [{"source": src["name"], "page": 0, "text": "\n\n".join(f"[{c.cell_type}]\n{c.source}" for c in nb.cells)}]
         plan = run_pi_step(db, ctx.backend, "build_lab", {"lab_source": pages, "data_files": data_files, "chapters": titles,
                                                           "language": LANGUAGE_RULE}, LabPlan, ctx.course_dir(cid), course_id=cid)
+        build_trace, proofs = last_trace_id(), []
         workdir, data_dir = lab_dirs(ctx, cid, f"proof-{src['id']}")
         key = f"proof-{cid}-{src['id']}"
         kernel = ctx.kernels.get(key, launcher, workdir, data_dir)
@@ -103,6 +104,7 @@ def build_labs(ctx: Ctx, cid: int) -> None:
             steps, flags, setup = [], [], []
             for n, step in enumerate(plan.steps, 1):
                 errors = prove(kernel, setup, step)
+                proofs.append({"step": n, "errors": errors})
                 for _ in range(REPAIRS):
                     if not errors:
                         break
@@ -113,6 +115,7 @@ def build_labs(ctx: Ctx, cid: int) -> None:
                         errors.append(str(e))
                         break
                     errors = prove(kernel, setup, step)
+                    attach_checks(db, last_trace_id(), {"errors": errors})
                 if errors:
                     flags.append({"step": n, "statement": step.statement, "errors": errors})
                 else:
@@ -120,6 +123,7 @@ def build_labs(ctx: Ctx, cid: int) -> None:
                     setup.append(step.solution)  # later Steps build on this one's reference state; a dropped Step's never runs
         finally:
             ctx.kernels.stop(key)
+            attach_checks(db, build_trace, proofs)
         ids = {r["title"]: r["id"] for r in db.execute("SELECT id, title FROM chapters WHERE course_id=?", (cid,))}
         lab_id = db.execute("INSERT INTO labs (course_id, source_id, title, intro, chapters, flags) VALUES (?,?,?,?,?,?)",
                             (cid, src["id"], plan.title, plan.intro, json.dumps([ids[t] for t in plan.chapters if t in ids]),

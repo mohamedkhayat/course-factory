@@ -36,17 +36,14 @@ def one_block(component, data, origin="model_added", citations=()):
     return [{"component": component, "data": data, "origin": origin, "citations": list(citations)}]
 
 
-def test_cram_generates_by_priority_then_exam_weight_and_skips_skip(client, material, model):
+def test_cram_generates_by_priority_and_skips_skip(client, material, model):
     cid = generate(client, material, model, priorities={"Méthodes de descente": "focus"})
     assert sections_written(model) == [GRADIENT, EXERCICES, CONVEXES]
-    model.prompts.clear()
-    cid = generate(client, material, model)  # equal Priority: Exam Weight 0.75 beats 0.25
-    assert sections_written(model) == [CONVEXES, GRADIENT, EXERCICES]
     model.prompts.clear()
     cid = generate(client, material, model, priorities={"Convexité": "skip"})
     assert sections_written(model) == [GRADIENT, EXERCICES]
     assert chapters(client, cid)["Convexité"]["status"] == "planned"
-    assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "chapter_review"
 
 
 def test_deep_generates_in_course_order(client, material, model):
@@ -207,7 +204,7 @@ def test_resume_regenerates_only_unfinished_chapters(client, material, model):
     assert client.post(f"/api/courses/{cid}/run/retry").status_code == 200
     assert sections_written(model) == [GRADIENT, EXERCICES]
     assert {c["status"] for c in chapters(client, cid).values()} == {"in_review"}
-    assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "chapter_review"
 
 
 def test_run_progress_streams_until_the_run_stops(client, material, model):
@@ -216,3 +213,38 @@ def test_run_progress_streams_until_the_run_stops(client, material, model):
     events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
     assert body.startswith("event: status") and events[-1]["gate"] == "outline"
     assert client.get("/api/courses/999/run/events").status_code == 404
+
+
+def test_run_pauses_at_chapter_review_until_the_last_chapter_is_published(client, material, model):
+    cid = generate(client, material, model)
+    run = client.get(f"/api/courses/{cid}/run").json()
+    assert (run["status"], run["gate"]) == ("waiting", "chapter_review")
+    first, second = client.get(f"/api/courses/{cid}/review").json()
+    assert client.post(f"/api/courses/{cid}/gates/chapter_review").status_code == 409  # Chapters still wait
+    client.post(f"/api/courses/{cid}/chapters/{first['id']}/publish")
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "chapter_review"
+    client.post(f"/api/courses/{cid}/chapters/{second['id']}/publish")
+    assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+
+
+def test_traces_record_check_results_and_durations(client, material, model):
+    cid = generate(client, material, model, blocks=one_block("theorem_box", {"kind": "theorem", "statement": r"$\frac{1}{$"}))
+    traces = client.get(f"/api/courses/{cid}/traces").json()
+    section = next(t for t in traces if t["step"] == "write_section")
+    [check] = json.loads(section["checks"])
+    assert check["block"] == 0 and check["errors"]  # still broken after the repairs
+    repair = next(t for t in traces if t["step"] == "repair_block")
+    assert json.loads(repair["checks"])["errors"]
+    assert all(t["duration_ms"] is not None for t in traces if t["step"] in ("write_section", "read_page"))
+
+
+def test_time_left_comes_from_past_step_timings(client, material, model, data_dir):
+    from course_factory import db as dbm
+    from course_factory.generation import seconds_left
+    cid = to_outline_gate(client, material, model)
+    db = dbm.connect(data_dir / "course-factory.db")
+    db.execute("INSERT INTO traces (course_id, step, harness_version, inputs, duration_ms) VALUES (?,?,?,?,?)",
+               (cid, "write_section", "x", "{}", 3000))
+    db.execute("INSERT INTO traces (course_id, step, harness_version, inputs, duration_ms) VALUES (?,?,?,?,?)",
+               (cid, "repair_block", "x", "{}", 1000))
+    assert seconds_left(db, cid) == 3 * 4  # 3 Sections to write, 4 s each with repairs; no past papers or Labs here

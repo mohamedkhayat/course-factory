@@ -23,7 +23,7 @@ def exam_by_kind(client, cid):
 
 def test_past_paper_rebuilt_from_exam_and_corrige_then_mocks(client, with_exam, model):
     cid = generate(client, with_exam, model)
-    assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "chapter_review"
     prompt = next(p for step, p in model.prompts if step == "rebuild_past_paper")
     assert "examen_2024_corrige.pdf" in prompt.split("CORRECTION:", 1)[1].split("EXAM:", 1)[0]
     assert "examen_2024.pdf" in prompt.split("EXAM:", 1)[1]
@@ -105,3 +105,14 @@ def test_resume_after_failed_mock_keeps_built_exams(client, with_exam, model):
     client.post(f"/api/courses/{cid}/run/retry")
     assert [s for s, _ in model.prompts] == ["write_mock_exam"]
     assert len(exam_by_kind(client, cid)["mock"]) == 2 and len(exam_by_kind(client, cid)["past_paper"]) == 1
+
+
+def test_exam_weight_comes_from_the_past_papers_and_orders_cram(client, with_exam, model):
+    from test_chapters import CONVEXES, EXERCICES, GRADIENT, chapters, sections_written
+    cid = generate(client, with_exam, model)  # 6 points test Convexité, 14 test Méthodes de descente
+    ch = chapters(client, cid)
+    assert (ch["Convexité"]["exam_weight"], ch["Méthodes de descente"]["exam_weight"]) == (0.3, 0.7)
+    assert (ch["Convexité"]["exam_hits"], ch["Méthodes de descente"]["exam_hits"]) == (1, 1)
+    steps = [step for step, _ in model.prompts]
+    assert steps.index("rebuild_past_paper") < steps.index("write_section")
+    assert sections_written(model) == [GRADIENT, EXERCICES, CONVEXES]  # equal Priority: the heavier Chapter first

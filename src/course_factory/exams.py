@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 from .chapters import LANGUAGE_RULE, page_texts
 from .checks import render_errors
 from .context import Ctx
-from .pi_step import run_pi_step
+from .pi_step import attach_checks, last_trace_id, run_pi_step
 
 MOCK_EXAMS = 2
 GRACE_SECONDS = 60  # autosave arriving just after the countdown still counts
@@ -24,6 +24,7 @@ class QuestionPlan(BaseModel):
     points: float = Field(gt=0)
     model_answer: str
     scheme: list[SchemeStep] | None = None
+    chapter: str | None = None  # the Chapter (exact title) the Question tests: Exam Weight comes from these
 
     @model_validator(mode="after")
     def scheme_adds_up(self):
@@ -39,8 +40,8 @@ class ExamPlan(BaseModel):
     questions: list[QuestionPlan] = Field(min_length=1)
 
 
-def build_exams(ctx: Ctx, cid: int) -> None:
-    """Rebuilds each past exam once, then tops Mock exams up to MOCK_EXAMS. Safe to re-run."""
+def rebuild_past_papers(ctx: Ctx, cid: int) -> None:
+    """Rebuilds each past exam once, then sets every Chapter's Exam Weight from them. Safe to re-run."""
     db = ctx.db
     titles = [r["title"] for r in db.execute("SELECT title FROM chapters WHERE course_id=? AND priority!='skip' ORDER BY position", (cid,))]
     for src in db.execute("SELECT * FROM sources WHERE course_id=? AND role='past exam' AND excluded=0 ORDER BY name", (cid,)).fetchall():
@@ -52,6 +53,23 @@ def build_exams(ctx: Ctx, cid: int) -> None:
             "exam": pages_of(ctx, cid, src), "correction": pages_of(ctx, cid, correction) if correction else [],
             "chapters": titles, "language": LANGUAGE_RULE}, ExamPlan, ctx.course_dir(cid), course_id=cid)
         save_exam(ctx, cid, plan, "past_paper", src["id"])
+    set_exam_weights(ctx, cid)
+
+
+def set_exam_weights(ctx: Ctx, cid: int) -> None:
+    """Exam Weight: a Chapter's share of the past papers' points; Exam hits: how many of their Questions test it."""
+    db = ctx.db
+    rows = db.execute("SELECT q.chapter_id, q.points FROM questions q JOIN exams e ON e.id=q.exam_id "
+                      "WHERE e.course_id=? AND e.kind='past_paper'", (cid,)).fetchall()
+    total = sum(r["points"] for r in rows)
+    for ch in db.execute("SELECT id FROM chapters WHERE course_id=?", (cid,)).fetchall():
+        mine = [r["points"] for r in rows if r["chapter_id"] == ch["id"]]
+        db.execute("UPDATE chapters SET exam_hits=?, exam_weight=? WHERE id=?", (len(mine), sum(mine) / total if total else 0.0, ch["id"]))
+
+
+def build_mock_exams(ctx: Ctx, cid: int) -> None:
+    """Tops Mock exams up to MOCK_EXAMS, in the past papers' style. Safe to re-run."""
+    db = ctx.db
     have = db.execute("SELECT COUNT(*) FROM exams WHERE course_id=? AND kind='mock'", (cid,)).fetchone()[0]
     for n in range(have, MOCK_EXAMS):
         past = [load_exam(ctx, e["id"], with_answers=False) for e in db.execute(
@@ -77,9 +95,11 @@ def save_exam(ctx: Ctx, cid: int, plan: ExamPlan, kind: str, source_id: int | No
     assert eid is not None
     questions = [q.model_dump() for q in plan.questions]
     errors = render_errors([{"component": "", "data": q} for q in questions])
+    attach_checks(db, last_trace_id(), {"questions": {str(i): e for i, e in errors.items()}})  # the step that wrote this plan
     for i, q in enumerate(questions):
-        db.execute("INSERT INTO questions (exam_id, position, statement, points, model_answer, scheme, flags) VALUES (?,?,?,?,?,?,?)",
-                   (eid, i, q["statement"], q["points"], q["model_answer"], json.dumps(q["scheme"]), json.dumps(errors.get(i, []))))
+        db.execute("INSERT INTO questions (exam_id, position, statement, points, model_answer, scheme, flags, chapter_id) "
+                   "VALUES (?,?,?,?,?,?,?,?)", (eid, i, q["statement"], q["points"], q["model_answer"], json.dumps(q["scheme"]),
+                                                json.dumps(errors.get(i, [])), ids.get(q["chapter"] or "")))
     return eid
 
 

@@ -8,7 +8,7 @@ from . import components
 from .catalogue import CATALOGUE, describe
 from .checks import check_blocks
 from .context import Ctx
-from .pi_step import StepFailed, run_pi_step
+from .pi_step import StepFailed, attach_checks, last_trace_id, run_pi_step
 
 REPAIRS = 3
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
@@ -59,6 +59,10 @@ def generate_chapters(ctx: Ctx, cid: int) -> None:
         generate_chapter(ctx, cid, chid)
 
 
+def awaiting_review(ctx: Ctx, cid: int) -> int:
+    return ctx.db.execute("SELECT COUNT(*) FROM chapters WHERE course_id=? AND status='in_review'", (cid,)).fetchone()[0]
+
+
 def source_pages(ctx: Ctx, cid: int) -> dict[str, int]:
     return {r["name"]: r["pages"] for r in ctx.db.execute("SELECT name, pages FROM sources WHERE course_id=? AND excluded=0", (cid,))}
 
@@ -83,6 +87,7 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
         draft = run_pi_step(db, ctx.backend, "write_section", {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
             "pages": pages, "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, SectionDraft, ctx.course_dir(cid), course_id=cid)
+        section_trace, checks = last_trace_id(), []
         for raw in draft.proposals:
             try:
                 components.propose(ctx, cid, components.ComponentProposal.model_validate(raw))
@@ -90,10 +95,12 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
                 pass  # a malformed proposal is dropped; Blocks that use it get flagged
         for pos, raw in enumerate(draft.blocks):
             block, flags = checked_block(ctx, cid, raw, pages)
+            checks.append({"block": pos, **flags})
             db.execute("INSERT INTO blocks (section_id, position, component, data, citations, origin, status, flags) VALUES (?,?,?,?,?,?,?,?)",
                        (sec["id"], pos, block["component"], json.dumps(block["data"], ensure_ascii=False),
                         json.dumps(block["citations"], ensure_ascii=False), block["origin"],
                         "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False)))
+        attach_checks(db, section_trace, checks)  # the Blocks' final check results, after any repairs
     db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
 
 
@@ -115,6 +122,7 @@ def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | 
             errors = errors + [str(e)]
             break
         (block,), (errors,) = check_blocks([fixed.block], sources, extra)
+        attach_checks(ctx.db, last_trace_id(), {"errors": errors})
     state_errors, warnings = components.status_flags(ctx.db, block["component"]) if not errors else ([], [])
     errors = errors + state_errors
     if not errors and block["origin"] == "from_source":

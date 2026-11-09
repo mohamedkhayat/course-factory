@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS pages (
 );
 CREATE TABLE IF NOT EXISTS traces (
   id INTEGER PRIMARY KEY, course_id INTEGER, step TEXT NOT NULL, harness_version TEXT NOT NULL,
-  inputs TEXT NOT NULL, output TEXT, error TEXT, owner_action TEXT,
+  inputs TEXT NOT NULL, output TEXT, error TEXT, owner_action TEXT, duration_ms INTEGER, checks TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
@@ -50,6 +50,11 @@ def connect(path: Path) -> sqlite3.Connection:
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
     db.executescript(OUTLINE_SCHEMA)
+    for table, column in [("questions", "chapter_id INTEGER"), ("traces", "duration_ms INTEGER"), ("traces", "checks TEXT")]:  # columns added after a table first shipped
+        try:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+        except sqlite3.OperationalError:
+            pass  # already there
     return db
 
 OUTLINE_SCHEMA = """
@@ -73,7 +78,8 @@ CREATE TABLE IF NOT EXISTS exams (
 );
 CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE, position INTEGER NOT NULL,
-  statement TEXT NOT NULL, points REAL NOT NULL, model_answer TEXT NOT NULL, scheme TEXT, flags TEXT NOT NULL DEFAULT '[]'
+  statement TEXT NOT NULL, points REAL NOT NULL, model_answer TEXT NOT NULL, scheme TEXT, flags TEXT NOT NULL DEFAULT '[]',
+  chapter_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS copies (
   id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL REFERENCES exams(id), started_at TEXT NOT NULL, deadline TEXT NOT NULL,

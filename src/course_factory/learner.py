@@ -131,14 +131,21 @@ def add_card(ctx: Ctx, cid: int, front: str, back: str, block_id: int | None = N
 
 
 def unlock_section_cards(ctx: Ctx, cid: int, section_id: int) -> None:
-    for row in ctx.db.execute("SELECT * FROM blocks WHERE section_id=? ORDER BY position", (section_id,)).fetchall():
+    """A read Section's Blocks become Cards; once every Section of its Chapter is read, so do the Questions testing it."""
+    db = ctx.db
+    for row in db.execute("SELECT * FROM blocks WHERE section_id=? ORDER BY position", (section_id,)).fetchall():
         if row["component"] in CARD_COMPONENTS and row["status"] == "ok":
             for part, front, back in card_faces(block_json(row)):
                 add_card(ctx, cid, front, back, block_id=row["id"], part=part)
+    chid = db.execute("SELECT chapter_id FROM sections WHERE id=?", (section_id,)).fetchone()["chapter_id"]
+    if db.execute("SELECT 1 FROM sections s WHERE s.chapter_id=? AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.section_id=s.id)",
+                  (chid,)).fetchone() is None:
+        for q in db.execute("SELECT * FROM questions WHERE chapter_id=?", (chid,)).fetchall():
+            add_card(ctx, cid, q["statement"], q["model_answer"], question_id=q["id"])
 
 
 def unlock_exam_cards(ctx: Ctx, cid: int, exam_id: int) -> None:
-    """Questions become Cards once the learner has sat their Exam."""
+    """Questions also become Cards once the learner has sat their Exam."""
     for q in ctx.db.execute("SELECT * FROM questions WHERE exam_id=?", (exam_id,)).fetchall():
         add_card(ctx, cid, q["statement"], q["model_answer"], question_id=q["id"])
 
@@ -388,7 +395,7 @@ def router(ctx: Ctx) -> APIRouter:
     def stats(course_id: int | None = None):
         days = counted_days(ctx)
         heat: dict[str, int] = {}
-        for f in db.execute("SELECT started_at, active_seconds FROM focus_sessions"):
+        for f in db.execute("SELECT started_at, active_seconds FROM focus_sessions f WHERE EXISTS (SELECT 1 FROM actions a WHERE a.focus_id=f.id)"):
             day = dt.datetime.fromisoformat(f["started_at"]).astimezone().date().isoformat()
             heat[day] = heat.get(day, 0) + f["active_seconds"] // 60
         out = {"daily_goal": daily_goal(ctx), "today_sessions": days.get(today(), 0), "streak": streak(set(days), today()),

@@ -1,4 +1,4 @@
-"""Proposing the outline (Chapters, Sections, Exam Weight) and the owner's edits at the outline Approval Gate."""
+"""Proposing the outline (Chapters, Sections) and the owner's edits at the outline Approval Gate."""
 
 import json
 
@@ -22,7 +22,6 @@ class SectionPlan(BaseModel):
 
 class ChapterPlan(BaseModel):
     title: str
-    exam_hits: int = Field(0, ge=0)
     sections: list[SectionPlan]
 
 
@@ -52,14 +51,12 @@ def valid_refs(ctx: Ctx, cid: int, refs: list[PageRef]) -> list[dict]:
 
 def save_outline(ctx: Ctx, cid: int, plan: OutlinePlan, priorities: list[Priority] | None = None) -> None:
     db = ctx.db
-    total_hits = sum(c.exam_hits for c in plan.chapters)
     db.execute("DELETE FROM sections WHERE chapter_id IN (SELECT id FROM chapters WHERE course_id=?)", (cid,))
     db.execute("DELETE FROM chapters WHERE course_id=?", (cid,))
     for i, ch in enumerate(plan.chapters):
-        weight = ch.exam_hits / total_hits if total_hits else 0.0
         prio = priorities[i] if priorities else "normal"
-        chid = db.execute("INSERT INTO chapters (course_id, position, title, priority, exam_hits, exam_weight) VALUES (?,?,?,?,?,?)",
-                          (cid, i, ch.title, prio, ch.exam_hits, weight)).lastrowid
+        chid = db.execute("INSERT INTO chapters (course_id, position, title, priority) VALUES (?,?,?,?)",
+                          (cid, i, ch.title, prio)).lastrowid
         for j, sec in enumerate(ch.sections):
             db.execute("INSERT INTO sections (chapter_id, position, title, pages) VALUES (?,?,?,?)",
                        (chid, j, sec.title, json.dumps(valid_refs(ctx, cid, sec.pages))))

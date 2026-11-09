@@ -39,9 +39,9 @@ class FakeModel:
             "read_page": lambda prompt, files: {"text": f"page text of {files[0].name}", "readable": True},
             "propose_roles": self._roles,
             "propose_outline": lambda prompt, files: {"chapters": [
-                {"title": "Convexité", "exam_hits": 3, "sections": [
+                {"title": "Convexité", "sections": [
                     {"title": "Ensembles convexes", "pages": [{"source": "cours.pdf", "page": 1}, {"source": "nope.pdf", "page": 1}]}]},
-                {"title": "Méthodes de descente", "exam_hits": 1, "sections": [
+                {"title": "Méthodes de descente", "sections": [
                     {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}]},
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
             "write_section": self._section,
@@ -57,13 +57,14 @@ class FakeModel:
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
             "rebuild_past_paper": lambda prompt, files: {
                 "title": "Examen 2024", "duration_min": 120, "chapters": ["Convexité", "Inconnu"], "questions": [
-                    {"statement": "Montrer que $f$ est convexe.", "points": 6, "model_answer": "Hessienne positive.",
+                    {"statement": "Montrer que $f$ est convexe.", "points": 6, "model_answer": "Hessienne positive.", "chapter": "Convexité",
                      "scheme": [{"step": "Hessienne", "points": 4}, {"step": "Conclusion", "points": 2}]},
-                    {"statement": "Calculer $x_1$.", "points": 14, "model_answer": "$x_1 = 0.5$", "scheme": None}]},
+                    {"statement": "Calculer $x_1$.", "points": 14, "model_answer": "$x_1 = 0.5$", "scheme": None,
+                     "chapter": "Méthodes de descente"}]},
             "write_mock_exam": lambda prompt, files: {
                 "title": "Examen blanc " + prompt.split("Mock exam number ", 1)[1].split(" ", 1)[0], "duration_min": 90,
                 "chapters": ["Méthodes de descente"], "questions": [
-                    {"statement": "Appliquer le gradient.", "points": 20, "model_answer": "...",
+                    {"statement": "Appliquer le gradient.", "points": 20, "model_answer": "...", "chapter": "Méthodes de descente",
                      "scheme": [{"step": "Direction", "points": 10}, {"step": "Pas", "points": 10}]}]},
         }
 

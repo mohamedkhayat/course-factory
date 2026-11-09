@@ -15,7 +15,7 @@ def with_tp(material):
 @pytest.fixture
 def lab(client, with_tp, model):
     cid = generate(client, with_tp, model)
-    assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "chapter_review"
     [summary] = client.get(f"/api/courses/{cid}/labs").json()
     return cid, client.get(f"/api/courses/{cid}/labs/{summary['id']}").json()
 
@@ -81,7 +81,14 @@ def test_notebook_tp_is_read_from_its_cells(client, material, model):
                                          nbformat.v4.new_code_cell("x0 = 1.0")])
     nbformat.write(nb, material / "TP2.ipynb")
     cid = generate(client, material, model)
-    assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "chapter_review"
     lab_source = next(p for step, p in model.prompts if step == "build_lab").split("LAB SOURCE:", 1)[1]
     assert "gradient à pas fixe" in lab_source and "x0 = 1.0" in lab_source
     assert len(client.get(f"/api/courses/{cid}/labs").json()) == 1
+
+
+def test_lab_trace_records_each_steps_proof(lab, client):
+    cid, _ = lab
+    build = next(t for t in client.get(f"/api/courses/{cid}/traces").json() if t["step"] == "build_lab")
+    proofs = json.loads(build["checks"])
+    assert [p["step"] for p in proofs] == [1, 2, 3, 4] and not proofs[0]["errors"] and proofs[2]["errors"]

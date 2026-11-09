@@ -8,7 +8,7 @@ from .pi_step import Backend
 from .kernels import Kernels, Launcher, LocalLauncher
 from .search import SearchModels
 
-Gate = Literal["found", "outline"]
+Gate = Literal["found", "outline", "chapter_review"]
 Role = Literal["course notes", "exercise sheet", "lab", "past exam", "correction", "personal notes", "data"]
 Priority = Literal["focus", "normal", "light", "skip"]
 

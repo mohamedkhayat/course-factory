@@ -23,7 +23,7 @@ from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
-from .generation import build_graph, run_status, thread
+from .generation import build_graph, gpu, run_status, seconds_left, thread
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import Backend, record_owner_action
 
@@ -122,7 +122,10 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         s = run_status(graph, cid, course_or_404(cid)["run_error"])
         p = db.execute("SELECT COALESCE(SUM(s.pages),0) total, (SELECT COUNT(*) FROM pages p JOIN sources s2 ON s2.id=p.source_id "
                        "WHERE s2.course_id=? AND p.text IS NOT NULL) done FROM sources s WHERE s.course_id=?", (cid, cid)).fetchone()
-        return {"error": None, **s, "pages_read": p["done"], "pages_total": p["total"]}
+        out = {"error": None, **s, "pages_read": p["done"], "pages_total": p["total"]}
+        if s["status"] == "running":
+            out |= {"seconds_left": seconds_left(db, cid), "gpu": gpu()}
+        return out
 
     def claim(cid: int, gate: Gate | None):
         """Reserve the Run so two requests can't advance it at once.
@@ -359,11 +362,22 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         return save_block(bid, block, flags)
 
     @app.post("/api/courses/{cid}/chapters/{chid}/publish")
-    def publish_chapter(cid: int, chid: int):
+    def publish_chapter(cid: int, chid: int, tasks: BackgroundTasks):
         if chapter_or_404(cid, chid)["status"] != "in_review":
             raise HTTPException(409, "only a Chapter under review can be published")
         record_owner_action(db, cid, "chapter_review", {"chapter": chid}, "published")
         db.execute("UPDATE chapters SET status='published' WHERE id=?", (chid,))
+        if status(cid)["gate"] == "chapter_review" and not chm.awaiting_review(ctx, cid):
+            finish_review(cid, tasks)
+        return {"ok": True}
+
+    @app.post("/api/courses/{cid}/gates/chapter_review")
+    def finish_review(cid: int, tasks: BackgroundTasks):
+        """Resumes the Run once nothing waits for review (publishing the last Chapter calls this itself)."""
+        if chm.awaiting_review(ctx, cid):
+            raise HTTPException(409, "publish every Chapter under review first")
+        claim(cid, "chapter_review")
+        tasks.add_task(advance, cid, Command(resume={"approved": True}))
         return {"ok": True}
 
     @app.get("/api/courses/{cid}/reader")
