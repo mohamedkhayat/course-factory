@@ -16,7 +16,7 @@ type Activity = { step: string; attempt: number; elapsed: number; thinking: stri
 type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number;
   seconds_left?: number | null; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null; progress?: RunProgressTree };
 type PSection = { title: string; state: "waiting" | "writing" | "done" | "skipped"; blocks: number; flagged: number };
-type PChapter = { id: number; title: string; sections: PSection[]; done: number; total: number };
+type PChapter = { id: number; title: string; sections: PSection[]; done: number; total: number; components?: Record<string, number> };
 type RunProgressTree = { chapters: PChapter[]; pages: number; read: number; sections_done: number; sections_total: number; fraction: number };
 type Trace = { id: number; step: string; inputs: string; output: string | null; error: string | null; owner_action: string | null;
   duration_ms: number | null; checks: string | null; created_at: string };
@@ -204,6 +204,11 @@ function Plan({ cid, p }: { cid: number; p: RunProgressTree }) {
                   </li>
                 ))}
               </ul>
+              {c.components && Object.keys(c.components).length > 0 && (
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {Object.entries(c.components).map(([k, n]) => `${k.replaceAll("_", " ")} ${n}`).join(" · ")}
+                </p>
+              )}
             </li>
           );
         })}

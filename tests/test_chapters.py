@@ -272,6 +272,7 @@ def test_run_shows_each_chapter_with_its_sections_written(client, material, mode
     assert (after["sections_done"], after["sections_total"], after["fraction"]) == (3, 3, 1)
     ch = {c["title"]: c for c in after["chapters"]}["Méthodes de descente"]
     assert (ch["done"], ch["total"]) == (2, 2) and ch["sections"][0]["blocks"] > 0 and ch["sections"][0]["state"] == "done"
+    assert sum(ch["components"].values()) == sum(s["blocks"] for s in ch["sections"])
 
 
 def test_a_practical_subject_is_written_as_tutorials(client, material, model):

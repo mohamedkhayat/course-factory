@@ -175,7 +175,10 @@ def progress(db: sqlite3.Connection, cid: int) -> dict:
                                         "GROUP BY s.id ORDER BY s.position", (c["id"],))]
         counted = [s for s in sections if s["state"] != "skipped"]
         chapters.append({"id": c["id"], "title": c["title"], "sections": sections,
-                         "done": sum(s["state"] == "done" for s in counted), "total": len(counted)})
+                         "done": sum(s["state"] == "done" for s in counted), "total": len(counted),
+                         "components": dict(db.execute(
+                             "SELECT b.component, COUNT(*) FROM blocks b JOIN sections s ON s.id=b.section_id WHERE s.chapter_id=? "
+                             "GROUP BY b.component ORDER BY COUNT(*) DESC", (c["id"],)).fetchall())})
     pages, read = sum(f["pages"] for f in folders.values()), sum(f["read"] for f in folders.values())
     done, total = sum(c["done"] for c in chapters), sum(c["total"] for c in chapters)
     page_ms = mean_ms(db, "read_page") or 1.0
