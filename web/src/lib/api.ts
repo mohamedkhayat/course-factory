@@ -54,3 +54,28 @@ export type Block = {
 export type Section = { id: number; title: string; pages: Citation[]; blocks: Block[] };
 export type Chapter = { id: number; title: string; priority: string; exam_weight: number; status: string; sections: Section[] };
 export type Course = { id: number; name: string; folder: string; goal: string | null; exam_date: string | null; run_error: string | null };
+
+export type CourseSummary = Course & {
+  run: { status: string; gate: string | null; error: string | null; active: boolean; pages_read: number; pages_total: number; seconds_left?: number | null };
+  chapters_total: number; chapters_published: number; cards_due: number; exam_countdown_days: number | null;
+};
+export type Gpu = { name: string; util: number; mem_used_mb: number; mem_total_mb: number };
+
+export const duration = (s: number) => (s < 90 ? "under 2 min" : s < 5400 ? `about ${Math.round(s / 60)} min` : `about ${(s / 3600).toFixed(1)} h`);
+
+/** Uploads with progress (fetch can't report upload progress). Resolves with the JSON reply. */
+export function upload<T>(path: string, body: FormData, onProgress: (fraction: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", path);
+    x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
+    x.onload = () => {
+      let data: any = null;
+      try { data = JSON.parse(x.responseText); } catch { /* not JSON */ }
+      if (x.status >= 200 && x.status < 300) resolve(data as T);
+      else reject(new ApiError(x.status, data?.detail ?? x.statusText));
+    };
+    x.onerror = () => reject(new Error("the upload failed: is the app still running?"));
+    x.send(body);
+  });
+}

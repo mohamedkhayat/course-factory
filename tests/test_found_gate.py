@@ -197,3 +197,7 @@ def test_the_course_list_summarises_each_course_for_the_home_hub(client, materia
     c = next(c for c in client.get("/api/courses").json() if c["id"] == cid)
     assert c["run"]["gate"] == "found" and c["run"]["pages_read"] == c["run"]["pages_total"] == 4
     assert c["chapters_published"] == c["chapters_total"] == 0 and c["cards_due"] == 0 and c["exam_countdown_days"] is None
+
+
+def test_system_reports_model_and_gpu(client):
+    assert set(client.get("/api/system").json()) == {"model", "gpu"}

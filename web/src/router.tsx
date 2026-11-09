@@ -4,7 +4,7 @@ import { Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import { get, type Course } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Home, Pair } from "./routes/home";
+import { Home, Pair, Settings } from "./routes/home";
 import { Run } from "./routes/run";
 import { Reader } from "./routes/reader";
 import { Review } from "./routes/review";
@@ -59,6 +59,8 @@ function Shell() {
         <span className="ml-auto flex items-center gap-1">
           <Link to="/components" className={cn("rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground")}
                 activeProps={{ className: "!text-foreground" }}>Components</Link>
+          <Link to="/settings" className="rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
+                activeProps={{ className: "!text-foreground" }}>Settings</Link>
           <ThemeToggle />
         </span>
       </header>
@@ -72,7 +74,7 @@ const r = <P extends string>(path: P, component: () => React.ReactNode) => creat
 
 export const router = createRouter({
   routeTree: root.addChildren([
-    r("/", Home), r("/pair", Pair), r("/components", ComponentsPage),
+    r("/", Home), r("/pair", Pair), r("/settings", Settings), r("/components", ComponentsPage),
     r("/c/$cid", Run), r("/c/$cid/read", Reader), r("/c/$cid/review", Review),
     r("/c/$cid/exams", Exams), r("/c/$cid/exams/$eid", ExamMode),
     r("/c/$cid/cards", Cards), r("/c/$cid/focus", Focus),

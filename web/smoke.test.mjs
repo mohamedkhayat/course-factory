@@ -34,10 +34,14 @@ async function page(opts = {}) {
 test("found gate, outline gate, then Review and publish", async () => {
   const p = await page();
   await p.goto(BASE);
+  await p.getByRole("heading", { name: "Optimisation" }).first().waitFor();  // the seeded Course's card on the hub
+  await p.getByRole("button", { name: "New Course" }).first().click();
+  await p.getByLabel("Folder").setInputFiles(folder);  // what the folder picker hands over
+  assert.equal(await p.getByLabel("Course name").inputValue(), "optimisation");  // named after the folder
   await p.getByLabel("Course name").fill("Smoke");
-  await p.getByLabel("Folder").fill(folder);
-  await p.getByRole("button", { name: "Import the folder" }).click();
+  await p.getByRole("button", { name: /^Import \d+ files$/ }).click();
   await p.getByRole("heading", { name: "What was found" }).waitFor({ timeout: 30_000 });
+  await p.getByText("Step 4 of 12: Check what was found").waitFor();
   assert.ok(await p.locator("[data-source]").count() >= 6);
   await p.getByLabel("Role of TD1_corrige.pdf").waitFor();
   await p.getByRole("button", { name: /propose an outline/ }).click();

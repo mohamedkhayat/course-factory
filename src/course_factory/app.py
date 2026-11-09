@@ -163,6 +163,11 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         tasks.add_task(advance, cid, {"course_id": cid})
         return {"id": cid}
 
+    @app.get("/api/system")
+    def system():
+        """What the home hub shows about the machine: the generation model and the GPU."""
+        return {"model": getattr(backend, "model", None), "gpu": gpu()}
+
     @app.post("/api/courses/upload", status_code=201)
     def create_course_from_upload(tasks: BackgroundTasks, name: str = Form(..., min_length=1), files: list[UploadFile] = File(...)):
         """A Course from a folder picked in the browser: each file's name is its path inside the picked folder."""

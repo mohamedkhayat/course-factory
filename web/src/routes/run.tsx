@@ -1,19 +1,182 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, BookOpen, ClipboardList, FlaskConical, Layers, Merge, Scissors, SplitSquareVertical, Timer, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, Check, ClipboardList, FlaskConical, Layers, Loader2, Merge, Pause, Scissors, SplitSquareVertical, Timer, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { PageViewer } from "@/components/blocks";
-import { get, readEvents, send, type Citation, type Course } from "@/lib/api";
+import { duration, get, pageUrl, readEvents, send, type Citation, type Course, type Gpu } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
 
-type Gpu = { name: string; util: number; mem_used_mb: number; mem_total_mb: number };
-type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number; seconds_left?: number | null; gpu?: Gpu | null };
+type Step = { name: string; label: string; gate: boolean; state: "done" | "current" | "waiting" };
+type Activity = { step: string; attempt: number; elapsed: number; thinking: string; output: string; inputs: Record<string, string> };
+type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number;
+  seconds_left?: number | null; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null };
+type Trace = { id: number; step: string; inputs: string; output: string | null; error: string | null; owner_action: string | null;
+  duration_ms: number | null; checks: string | null; created_at: string };
 
-const duration = (s: number) => (s < 90 ? "under 2 min" : s < 5400 ? `about ${Math.round(s / 60)} min` : `about ${(s / 3600).toFixed(1)} h`);
+const stepName = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).replaceAll("_", " ");
+const secs = (ms: number) => (ms < 60_000 ? `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s` : `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`);
+
+/** How many problems a Trace's checks found: every check reports its problems as strings in a list. */
+function problems(checks: string | null): number {
+  const count = (v: unknown): number => Array.isArray(v) ? v.reduce((n: number, x) => n + (typeof x === "string" ? 1 : count(x)), 0)
+    : v && typeof v === "object" ? Object.values(v).reduce((n: number, x) => n + count(x), 0) : 0;
+  try { return checks ? count(JSON.parse(checks)) : 0; } catch { return 0; }
+}
+
+/** Where the Run is, at an Approval Gate: a slim line of the pipeline. */
+function PipelineStrip({ pipeline }: { pipeline: Step[] }) {
+  const at = pipeline.findIndex((p) => p.state === "current");
+  if (at < 0) return null;
+  return (
+    <div className="mb-6 flex items-center gap-3 text-xs text-muted-foreground">
+      <ol className="flex gap-1" aria-hidden>
+        {pipeline.map((p) => <li key={p.name} className={cn("h-1.5 w-4 rounded-full", p.state === "done" ? "bg-primary/60" : p.state === "current" ? "bg-primary" : "bg-border")} />)}
+      </ol>
+      <span>Step {at + 1} of {pipeline.length}: {pipeline[at].label}. Waiting for you</span>
+    </div>
+  );
+}
+
+function Tail({ label, text, live }: { label: string; text: string; live: boolean }) {
+  const box = useRef<HTMLPreElement>(null);
+  const pinned = useRef(true);  // follow new text unless the reader scrolled up
+  useEffect(() => { if (box.current && pinned.current) box.current.scrollTop = box.current.scrollHeight; }, [text]);
+  return (
+    <div>
+      <p className="mb-1 flex items-center gap-2 text-xs font-medium text-muted-foreground">{label}
+        {live && <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />}</p>
+      <pre ref={box} onScroll={(e) => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
+           className="max-h-56 min-h-16 overflow-auto whitespace-pre-wrap rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed text-muted-foreground">
+        {text || "…"}
+      </pre>
+    </div>
+  );
+}
+
+/** The model step running now: what it works on, its thinking and its output as they stream in. */
+function Now({ cid, a }: { cid: number; a: Activity }) {
+  const page = a.inputs.source && a.inputs.page ? { source: a.inputs.source, page: Number(a.inputs.page) } : null;
+  const detail = Object.entries(a.inputs).filter(([k, v]) => !["source", "page", "language"].includes(k) && v.length <= 80).slice(0, 3);
+  return (
+    <section className="rounded-lg border border-border bg-card p-4" aria-label="What the model is doing">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="flex items-center gap-2 font-medium"><Loader2 className="size-4 animate-spin text-primary" aria-hidden />{stepName(a.step)}</h2>
+        <span className="tabular text-xs text-muted-foreground">{a.elapsed} s{a.attempt > 1 && ` · attempt ${a.attempt} of 3`}</span>
+      </div>
+      {page && <p className="mt-1 text-sm text-muted-foreground">{page.source}, page {page.page}</p>}
+      {detail.map(([k, v]) => <p key={k} className="mt-1 truncate text-sm text-muted-foreground"><span className="capitalize">{k.replaceAll("_", " ")}</span>: {v}</p>)}
+      <div className={cn("mt-4 grid gap-4", page && "md:grid-cols-[minmax(0,14rem)_1fr]")}>
+        {page && <img key={`${page.source}-${page.page}`} src={pageUrl(cid, page.source, page.page)} alt={`${page.source}, page ${page.page}`} onError={(e) => { e.currentTarget.hidden = true; }} className="w-full rounded border border-border bg-white" />}
+        <div className="min-w-0 space-y-3">
+          <Tail label="Thinking" text={a.thinking} live={!a.output} />
+          <Tail label="Output" text={a.output} live={!!a.output} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Feed({ cid, running }: { cid: number; running: boolean }) {
+  const { data = [] } = useQuery({ queryKey: ["traces", cid], queryFn: () => get<Trace[]>(`/api/courses/${cid}/traces?limit=15`), refetchInterval: running ? 4000 : false });
+  const steps = data.filter((t) => !t.owner_action);
+  if (!steps.length) return null;
+  return (
+    <section>
+      <h2 className="mb-2 text-sm font-medium">Recent model steps</h2>
+      <ul className="divide-y divide-border rounded-lg border border-border">
+        {steps.map((t) => {
+          const inp = (() => { try { return JSON.parse(t.inputs) as Record<string, unknown>; } catch { return {}; } })();
+          const where = typeof inp.source === "string" && inp.page ? `${inp.source}, page ${inp.page}` : typeof inp.section === "string" ? inp.section : "";
+          const bad = problems(t.checks);
+          return (
+            <li key={t.id}>
+              <details className="group px-3 py-2">
+                <summary className="flex cursor-pointer list-none items-center gap-3 text-sm">
+                  {t.error ? <X className="size-4 shrink-0 text-destructive" aria-label="failed" />
+                    : bad ? <TriangleAlert className="size-4 shrink-0 text-warn" aria-label={`${bad} check problems`} />
+                    : <Check className="size-4 shrink-0 text-ok" aria-label="passed" />}
+                  <span className="font-medium">{stepName(t.step)}</span>
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">{where}</span>
+                  {bad > 0 && <span className="tabular shrink-0 text-xs text-warn">{bad} flagged</span>}
+                  {t.duration_ms != null && <span className="tabular shrink-0 text-xs text-muted-foreground">{secs(t.duration_ms)}</span>}
+                </summary>
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">
+                  {t.error ?? t.output?.slice(0, 3000) ?? ""}
+                </pre>
+              </details>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/** The Run between gates: the pipeline, the step running now, and what the model just did. */
+function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number; run: Run; onRetry: () => void; retrying: boolean; retryError: unknown }) {
+  const failed = run.status === "failed", paused = run.status === "running" && !run.active;
+  return (
+    <div className="mb-10 grid gap-8 lg:grid-cols-[17rem_minmax(0,1fr)]">
+      <ol className="space-y-0.5" aria-label="Pipeline">
+        {run.pipeline.map((p) => {
+          const current = p.state === "current";
+          return (
+            <li key={p.name} aria-current={current ? "step" : undefined}
+                className={cn("flex items-start gap-3 rounded-md px-2 py-1.5 text-sm", current && "bg-accent")}>
+              <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
+                {p.state === "done" ? <Check className="size-4 text-ok" aria-label="done" />
+                  : current && failed ? <X className="size-4 text-destructive" aria-label="stopped" />
+                  : current && !paused ? <Loader2 className="size-4 animate-spin text-primary" aria-label="running" />
+                  : p.gate ? <Pause className="size-3.5 text-muted-foreground" aria-label="Approval Gate" />
+                  : <span className={cn("size-2 rounded-full border", current ? "border-primary" : "border-muted-foreground/50")} />}
+              </span>
+              <span className={cn(p.state === "waiting" && "text-muted-foreground", current && "font-medium")}>
+                {p.label}
+                {current && p.name === "read_pages" && run.pages_total > 0 && (
+                  <span className="tabular block text-xs font-normal text-muted-foreground">{run.pages_read} of {run.pages_total} pages</span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="min-w-0 space-y-6" aria-live="polite">
+        {failed && (
+          <div className="rounded-lg bg-destructive/10 px-4 py-3">
+            <p className="font-medium">The Run stopped</p>
+            <p className="mt-1 break-words font-mono text-xs">{run.error}</p>
+            <Button className="mt-3" size="sm" onClick={onRetry} disabled={retrying}>Retry from where it stopped</Button>
+          </div>
+        )}
+        {paused && (
+          <div className="rounded-lg border border-border px-4 py-3">
+            <p className="font-medium">The Run is paused</p>
+            <p className="mt-1 text-sm text-muted-foreground">The app stopped in the middle of a step. Nothing is lost: it picks up from the last finished step.</p>
+            <Button className="mt-3" size="sm" onClick={onRetry} disabled={retrying}>Resume</Button>
+          </div>
+        )}
+        {!!retryError && <p className="text-sm text-destructive">{errText(retryError)}</p>}
+        {run.status === "running" && run.active && (
+          <div className="space-y-2">
+            {run.pages_total > 0 && run.pages_read < run.pages_total && <Progress value={(100 * run.pages_read) / run.pages_total} />}
+            <p className="tabular flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+              <span>{run.seconds_left != null ? `${duration(run.seconds_left)} until the next Approval Gate` : "Estimating time left…"}</span>
+              {run.gpu && <span>GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</span>}
+            </p>
+          </div>
+        )}
+        {run.activity ? <Now cid={cid} a={run.activity} /> : run.status === "running" && run.active && (
+          <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden />Working without the model (copying, indexing)…</p>
+        )}
+        <Feed cid={cid} running={run.status === "running"} />
+      </div>
+    </div>
+  );
+}
 type Source = { id: number; name: string; pages: number; role: string; paired_with: number | null; excluded: boolean };
 const ROLES = ["course notes", "exercise sheet", "lab", "past exam", "correction", "personal notes", "data"];
 const PRIORITIES = ["focus", "normal", "light", "skip"] as const;
@@ -274,25 +437,11 @@ export function Run() {
   const { data: course } = useQuery({ queryKey: ["course", String(cid)], queryFn: () => get<Course>(`/api/courses/${cid}`) });
   const { data: run } = useRun(cid);
   const retry = useMutation({ mutationFn: () => send(`/api/courses/${cid}/run/retry`), onSuccess: () => qc.invalidateQueries({ queryKey: ["run", cid] }) });
-  if (!run) return null;
+  if (!run) return <Page><div className="h-8 w-48 animate-pulse rounded bg-muted" /><div className="mt-6 h-64 animate-pulse rounded-lg bg-muted" /></Page>;
   return (
-    <Page title={course?.name} wide={run.gate === "found"}>
-      {run.status === "running" && (
-        <div className="mb-8 space-y-2" aria-live="polite">
-          <p className="text-sm">Working: {run.next?.join(", ").replaceAll("_", " ") ?? "…"}</p>
-          {run.pages_total > 0 && <><Progress value={(100 * run.pages_read) / run.pages_total} /><p className="tabular text-xs text-muted-foreground">{run.pages_read} of {run.pages_total} pages read</p></>}
-          <p className="tabular text-xs text-muted-foreground">
-            {run.seconds_left != null ? `${duration(run.seconds_left)} left until the next step` : "Estimating time left…"}
-            {run.gpu && <> · GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</>}
-          </p>
-        </div>
-      )}
-      {run.status === "failed" && (
-        <div className="mb-8 rounded-md bg-destructive/10 px-4 py-3">
-          <p className="font-medium">The Run stopped</p>
-          <p className="mt-1 font-mono text-xs">{run.error}</p>
-          <Button className="mt-3" size="sm" onClick={() => retry.mutate()}>Retry from where it stopped</Button>
-        </div>
+    <Page title={course?.name} wide={run.gate === "found" || (!run.gate && run.status !== "done")}>
+      {run.gate ? <PipelineStrip pipeline={run.pipeline} /> : run.status !== "done" && (
+        <RunProgress cid={cid} run={run} onRetry={() => retry.mutate()} retrying={retry.isPending} retryError={retry.error} />
       )}
       {run.gate === "found" && <FoundGate cid={cid} />}
       {run.gate === "outline" && <OutlineGate cid={cid} />}
