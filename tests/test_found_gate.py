@@ -212,3 +212,11 @@ def test_virtualenvs_caches_and_hidden_folders_are_not_imported(client, material
     cid = start(client, material)
     names = {s["name"] for s in client.get(f"/api/courses/{cid}/found").json()["sources"]}
     assert names == {"cours.pdf", "TD1.pdf", "TD1_corrige.pdf", "data.csv", "viz/plot.py"}
+
+
+def test_the_course_map_lists_every_file_with_its_pages_read(client, material):
+    cid = start(client, material)
+    files = {f["name"]: f for f in client.get(f"/api/courses/{cid}/map").json()}
+    assert files["cours.pdf"] == {"name": "cours.pdf", "pages": 2, "read": 2, "unreadable": 0, "role": files["cours.pdf"]["role"]}
+    assert files["data.csv"]["pages"] == 0 and files["data.csv"]["role"] == "data"
+    assert client.get("/api/courses/999/map").status_code == 404

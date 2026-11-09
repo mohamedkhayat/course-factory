@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, BookOpen, Check, ClipboardList, FlaskConical, Layers, Loader2, Merge, Pause, Scissors, SplitSquareVertical, Timer, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, Check, ClipboardList, FlaskConical, Folder, Layers, Loader2, Merge, Pause, Scissors, SplitSquareVertical, Timer, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -50,28 +50,37 @@ function Tail({ label, text, live }: { label: string; text: string; live: boolea
       <p className="mb-1 flex items-center gap-2 text-xs font-medium text-muted-foreground">{label}
         {live && <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />}</p>
       <pre ref={box} onScroll={(e) => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
-           className="max-h-56 min-h-16 overflow-auto whitespace-pre-wrap rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed text-muted-foreground">
+           className="h-40 overflow-auto whitespace-pre-wrap rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed text-muted-foreground">
         {text || "…"}
       </pre>
     </div>
   );
 }
 
+type MapFile = { name: string; pages: number; role: string | null; read: number; unreadable: number };
+
 /** The model step running now: what it works on, its thinking and its output as they stream in. */
 function Now({ cid, a }: { cid: number; a: Activity }) {
   const page = a.inputs.source && a.inputs.page ? { source: a.inputs.source, page: Number(a.inputs.page) } : null;
   const detail = Object.entries(a.inputs).filter(([k, v]) => !["source", "page", "language"].includes(k) && v.length <= 80).slice(0, 3);
   return (
-    <section className="rounded-lg border border-border bg-card p-4" aria-label="What the model is doing">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="flex items-center gap-2 font-medium"><Loader2 className="size-4 animate-spin text-primary" aria-hidden />{stepName(a.step)}</h2>
-        <span className="tabular text-xs text-muted-foreground">{a.elapsed} s{a.attempt > 1 && ` · attempt ${a.attempt} of 3`}</span>
+    <section aria-label="What the model is doing">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="flex items-center gap-2 text-lg"><Loader2 className="size-4 animate-spin text-primary" aria-hidden />{stepName(a.step)}</h2>
+        {page && <span className="min-w-0 truncate text-sm text-muted-foreground">{page.source}, page {page.page}</span>}
+        <span className="tabular ml-auto text-xs text-muted-foreground">{a.elapsed} s{a.attempt > 1 && ` · attempt ${a.attempt} of 3`}</span>
       </div>
-      {page && <p className="mt-1 text-sm text-muted-foreground">{page.source}, page {page.page}</p>}
       {detail.map(([k, v]) => <p key={k} className="mt-1 truncate text-sm text-muted-foreground"><span className="capitalize">{k.replaceAll("_", " ")}</span>: {v}</p>)}
-      <div className={cn("mt-4 grid gap-4", page && "md:grid-cols-[minmax(0,14rem)_1fr]")}>
-        {page && <img key={`${page.source}-${page.page}`} src={pageUrl(cid, page.source, page.page)} alt={`${page.source}, page ${page.page}`} onError={(e) => { e.currentTarget.hidden = true; }} className="w-full rounded border border-border bg-white" />}
-        <div className="min-w-0 space-y-3">
+      <div className={cn("mt-3 grid gap-4", page && "sm:grid-cols-[9rem_minmax(0,1fr)]")}>
+        {page && (
+          <div className="grid aspect-[1/1.414] w-36 place-items-center self-start rounded-sm bg-muted text-xs text-muted-foreground sm:w-full">
+            <span className="col-start-1 row-start-1">Page {page.page}</span>
+            <img key={`${page.source}-${page.page}`} src={pageUrl(cid, page.source, page.page)} alt={`${page.source}, page ${page.page}`}
+                 onError={(e) => { e.currentTarget.hidden = true; }}
+                 className="col-start-1 row-start-1 size-full rounded-sm bg-white object-contain shadow-[0_1px_3px_oklch(0_0_0/0.18)]" />
+          </div>
+        )}
+        <div className="grid min-w-0 gap-3 md:grid-cols-2">
           <Tail label="Thinking" text={a.thinking} live={!a.output} />
           <Tail label="Output" text={a.output} live={!!a.output} />
         </div>
@@ -80,22 +89,86 @@ function Now({ cid, a }: { cid: number; a: Activity }) {
   );
 }
 
+/** The course as imported: folders, their files, and one cell per page that fills in as the model reads it. */
+function CourseMap({ cid, now, live }: { cid: number; now: { source: string; page: number } | null; live: boolean }) {
+  const { data } = useQuery({ queryKey: ["map", cid], queryFn: () => get<MapFile[]>(`/api/courses/${cid}/map`), refetchInterval: live ? 3000 : false });
+  if (!data?.length) return null;
+  const folders = new Map<string, MapFile[]>();
+  for (const f of data) {
+    const dir = f.name.includes("/") ? f.name.slice(0, f.name.lastIndexOf("/")) : "";
+    folders.set(dir, [...(folders.get(dir) ?? []), f]);
+  }
+  const docs = data.filter((f) => f.pages > 0);
+  const done = docs.filter((f) => f.read >= f.pages).length;
+  return (
+    <section aria-label="Course map">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-2">
+        <h2 className="text-lg">Your course</h2>
+        <p className="tabular text-sm text-muted-foreground">{folders.size} {folders.size === 1 ? "folder" : "folders"} · {done} of {docs.length} documents read
+          {data.length > docs.length && ` · ${data.length - docs.length} other files`}</p>
+      </div>
+      <div className="divide-y divide-border">
+        {[...folders].map(([dir, files]) => {
+          const fdocs = files.filter((f) => f.pages > 0), others = files.length - fdocs.length;
+          const pages = fdocs.reduce((n, f) => n + f.pages, 0), read = fdocs.reduce((n, f) => n + Math.min(f.read, f.pages), 0);
+          return (
+            <div key={dir} className="py-3">
+              <p className="mb-1.5 flex items-baseline gap-2 text-sm">
+                <Folder className="size-3.5 shrink-0 self-center text-muted-foreground" aria-hidden />
+                <span className="font-medium">{dir || "Top folder"}</span>
+                {pages > 0 && <span className="tabular text-xs text-muted-foreground">{Math.round((100 * read) / pages)}%</span>}
+              </p>
+              <ul className="space-y-px">
+                {fdocs.map((f) => {
+                  const reading = now?.source === f.name, complete = f.read >= f.pages;
+                  return (
+                    <li key={f.name} aria-current={reading ? "true" : undefined}
+                        className={cn("grid grid-cols-[minmax(0,15rem)_1fr_auto] items-center gap-3 rounded px-2 py-1 text-sm transition-colors duration-500",
+                                      reading && "bg-accent")}>
+                      <span className={cn("truncate", !complete && !reading && "text-muted-foreground", reading && "font-medium")} title={f.name}>
+                        {f.name.slice(dir ? dir.length + 1 : 0)}
+                      </span>
+                      <span className="flex flex-wrap gap-[3px]" aria-hidden>
+                        {Array.from({ length: f.pages }, (_, i) => {
+                          const n = i + 1, here = reading && now?.page === n;
+                          return <span key={n} className={cn("size-2.5 rounded-[2px] transition-colors duration-700",
+                            here ? "animate-pulse bg-primary ring-2 ring-primary/30" : n <= f.read ? (n > f.read - f.unreadable ? "bg-warn" : "bg-primary") : "bg-border")} />;
+                        })}
+                      </span>
+                      <span className="tabular text-xs text-muted-foreground">
+                        {complete ? <Check className="size-3.5 text-ok" aria-label={`${f.pages} pages read`} /> : `${f.read}/${f.pages}`}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              {others > 0 && <p className="mt-1 px-2 text-xs text-muted-foreground">+ {others} {others === 1 ? "file" : "files"} with no pages to read ({kinds(files.filter((f) => f.pages === 0))})</p>}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+const kinds = (files: MapFile[]) => [...new Set(files.map((f) => f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".")) : "no extension"))].slice(0, 5).join(", ");
+
 function Feed({ cid, running }: { cid: number; running: boolean }) {
   const { data = [] } = useQuery({ queryKey: ["traces", cid], queryFn: () => get<Trace[]>(`/api/courses/${cid}/traces?limit=15`), refetchInterval: running ? 4000 : false });
   const steps = data.filter((t) => !t.owner_action);
   if (!steps.length) return null;
   return (
     <section>
-      <h2 className="mb-2 text-sm font-medium">Recent model steps</h2>
-      <ul className="divide-y divide-border rounded-lg border border-border">
+      <h2 className="border-b border-border pb-2 text-lg">Recent model steps</h2>
+      <ul className="divide-y divide-border">
         {steps.map((t) => {
           const inp = (() => { try { return JSON.parse(t.inputs) as Record<string, unknown>; } catch { return {}; } })();
           const where = typeof inp.source === "string" && inp.page ? `${inp.source}, page ${inp.page}` : typeof inp.section === "string" ? inp.section : "";
           const bad = problems(t.checks);
           return (
             <li key={t.id}>
-              <details className="group px-3 py-2">
-                <summary className="flex cursor-pointer list-none items-center gap-3 text-sm">
+              <details className="group py-2">
+                <summary className="flex cursor-pointer list-none items-center gap-3 rounded text-sm hover:text-foreground">
                   {t.error ? <X className="size-4 shrink-0 text-destructive" aria-label="failed" />
                     : bad ? <TriangleAlert className="size-4 shrink-0 text-warn" aria-label={`${bad} check problems`} />
                     : <Check className="size-4 shrink-0 text-ok" aria-label="passed" />}
@@ -116,62 +189,67 @@ function Feed({ cid, running }: { cid: number; running: boolean }) {
   );
 }
 
-/** The Run between gates: the pipeline, the step running now, and what the model just did. */
+/** The Run between gates: the pipeline, the course and how much of it is read, the step running now, and what the model just did. */
 function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number; run: Run; onRetry: () => void; retrying: boolean; retryError: unknown }) {
-  const failed = run.status === "failed", paused = run.status === "running" && !run.active;
+  const failed = run.status === "failed", paused = run.status === "running" && !run.active, live = run.status === "running" && run.active;
+  const a = run.activity;
+  const now = a?.inputs.source && a.inputs.page ? { source: a.inputs.source, page: Number(a.inputs.page) } : null;
+  const at = run.pipeline.findIndex((p) => p.state === "current");
   return (
-    <div className="mb-10 grid gap-8 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <ol className="space-y-0.5" aria-label="Pipeline">
-        {run.pipeline.map((p) => {
-          const current = p.state === "current";
+    <div className="mb-12 grid gap-x-10 gap-y-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
+      <ol className="hidden self-start lg:sticky lg:top-6 lg:block" aria-label="Pipeline">
+        {run.pipeline.map((p, i) => {
+          const current = p.state === "current", last = i === run.pipeline.length - 1;
           return (
-            <li key={p.name} aria-current={current ? "step" : undefined}
-                className={cn("flex items-start gap-3 rounded-md px-2 py-1.5 text-sm", current && "bg-accent")}>
-              <span className="mt-0.5 grid size-4 shrink-0 place-items-center">
+            <li key={p.name} aria-current={current ? "step" : undefined} className="relative flex gap-3 pb-3 text-sm">
+              {!last && <span className={cn("absolute top-5 bottom-0 left-[7.5px] w-px", p.state === "done" ? "bg-ok/50" : "bg-border")} aria-hidden />}
+              <span className="relative mt-0.5 grid size-4 shrink-0 place-items-center bg-background">
                 {p.state === "done" ? <Check className="size-4 text-ok" aria-label="done" />
                   : current && failed ? <X className="size-4 text-destructive" aria-label="stopped" />
                   : current && !paused ? <Loader2 className="size-4 animate-spin text-primary" aria-label="running" />
                   : p.gate ? <Pause className="size-3.5 text-muted-foreground" aria-label="Approval Gate" />
                   : <span className={cn("size-2 rounded-full border", current ? "border-primary" : "border-muted-foreground/50")} />}
               </span>
-              <span className={cn(p.state === "waiting" && "text-muted-foreground", current && "font-medium")}>
+              <span className={cn("leading-5", p.state === "waiting" && "text-muted-foreground", current && "font-medium")}>
                 {p.label}
-                {current && p.name === "read_pages" && run.pages_total > 0 && (
-                  <span className="tabular block text-xs font-normal text-muted-foreground">{run.pages_read} of {run.pages_total} pages</span>
-                )}
+                {p.gate && p.state === "waiting" && <span className="sr-only"> (Approval Gate)</span>}
               </span>
             </li>
           );
         })}
       </ol>
-      <div className="min-w-0 space-y-6" aria-live="polite">
+      <div className="min-w-0 space-y-10" aria-live="polite">
+        <header className="space-y-3">
+          <h2 className="text-2xl">{at >= 0 ? run.pipeline[at].label : "Starting"}</h2>
+          <div className="space-y-2">
+            {run.pages_total > 0 && <Progress value={(100 * run.pages_read) / run.pages_total} aria-label="Pages read" />}
+            <p className="tabular flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
+                {at >= 0 && <span>Step {at + 1} of {run.pipeline.length}</span>}
+                {run.pages_total > 0 && <span><span className="font-medium text-foreground">{run.pages_read}</span> of {run.pages_total} pages read</span>}
+                {live && <span>{run.seconds_left != null ? `${duration(run.seconds_left)} to the next Approval Gate` : "Estimating time left…"}</span>}
+                {live && run.gpu && <span>GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</span>}
+            </p>
+          </div>
+        </header>
         {failed && (
-          <div className="rounded-lg bg-destructive/10 px-4 py-3">
+          <div role="alert" className="rounded-lg bg-destructive/10 px-4 py-3">
             <p className="font-medium">The Run stopped</p>
             <p className="mt-1 break-words font-mono text-xs">{run.error}</p>
             <Button className="mt-3" size="sm" onClick={onRetry} disabled={retrying}>Retry from where it stopped</Button>
           </div>
         )}
         {paused && (
-          <div className="rounded-lg border border-border px-4 py-3">
+          <div className="rounded-lg bg-accent px-4 py-3">
             <p className="font-medium">The Run is paused</p>
             <p className="mt-1 text-sm text-muted-foreground">The app stopped in the middle of a step. Nothing is lost: it picks up from the last finished step.</p>
             <Button className="mt-3" size="sm" onClick={onRetry} disabled={retrying}>Resume</Button>
           </div>
         )}
         {!!retryError && <p className="text-sm text-destructive">{errText(retryError)}</p>}
-        {run.status === "running" && run.active && (
-          <div className="space-y-2">
-            {run.pages_total > 0 && run.pages_read < run.pages_total && <Progress value={(100 * run.pages_read) / run.pages_total} />}
-            <p className="tabular flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-              <span>{run.seconds_left != null ? `${duration(run.seconds_left)} until the next Approval Gate` : "Estimating time left…"}</span>
-              {run.gpu && <span>GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</span>}
-            </p>
-          </div>
-        )}
-        {run.activity ? <Now cid={cid} a={run.activity} /> : run.status === "running" && run.active && (
+        {a ? <Now cid={cid} a={a} /> : live && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden />Working without the model (copying, indexing)…</p>
         )}
+        <CourseMap cid={cid} now={now} live={live} />
         <Feed cid={cid} running={run.status === "running"} />
       </div>
     </div>

@@ -335,6 +335,14 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             return [dict(r) for r in db.execute("SELECT * FROM traces WHERE course_id=? ORDER BY id", (cid,))]
         return [dict(r) for r in db.execute("SELECT * FROM traces WHERE course_id=? ORDER BY id DESC LIMIT ?", (cid, limit))]
 
+    @app.get("/api/courses/{cid}/map")
+    def course_map(cid: int):
+        """Every imported file with how many of its pages are read so far: the Run screen draws the course from it."""
+        course_or_404(cid)
+        return [dict(r) for r in db.execute(
+            "SELECT s.name, s.pages, s.role, COUNT(p.text) AS read, COALESCE(SUM(p.text IS NOT NULL AND p.readable=0), 0) AS unreadable "
+            "FROM sources s LEFT JOIN pages p ON p.source_id=s.id WHERE s.course_id=? AND s.excluded=0 GROUP BY s.id ORDER BY s.name", (cid,))]
+
     def chapter_or_404(cid: int, chid: int) -> sqlite3.Row:
         row = db.execute("SELECT * FROM chapters WHERE id=? AND course_id=?", (chid, cid)).fetchone()
         if row is None:
