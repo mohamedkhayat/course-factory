@@ -5,7 +5,7 @@ import { PageViewer, ReaderBlock } from "@/components/blocks";
 import { Md } from "@/components/md";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { get, readEvents, send, type Chapter, type Citation } from "@/lib/api";
+import { get, readEvents, send, type Chapter, type Citation, type Course } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useCid } from "./run";
 
@@ -74,6 +74,7 @@ export function Reader() {
   const cid = useCid();
   const { data: chapters = [] } = useQuery({ queryKey: ["reader", cid], queryFn: () => get<Chapter[]>(`/api/courses/${cid}/reader`) });
   const { data: place } = useQuery({ queryKey: ["place", cid], queryFn: () => get<{ section_id: number | null; read: number[] }>(`/api/courses/${cid}/place`) });
+  const { data: course } = useQuery({ queryKey: ["course", String(cid)], queryFn: () => get<Course>(`/api/courses/${cid}`) });
   const [sid, setSid] = useState<number | null>(null);
   const [cite, setCite] = useState<Citation | null>(null);
   const [tutor, setTutor] = useState(false);
@@ -91,7 +92,9 @@ export function Reader() {
         <div className="sticky top-18 max-h-[calc(100dvh-6rem)] space-y-5 overflow-y-auto">
           {chapters.map((c) => (
             <div key={c.id}>
-              <p className="px-2 font-display text-sm font-semibold">{c.title}</p>
+              <p className="flex items-baseline justify-between gap-2 px-2 font-display text-sm font-semibold">{c.title}
+                {course?.goal === "cram" && <span className="tabular shrink-0 font-sans text-xs font-normal text-muted-foreground">
+                  {Math.round(c.exam_weight * 100)}% of exams</span>}</p>
               <ul className="mt-1">
                 {c.sections.map((s) => (
                   <li key={s.id}>
