@@ -11,7 +11,7 @@ from typing import Literal
 
 import pypdfium2 as pdfium
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
@@ -27,6 +27,7 @@ from .generation import build_graph, run_status, thread
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import Backend, record_owner_action
 
+WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
 RUN_POLL = 0.5
 
@@ -154,6 +155,10 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         advancing.add(cid)
         tasks.add_task(advance, cid, {"course_id": cid})
         return {"id": cid}
+
+    @app.get("/api/courses")
+    def list_courses():
+        return [dict(r) for r in db.execute("SELECT * FROM courses ORDER BY id DESC")]
 
     @app.get("/api/courses/{cid}")
     def get_course(cid: int):
@@ -439,4 +444,10 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     app.include_router(tutor.router(ctx))
     app.include_router(grading.router(ctx))
     app.include_router(app_labs)
+    if (WEB_DIST / "index.html").exists():  # the built frontend; any other path is a client-side route
+        @app.get("/{path:path}", include_in_schema=False)
+        def frontend(path: str):
+            f = (WEB_DIST / path).resolve()
+            return FileResponse(f if path and f.is_file() and WEB_DIST in f.parents else WEB_DIST / "index.html")
+
     return app

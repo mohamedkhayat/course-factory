@@ -41,9 +41,6 @@ class LocalSearchModels:
 
 
 def setup(db: sqlite3.Connection, dim: int) -> None:
-    db.enable_load_extension(True)
-    sqlite_vec.load(db)
-    db.enable_load_extension(False)
     db.executescript(f"""
     CREATE TABLE IF NOT EXISTS passages (
       id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL, source_id INTEGER NOT NULL REFERENCES sources(id),

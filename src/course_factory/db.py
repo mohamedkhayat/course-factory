@@ -1,5 +1,9 @@
 import sqlite3
+import threading
 from pathlib import Path
+from typing import cast
+
+import sqlite_vec
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS courses (
@@ -24,14 +28,29 @@ CREATE TABLE IF NOT EXISTS traces (
 """
 
 
+class PerThread(threading.local):
+    """One sqlite3 connection per thread: a shared connection breaks under FastAPI's thread pool.
+
+    Every statement autocommits, so connections never hold a transaction across calls."""
+
+    def __init__(self, path: Path):
+        self.conn = sqlite3.connect(path, isolation_level=None, timeout=30)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.enable_load_extension(True)  # sqlite-vec, for search; loaded per connection
+        sqlite_vec.load(self.conn)
+        self.conn.enable_load_extension(False)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+
 def connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.executescript(SCHEMA)
-    conn.executescript(OUTLINE_SCHEMA)
-    return conn
+    db = cast(sqlite3.Connection, PerThread(path))
+    db.execute("PRAGMA journal_mode = WAL")
+    db.executescript(SCHEMA)
+    db.executescript(OUTLINE_SCHEMA)
+    return db
 
 OUTLINE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chapters (
