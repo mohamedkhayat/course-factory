@@ -120,7 +120,8 @@ def seconds_left(db: sqlite3.Connection, cid: int) -> int | None:
         work = [(unread, mean_ms(db, "read_page"))]
     else:
         sections = db.execute("SELECT COUNT(*) FROM sections s JOIN chapters c ON c.id=s.chapter_id WHERE c.course_id=? "
-                              "AND c.status IN ('planned', 'generating') AND c.priority!='skip'", (cid,)).fetchone()[0]
+                              "AND c.status IN ('planned', 'generating') AND c.priority!='skip' "
+                              "AND s.generation_status!='complete'", (cid,)).fetchone()[0]
         past = db.execute("SELECT COUNT(*) FROM sources s WHERE s.course_id=? AND s.role='past exam' AND s.excluded=0 "
                           "AND NOT EXISTS (SELECT 1 FROM exams e WHERE e.source_id=s.id)", (cid,)).fetchone()[0]
         mocks = max(0, exams.MOCK_EXAMS - db.execute("SELECT COUNT(*) FROM exams WHERE course_id=? AND kind='mock'", (cid,)).fetchone()[0])

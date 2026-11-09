@@ -3,9 +3,9 @@
 Text fields are Markdown with $inline$ / $$display$$ math. Fields named `latex` are bare LaTeX.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError, model_validator
 
 Md = str
 
@@ -17,6 +17,43 @@ class SympyClaim(BaseModel):
     expr: str
     vars: list[str] = []
     expected: str | list[str] | list[list[str]]
+
+
+OPS = {"equal": "equal", "eq": "equal", "equals": "equal", "=": "equal", "==": "equal", "value": "equal", "evaluate": "equal",
+       "simplify": "equal", "diff": "diff", "derivative": "diff", "d": "diff", "grad": "grad", "gradient": "grad",
+       "hessian": "hessian", "hess": "hessian"}
+ANSWER_KEYS = {"expected": None, "derivative": "diff", "gradient": "grad", "hessian": "hessian", "value": "equal",
+               "result": "equal", "equals": "equal"}
+
+
+def _strings(v):
+    return [_strings(x) for x in v] if isinstance(v, list) else str(v)
+
+
+def heal_claim(raw) -> dict | None:
+    """Coerces the claim shapes the model writes into a SympyClaim; None for one sympy cannot check."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("expr"), str):
+        return None
+    c = dict(raw)
+    key = next((k for k in ANSWER_KEYS if k in c), None)
+    if key is None and "==" in c["expr"]:  # "lhs == rhs" written in expr
+        c["expr"], c["expected"], c["op"] = *c["expr"].split("==", 1), "equal"
+    elif key not in (None, "expected"):
+        c["expected"] = c.pop(key)
+        c.setdefault("op", ANSWER_KEYS[key])
+    if "expected" not in c:
+        return None
+    op = OPS.get(str(c.get("op", "equal")).strip().lower())
+    if op is None:
+        return None  # lt, ge...: sympy cannot decide these without a domain
+    if op == "diff" and "diff(" in c["expr"]:
+        op = "equal"  # the derivative is already taken in expr
+    names = c.get("vars", c.get("var", []))
+    names = [n.strip() for n in names.split(",")] if isinstance(names, str) else names
+    return {"op": op, "expr": c["expr"].strip(), "vars": [str(n) for n in names if str(n).strip()], "expected": _strings(c["expected"])}
+
+
+Claims = Annotated[list[SympyClaim], BeforeValidator(lambda v: [c for c in map(heal_claim, v) if c] if isinstance(v, list) else v)]
 
 
 class TheoremBox(BaseModel):
@@ -31,7 +68,7 @@ class WorkedExample(BaseModel):
     problem: Md
     steps: list[Md] = Field(min_length=1)
     answer: Md
-    claims: list[SympyClaim] = []
+    claims: Claims = []
 
 
 class Exercise(BaseModel):
@@ -39,7 +76,7 @@ class Exercise(BaseModel):
     statement: Md
     hints: list[Md] = []
     correction: Md
-    claims: list[SympyClaim] = []
+    claims: Claims = []
 
 
 class QuizQuestion(BaseModel):
@@ -58,7 +95,7 @@ class KeyFormula(BaseModel):
     name: str
     latex: str
     meaning: Md
-    claims: list[SympyClaim] = []
+    claims: Claims = []
 
 
 class Callout(BaseModel):

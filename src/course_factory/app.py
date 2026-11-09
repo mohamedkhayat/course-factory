@@ -26,7 +26,7 @@ from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
 from .generation import build_graph, gpu, pipeline, run_status, seconds_left, thread
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
-from .pi_step import ACTIVITY, Backend, record_owner_action
+from .pi_step import Backend, activity, record_owner_action
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
@@ -123,10 +123,11 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         s = run_status(graph, cid, course_or_404(cid)["run_error"])
         p = db.execute("SELECT COALESCE(SUM(s.pages),0) total, (SELECT COUNT(*) FROM pages p JOIN sources s2 ON s2.id=p.source_id "
                        "WHERE s2.course_id=? AND p.text IS NOT NULL) done FROM sources s WHERE s.course_id=?", (cid, cid)).fetchone()
-        a = ACTIVITY.get(cid)
+        a = activity(cid)
         out = {"error": None, **s, "pages_read": p["done"], "pages_total": p["total"], "pipeline": pipeline(graph, cid),
                "active": cid in advancing,  # "running" but not active: the app stopped mid-step, and Retry resumes it
-               "activity": {k: v for k, v in a.items() if k != "started"} | {"elapsed": round(time.time() - a["started"])} if a else None}
+               "activity": {k: v for k, v in a.items() if k not in ("started", "id")}
+                           | {"elapsed": round(time.time() - a["started"])} if a else None}
         if s["status"] == "running":
             out |= {"seconds_left": seconds_left(db, cid), "gpu": gpu()}
         return out

@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BlockBody } from "@/components/blocks";
@@ -30,7 +31,7 @@ function ReviewBlock({ cid, b }: { cid: number; b: RBlock }) {
         {b.origin === "model_added" && <Badge variant="secondary">model-added</Badge>}
         {b.status === "flagged" && <Badge variant="destructive">flagged</Badge>}
       </div>
-      {b.flags.length > 0 && <ul className="mb-3 list-disc pl-5 text-sm text-destructive">{b.flags.map((f, i) => <li key={i}>{f}</li>)}</ul>}
+      {b.flags.length > 0 && <ul className={cn("mb-3 list-disc pl-5 text-sm", b.status === "flagged" ? "text-destructive" : "text-warn")}>{b.flags.map((f, i) => <li key={i}>{f}</li>)}</ul>}
       {mode === "edit" ? (
         <div className="space-y-2">
           <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={12} className="font-mono text-xs" aria-label="Block data (JSON)" />

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -50,12 +51,39 @@ def connect(path: Path) -> sqlite3.Connection:
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
     db.executescript(OUTLINE_SCHEMA)
-    for table, column in [("questions", "chapter_id INTEGER"), ("traces", "duration_ms INTEGER"), ("traces", "checks TEXT")]:  # columns added after a table first shipped
+    for table, column in [("questions", "chapter_id INTEGER"), ("traces", "duration_ms INTEGER"),
+                          ("traces", "checks TEXT"),
+                          ("sections", "generation_status TEXT NOT NULL DEFAULT 'planned'")]:
         try:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
         except sqlite3.OperationalError:
             pass  # already there
+    _backfill_completed_sections(db)
     return db
+
+
+def _backfill_completed_sections(db: sqlite3.Connection) -> None:
+    """Recognize pre-migration Sections whose final checked Blocks were already committed."""
+    section_ids: dict[tuple[int, str, str], list[int]] = {}
+    for row in db.execute("SELECT ch.course_id, ch.title chapter, s.title section, s.id "
+                          "FROM sections s JOIN chapters ch ON ch.id=s.chapter_id"):
+        section_ids.setdefault((row["course_id"], row["chapter"], row["section"]), []).append(row["id"])
+    latest: dict[tuple[int, str, str], list] = {}
+    for row in db.execute("SELECT course_id, inputs, checks FROM traces WHERE step='write_section' "
+                          "AND error IS NULL AND checks IS NOT NULL ORDER BY id"):
+        try:
+            inputs, checks = json.loads(row["inputs"]), json.loads(row["checks"])
+            key = (row["course_id"], inputs["chapter"], inputs["section"])
+            latest[key] = checks
+        except (TypeError, KeyError, json.JSONDecodeError):
+            continue
+    for key, checks in latest.items():
+        ids = section_ids.get(key, [])
+        if len(ids) != 1 or not checks:
+            continue  # duplicate titles or an ambiguous/empty trace are not safe to resume as complete
+        count = db.execute("SELECT COUNT(*) FROM blocks WHERE section_id=?", (ids[0],)).fetchone()[0]
+        if count == len(checks):
+            db.execute("UPDATE sections SET generation_status='complete' WHERE id=?", (ids[0],))
 
 OUTLINE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS chapters (
@@ -65,7 +93,8 @@ CREATE TABLE IF NOT EXISTS chapters (
 );
 CREATE TABLE IF NOT EXISTS sections (
   id INTEGER PRIMARY KEY, chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-  position INTEGER NOT NULL, title TEXT NOT NULL, pages TEXT NOT NULL DEFAULT '[]'
+  position INTEGER NOT NULL, title TEXT NOT NULL, pages TEXT NOT NULL DEFAULT '[]',
+  generation_status TEXT NOT NULL DEFAULT 'planned'
 );
 CREATE TABLE IF NOT EXISTS blocks (
   id INTEGER PRIMARY KEY, section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,

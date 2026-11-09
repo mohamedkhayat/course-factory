@@ -1,4 +1,7 @@
 import json
+import os
+
+os.environ.setdefault("CF_MODEL_CONCURRENCY", "1")  # serial model calls keep the fake model's call order deterministic
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -71,7 +74,7 @@ class FakeModel:
 
     @staticmethod
     def section_of(prompt: str) -> str:
-        return prompt.rsplit("SECTION: ", 1)[1].strip()
+        return prompt.rsplit("SECTION: ", 1)[1].split("\n", 1)[0].strip()
 
     @staticmethod
     def pages_of(prompt: str) -> list[dict]:

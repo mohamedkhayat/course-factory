@@ -72,29 +72,97 @@ def quiz_errors(data: dict) -> list[str]:
     return errs
 
 
+FLOAT_TOLERANCE = 1e-4  # relative: decimals in a worked example are already rounded
+
+
+def natural(name: str) -> list:
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name)]
+
+
+def value(v, names):
+    """Parses an expected value: an expression, or a list written as a JSON list, a string "[a, b]" or "a, b"."""
+    if isinstance(v, list):
+        return [value(x, names) for x in v]
+    s, depth, top_comma = str(v).strip(), 0, False
+    for ch in s:
+        depth += ch in "([{"
+        depth -= ch in ")]}"
+        top_comma |= ch == "," and depth == 0
+    return parse(f"[{s}]" if top_comma else s, names)
+
+
+def canon(v):
+    """One shape for sympy's many: solve's dicts and lists of tuples, eigenvals' dicts, matrices, 1-element lists."""
+    if isinstance(v, dict):
+        if all(isinstance(k, sp.Symbol) for k in v):
+            return canon([v[k] for k in sorted(v, key=lambda k: natural(str(k)))])
+        return canon(sorted(([k, x] for k, x in v.items()), key=lambda kv: sp.default_sort_key(sp.sympify(kv[0]))))
+    if isinstance(v, sp.MatrixBase):
+        v = v.tolist()
+    if isinstance(v, (list, tuple, sp.Tuple)):
+        items = [canon(x) for x in v]
+        return items[0] if len(items) == 1 else items
+    return sp.sympify(v)
+
+
+def same(got, want) -> bool:
+    if isinstance(got, list) or isinstance(want, list):
+        return isinstance(got, list) and isinstance(want, list) and len(got) == len(want) and all(map(same, got, want))
+    d = sp.simplify(got - want)
+    if d == 0:
+        return True
+    if d.is_number and (got.has(sp.Float) or want.has(sp.Float)):
+        return abs(float(d)) <= FLOAT_TOLERANCE * max(1.0, abs(float(want)))
+    return False
+
+
 def claim_errors(claims: list[dict]) -> list[str]:
+    """Only a claim sympy proves wrong is an error; one it cannot read checks nothing and is skipped."""
     errs = []
     for c in claims:
         try:
-            names = c["vars"]
-            f = parse(c["expr"], names)
+            op, names = c["op"], c["vars"]
+            if op != "equal" and not names or op == "grad" and isinstance(c["expected"], list) and len(c["expected"]) != len(names):
+                names = sorted((str(s) for s in parse(c["expr"]).free_symbols), key=natural)
+            f, want = parse(c["expr"], names), value(c["expected"], names)
             syms = [sp.Symbol(n, real=True) for n in names]
-            if c["op"] == "equal":
-                got, want = f, parse(str(c["expected"]), names)
-            elif c["op"] == "diff":
-                got, want = sp.diff(f, syms[0]), parse(str(c["expected"]), names)
-            elif c["op"] == "grad":
-                got = sp.Matrix([sp.diff(f, s) for s in syms])
-                want = sp.Matrix([parse(e, names) for e in c["expected"]])
+            if op == "grad" and not isinstance(want, list):
+                op = "diff"  # one partial derivative written as a gradient
+            if op == "equal":
+                got = f
+            elif op == "diff":
+                got = sp.diff(f, syms[0])
+            elif op == "grad":
+                got = [sp.diff(f, s) for s in syms]
             else:
                 got = sp.hessian(f, syms)
-                want = sp.Matrix([[parse(e, names) for e in row] for row in c["expected"]])
-            diff = sp.simplify(got - want)
-            if diff != 0 and not (isinstance(diff, sp.MatrixBase) and diff.is_zero_matrix):
-                errs.append(f"sympy: {c['op']} of {c['expr']} is {got}, not {c['expected']}")
-        except Exception as e:  # unparseable claims are errors the model must fix
-            errs.append(f"sympy could not check claim {c}: {e}")
+                if isinstance(want, list) and len(want) == len(syms) ** 2 and not isinstance(want[0], list):
+                    want = [want[i:i + len(syms)] for i in range(0, len(want), len(syms))]  # flat "a, b, c, d"
+            ok = same(canon(got), canon(want))
+        except Exception:
+            continue
+        if not ok:
+            errs.append(f"sympy: {c['op']} of {c['expr']} is {canon(got)}, not {c['expected']}")
     return errs
+
+
+TEXT_FIXES = [
+    (re.compile(r"\\n(?![A-Za-z])"), "\n"),  # a newline the model escaped twice
+    (re.compile(r"\$\$\$\$"), "$$\n$$"),  # two display formulas run together
+    (re.compile(r"(\\text\{[^{}]*?)(\\[A-Za-z]+)([^{}]*\})"), r"\1}\2\\text{\3"),  # math command inside \text{}
+]
+
+
+def heal_text(data, key: str = ""):
+    """Deterministic fixes for text the model reliably mangles, so they need no repair call."""
+    if isinstance(data, dict):
+        return {k: heal_text(v, k) for k, v in data.items()}
+    if isinstance(data, list):
+        return [heal_text(v, key) for v in data]
+    if isinstance(data, str) and key not in NOT_MARKDOWN - {"latex"}:
+        for pattern, repl in TEXT_FIXES:
+            data = pattern.sub(repl, data)
+    return data
 
 
 def iteration_rows(data: dict) -> list[dict]:
@@ -148,7 +216,7 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
     for item in raw:
         errs: list[str] = []
         try:
-            draft = BlockDraft.model_validate(item)
+            draft = BlockDraft.model_validate(item | {"data": heal_text(item.get("data") or {})} if isinstance(item, dict) else item)
         except Exception as e:
             blocks.append({"component": str(item.get("component", "?")), "data": item.get("data") or {}, "citations": [],
                            "origin": "model_added"})

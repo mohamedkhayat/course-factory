@@ -11,7 +11,12 @@ Rules:
 - Text fields are Markdown with $inline$ and $$display$$ LaTeX (KaTeX). Fields named latex are bare LaTeX.
 - Mermaid diagrams must be valid Mermaid syntax.
 - Expressions in expr, f and claims use sympy syntax: x**2, exp(x), sqrt(x), x1*x2.
-- Add claims to Worked Examples, Exercises and Key Formulas whenever a derivative, gradient, Hessian or equality can be checked. The app verifies them.
+- Add claims to Worked Examples, Exercises and Key Formulas whenever a derivative, gradient, Hessian or equality can be checked. The app verifies them. Each claim is exactly {"op", "expr", "vars", "expected"}, op one of equal, diff, grad, hessian; expected is an expression, a list for grad, a list of rows for hessian:
+  {"op": "grad", "expr": "x**2 + x*y", "vars": ["x", "y"], "expected": ["2*x + y", "x"]}
+  {"op": "hessian", "expr": "x**2 + x*y", "vars": ["x", "y"], "expected": [["2", "1"], ["1", "0"]]}
+  {"op": "equal", "expr": "0.8 - 0.1*(-10.8)", "vars": [], "expected": "1.88"}
+- A "from_source" Block says only what its cited pages say. Put your own explanations, intuitions and extra steps in a separate "model_added" Block.
+- Keep a Section to at most 12 Blocks: merge small steps, do not repeat what an earlier Block said.
 - For an Iteration Table give only the method, f, vars, x0, step and iterations. The app computes the rows.
 - origin is "from_source" when the Block restates the pages; it then needs citations [{"source","page","quote"?}] to the pages below. Use "model_added" for your own explanations, intuitions and extra exercises.
 - Use prose only when no other Component fits.

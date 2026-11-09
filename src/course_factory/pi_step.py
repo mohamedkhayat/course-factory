@@ -1,9 +1,10 @@
 """The one seam every model call goes through (ADR 0001): prompt from the Harness, validate, write a Trace."""
 
+import errno
 import hashlib
 import json
-import re
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -13,11 +14,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
 
 HARNESS_DIR = Path(os.environ.get("CF_HARNESS", Path(__file__).resolve().parents[2] / "harness"))
 ATTEMPTS = 3
+MODEL_LANES = max(1, int(os.environ.get("CF_MODEL_CONCURRENCY", "2")))
 
 
 class Backend(Protocol):
@@ -37,8 +40,7 @@ QUEUE_RETRIES = 6
 
 
 class Gatekeeper:
-    """The 2 GPU lanes. Live work takes any free lane, ahead of waiting generation. Generation uses one lane
-    and borrows the second only while no Live work is running or waiting."""
+    """Bound model concurrency; live work takes a free lane ahead of waiting generation."""
 
     def __init__(self, lanes: int = 2):
         self.lanes, self.gen, self.live, self.live_waiting = lanes, 0, 0, 0
@@ -73,13 +75,17 @@ class Gatekeeper:
                 self.cond.notify_all()
 
 
-GATE = Gatekeeper()
+GATE = Gatekeeper(MODEL_LANES)
 
 
-def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], workdir: Path, live: bool) -> str:
+def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], workdir: Path, live: bool,
+                 output_schema: dict | None = None) -> str:
     for _ in range(QUEUE_RETRIES):
         try:
             with GATE.lane(live):
+                structured = getattr(backend, "structured", None)
+                if output_schema is not None and structured is not None:
+                    return structured(step, prompt, files, workdir, output_schema)
                 return backend(step, prompt, files, workdir)
         except QueueTimeout:
             continue
@@ -98,7 +104,7 @@ def render_prompt(step: str, inputs: dict) -> str:
     prompt = (HARNESS_DIR / f"{step}.md").read_text()
     for key, value in inputs.items():
         prompt = prompt.replace("{{" + key + "}}", value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
-    return prompt
+    return re.sub(r"\{\{\w+\}\}", "", prompt)  # an optional input left out renders empty
 
 
 # LaTeX commands starting with a JSON escape letter (b f n r t u): an unescaped \frac would silently read as form feed + "rac"
@@ -122,56 +128,197 @@ def escape_latex(text: str) -> str:
 BAD_ESCAPE_RE = re.compile(r'(?<!\\)((?:\\\\)*)\\(?=[^"\\/bfnrtu])')
 
 
+def _extract_json(text: str) -> str:
+    """Return the first balanced JSON object/array, ignoring braces in strings."""
+    in_string = escaped = False
+    start = None
+    stack: list[str] = []
+    pairs = {"}": "{", "]": "["}
+    for i, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"' and start is not None:
+            in_string = True
+        elif char in "{[":
+            if start is None:
+                start = i
+            stack.append(char)
+        elif char in "}]" and stack:
+            if stack[-1] != pairs[char]:
+                continue
+            stack.pop()
+            if not stack and start is not None:
+                return text[start : i + 1]
+    return text[start:] if start is not None else text
+
+
+def _escape_controls_in_strings(text: str) -> str:
+    out, in_string, escaped = [], False, False
+    for char in text:
+        if in_string and ord(char) < 0x20:
+            out.append({"\n": r"\n", "\r": r"\r", "\t": r"\t"}.get(char, f"\\u{ord(char):04x}"))
+            continue
+        out.append(char)
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+    return "".join(out)
+
+
+def _remove_trailing_commas(text: str) -> str:
+    out, in_string, escaped = [], False, False
+    for i, char in enumerate(text):
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+        elif char == ",":
+            j = i + 1
+            while j < len(text) and text[j].isspace():
+                j += 1
+            next_non_space = text[j] if j < len(text) else ""
+            if next_non_space not in "}]":
+                out.append(char)
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _insert_missing_comma(text: str, error: json.JSONDecodeError) -> str | None:
+    if error.msg != "Expecting ',' delimiter" or error.pos >= len(text):
+        return None
+    before = text[: error.pos].rstrip()
+    after = text[error.pos :].lstrip()
+    if not before or not after or after[0] not in '"{[-0123456789tfn':
+        return None
+    if before[-1] not in '"}]0123456789eE':
+        return None
+    return before + ", " + after
+
+
+def _quote_unquoted_key(text: str, error: json.JSONDecodeError) -> str | None:
+    if error.msg != "Expecting property name enclosed in double quotes":
+        return None
+    match = re.match(r"[A-Za-z_][A-Za-z0-9_-]*", text[error.pos :])
+    if not match:
+        return None
+    end = error.pos + match.end()
+    colon = end
+    while colon < len(text) and text[colon].isspace():
+        colon += 1
+    if colon == len(text) or text[colon] != ":":
+        return None
+    return text[: error.pos] + json.dumps(match.group()) + text[end:]
+
+
 def parse_json(text: str) -> object:
-    text = escape_latex(text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end < start:
-            raise
-        return json.loads(text[start : end + 1])
+    """Parse model JSON, applying only syntax repairs that preserve its data."""
+    text = escape_latex(text).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I).strip()
+    candidate = _extract_json(text)
+    candidate = _remove_trailing_commas(_escape_controls_in_strings(candidate))
+    last_error = json.JSONDecodeError("unrepairable", candidate, 0)
+    for _ in range(4):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as error:
+            last_error = error
+            fixed = _insert_missing_comma(candidate, error) or _quote_unquoted_key(candidate, error)
+            if fixed is None or fixed == candidate:
+                raise error
+            candidate = fixed
+    raise last_error
 
 
 def run_pi_step[T: BaseModel](
     db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, schema: type[T],
     workdir: Path, files: tuple[Path, ...] = (), course_id: int | None = None, live: bool = False,
 ) -> T:
-    version, prompt = harness_version(), render_prompt(step, inputs)
+    version, base_prompt = harness_version(), render_prompt(step, inputs)
+    prompt, output_schema = base_prompt, schema.model_json_schema()
     error = "no attempt"
     watched = None if live else course_id  # background generation shows on the Run screen
+    activity_id = uuid4().hex
     try:
         for attempt in range(1, ATTEMPTS + 1):
             raw, start = None, time.monotonic()
             if watched is not None:
-                ACTIVITY[watched] = {"step": step, "attempt": attempt, "started": time.time(), "thinking": "", "output": "",
-                                       "inputs": {k: v for k, v in inputs.items() if isinstance(v, str) and len(v) <= 200}}
+                with _activity_lock:
+                    ACTIVITY.setdefault(watched, {})[activity_id] = {
+                        "id": activity_id, "step": step, "attempt": attempt, "started": time.time(),
+                        "thinking": "", "output": "",
+                        "inputs": {k: v for k, v in inputs.items() if isinstance(v, str) and len(v) <= 200},
+                    }
                 _now.course_id = watched
+                _now.activity_id = activity_id
             try:
-                raw = call_backend(backend, step, prompt, list(files), workdir, live)
+                raw = call_backend(backend, step, prompt, list(files), workdir, live, output_schema)
                 result = schema.model_validate(parse_json(raw))
             except (ValidationError, json.JSONDecodeError, StepFailed, subprocess.TimeoutExpired, OSError) as e:
                 error = str(e)[:2000]
                 _trace(db, course_id, step, version, inputs, files, raw, error, start)
+                if isinstance(e, OSError) and e.errno == errno.E2BIG:
+                    break
+                excerpt = (raw or "")[-3000:]
+                prompt = (base_prompt + "\n\nRETRY FEEDBACK: Your previous response was rejected. "
+                          f"Fix this error: {error}\nReturn the complete corrected result.\n"
+                          f"Previous response ending (for reference):\n{excerpt}")
                 continue
             _trace(db, course_id, step, version, inputs, files, result.model_dump_json(), None, start)
             return result
         raise StepFailed(f"{step}: {error}")
     finally:
         if watched is not None:
-            ACTIVITY.pop(watched, None)
+            with _activity_lock:
+                entries = ACTIVITY.get(watched, {})
+                entries.pop(activity_id, None)
+                if not entries:
+                    ACTIVITY.pop(watched, None)
             _now.course_id = None
+            _now.activity_id = None
 
 
-ACTIVITY: dict[int, dict] = {}  # course id -> the background model step running now, with the tail of its thinking and output
+ACTIVITY: dict[int, dict[str, dict]] = {}  # course id -> concurrent background model steps
 ACTIVITY_TAIL = 6000
 _now = threading.local()
+_activity_lock = threading.Lock()
+
+
+def activity(course_id: int) -> dict | None:
+    """The newest active model step for the Run screen."""
+    with _activity_lock:
+        entries = ACTIVITY.get(course_id, {})
+        current = max(entries.values(), key=lambda a: a["started"], default=None)
+        return dict(current) if current else None
 
 
 def report(kind: str, delta: str) -> None:
     """A backend streams what the model is thinking ("thinking") or writing ("output") into this thread's step."""
     cid = getattr(_now, "course_id", None)
-    a = ACTIVITY.get(cid) if cid is not None else None
+    activity_id = getattr(_now, "activity_id", None)
+    with _activity_lock:
+        a = ACTIVITY.get(cid, {}).get(activity_id) if cid is not None and activity_id else None
     if a is not None:
         a[kind] = (a[kind] + delta)[-ACTIVITY_TAIL:]
 
@@ -233,9 +380,15 @@ class PiBackend:
     def __init__(self, model: str = os.environ.get("CF_MODEL", "llama-swap/ninfer-qwen3.8-27b:medium"), timeout: int = 900):
         self.model, self.timeout = model, timeout
 
-    def _cmd(self, prompt, files):
-        return ["pi", "-p", "--mode", "json", "--no-session", "--no-extensions", "--no-skills",
-                "--no-context-files", "--no-tools", "--model", self.model, "--", *[f"@{f}" for f in files]]
+    def _cmd(self, prompt, files, extension: Path | None = None):
+        cmd = ["pi", "-p", "--mode", "json", "--no-session", "--no-skills", "--no-context-files",
+               "--model", self.model]
+        if extension:
+            cmd += ["--no-extensions", "--no-builtin-tools", "--no-mcp", "--extension", str(extension),
+                    "--tools", "cf_return_result"]
+        else:
+            cmd += ["--no-extensions", "--no-tools"]
+        return [*cmd, "--", *[f"@{f}" for f in files]]
 
     def __call__(self, step, prompt, files, workdir):
         lines = []
@@ -245,34 +398,79 @@ class PiBackend:
                 report("thinking" if d["type"] == "thinking_delta" else "output", d.get("delta", ""))
         return assistant_text("".join(lines))
 
+    def structured(self, step, prompt, files, workdir, schema):
+        lines = []
+        for line, event in self._events(prompt, files, workdir, schema):
+            lines.append(line)
+            if event.get("type") in ("thinking_delta", "text_delta"):
+                report("thinking" if event["type"] == "thinking_delta" else "output", event.get("delta", ""))
+        return assistant_text("".join(lines))
+
     def stream(self, step, prompt, files, workdir) -> Iterator[str]:
         for _, d in self._events(prompt, files, workdir):
             if d.get("type") == "text_delta":
                 yield d.get("delta", "")
 
-    def _events(self, prompt, files, workdir) -> Iterator[tuple[str, dict]]:
+    def _events(self, prompt, files, workdir, output_schema: dict | None = None) -> Iterator[tuple[str, dict]]:
         """pi's JSON event lines, each with its assistant message event ({} for other events). Killed after the timeout."""
         workdir.mkdir(parents=True, exist_ok=True)
-        stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
-        stdin.write(prompt)
-        stdin.seek(0)
-        with stdin, subprocess.Popen(self._cmd(prompt, files), cwd=workdir, stdin=stdin, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True) as proc:
-            timer = threading.Timer(self.timeout, proc.kill)
-            timer.start()
-            try:
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    try:
-                        ev = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    yield line, (ev.get("assistantMessageEvent") or {}) if ev.get("type") == "message_update" else {}
-                code = proc.wait()
-            finally:
-                timer.cancel()
-            if code != 0:
-                raise StepFailed(f"pi exited {code}: {proc.stderr.read()[-500:] if proc.stderr else ''}")
+        temp = tempfile.TemporaryDirectory(prefix="course-factory-pi-") if output_schema else None
+        try:
+            env = os.environ.copy()
+            extension = None
+            if output_schema and temp:
+                root = Path(temp.name)
+                agent_dir = root / "agent"
+                agent_dir.mkdir()
+                self._strict_model_config(agent_dir)
+                schema_path = root / "schema.json"
+                schema_path.write_text(json.dumps(output_schema, ensure_ascii=False))
+                extension = root / "structured-output.mjs"
+                extension.write_text(STRUCTURED_OUTPUT_EXTENSION)
+                env["PI_CODING_AGENT_DIR"] = str(agent_dir)
+                env["CF_OUTPUT_SCHEMA"] = str(schema_path)
+            stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
+            stdin.write(prompt)
+            stdin.seek(0)
+            with stdin, subprocess.Popen(self._cmd(prompt, files, extension), cwd=workdir, stdin=stdin,
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
+                timer = threading.Timer(self.timeout, proc.kill)
+                timer.start()
+                try:
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        try:
+                            ev = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        yield line, (ev.get("assistantMessageEvent") or {}) if ev.get("type") == "message_update" else {}
+                    code = proc.wait()
+                finally:
+                    timer.cancel()
+                if code != 0:
+                    raise StepFailed(f"pi exited {code}: {proc.stderr.read()[-500:] if proc.stderr else ''}")
+        finally:
+            if temp:
+                temp.cleanup()
+
+    def _qwen_strict_model(self) -> bool:
+        return "qwen3.8-27b" in self.model.lower()
+
+    def _strict_model_config(self, agent_dir: Path) -> None:
+        """Give the confirmed Qwen endpoint's strict tool support to this Pi subprocess only."""
+        source_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
+        source = source_dir / "models.json"
+        config = json.loads(source.read_text()) if source.exists() else {"providers": {}}
+        if self._qwen_strict_model():
+            provider_id, model_id = self.model.split("/", 1)
+            model_id = model_id.split(":", 1)[0]
+            provider = config.get("providers", {}).get(provider_id)
+            if provider:
+                provider.setdefault("compat", {})["supportsStrictMode"] = True
+                for model in provider.get("models", []):
+                    if model.get("id") == model_id:
+                        model.setdefault("compat", {})["supportsStrictMode"] = True
+        (agent_dir / "models.json").write_text(json.dumps(config, ensure_ascii=False))
 
 
 def assistant_text(jsonl: str) -> str:
@@ -284,5 +482,33 @@ def assistant_text(jsonl: str) -> str:
             continue
         msg = ev.get("message") or {}
         if ev.get("type") == "message_end" and msg.get("role") == "assistant":
-            text = "".join(p.get("text", "") for p in msg.get("content", []) if p.get("type") == "text")
+            content = msg.get("content", [])
+            calls = [p for p in content if p.get("type") == "toolCall" and p.get("name") == "cf_return_result"]
+            if calls:
+                text = json.dumps(calls[-1].get("arguments", {}), ensure_ascii=False)
+            else:
+                text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
     return text
+
+
+STRUCTURED_OUTPUT_EXTENSION = '''
+import { readFileSync } from "node:fs";
+
+export default function (pi) {
+  const schema = JSON.parse(readFileSync(process.env.CF_OUTPUT_SCHEMA, "utf8"));
+  pi.registerTool({
+    name: "cf_return_result",
+    label: "Return structured result",
+    description: "Return the complete result matching the supplied schema. Call once as the final action.",
+    promptSnippet: "Return the requested result through cf_return_result",
+    promptGuidelines: ["Call cf_return_result exactly once with the complete result; do not answer in prose."],
+    parameters: schema,
+    // Use strict sampling where this schema fits Pi's strict subset. Generic Block data
+    // falls back to normal function arguments, which are still returned as JSON.
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
+    async execute(_id, params) {
+      return { content: [{ type: "text", text: "Result accepted." }], details: {}, terminate: true };
+    },
+  });
+}
+'''

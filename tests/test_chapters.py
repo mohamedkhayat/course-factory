@@ -1,5 +1,6 @@
 import json
 
+from course_factory.chapters import REPAIRS
 from test_outline import to_outline_gate
 
 GRADIENT, EXERCICES, CONVEXES = "Gradient", "Exercices", "Ensembles convexes"
@@ -86,7 +87,7 @@ def test_failing_block_is_repaired(client, material, model):
     assert b["status"] == "ok" and b["data"]["questions"][0]["correct"] == [1]
 
 
-def test_block_is_flagged_and_kept_after_three_failed_repairs(client, material, model):
+def test_block_is_flagged_and_kept_after_its_repairs_fail(client, material, model):
     cid = generate(client, material, model, blocks=one_block("quiz", {"questions": [
         {"prompt": "?", "options": ["a", "A "], "correct": [0, 1], "explanation": ""}]}))
     b = first_block(client, cid)
@@ -94,7 +95,7 @@ def test_block_is_flagged_and_kept_after_three_failed_repairs(client, material, 
     assert any("not distinct" in f for f in b["flags"]) and any("exactly one" in f for f in b["flags"])
     assert any("explanation" in f for f in b["flags"])
     repairs = [p for step, p in model.prompts if step == "repair_block"]
-    assert len(repairs) == 3 * 3  # three Sections, three repairs each
+    assert len(repairs) == 3 * REPAIRS  # three Sections, REPAIRS repairs each
     review = client.get(f"/api/courses/{cid}/review").json()
     assert review[0]["blocks"][0]["status"] == "flagged"
 

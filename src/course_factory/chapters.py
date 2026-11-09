@@ -1,6 +1,7 @@
 """Generating Chapters Block by Block, checking and repairing Blocks, and the owner's Chapter review."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -8,9 +9,9 @@ from . import components
 from .catalogue import CATALOGUE, describe
 from .checks import check_blocks
 from .context import Ctx
-from .pi_step import StepFailed, attach_checks, last_trace_id, run_pi_step
+from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, run_pi_step
 
-REPAIRS = 3
+REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
 LANGUAGE_RULE = ("Keep source statements, definitions and exercise wording in the source language (usually French), "
                  "with the professor's notation. Write your own explanations, intuitions and hints in English.")
@@ -38,8 +39,16 @@ class RepairedBlock(BaseModel):
     block: dict
 
 
-class Grounding(BaseModel):
+class GroundingResult(BaseModel):
+    block: int
     grounded: bool
+    reason: str = ""
+
+
+class GroundingBatch(BaseModel):
+    results: list[GroundingResult] = []
+    # Accept the original single-result shape for older Harnesses and lightweight backends.
+    grounded: bool | None = None
     reason: str = ""
 
 
@@ -81,60 +90,137 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
     db.execute("UPDATE chapters SET status='generating' WHERE id=?", (chid,))
     chapter = db.execute("SELECT * FROM chapters WHERE id=?", (chid,)).fetchone()
     goal = db.execute("SELECT goal FROM courses WHERE id=?", (cid,)).fetchone()["goal"]
-    for sec in db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)).fetchall():
-        db.execute("DELETE FROM blocks WHERE section_id=?", (sec["id"],))  # a resumed Chapter starts its Sections over
+    sections = db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)).fetchall()
+    pending_sections = []
+    for sec in sections:
+        if sec["generation_status"] == "complete":
+            continue
+        db.execute("UPDATE sections SET generation_status='generating' WHERE id=?", (sec["id"],))
+        db.execute("DELETE FROM blocks WHERE section_id=?", (sec["id"],))
+        pending_sections.append(sec)
+    if not pending_sections:
+        db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
+        return
+    catalogue = catalogue_text(ctx)
+
+    def write(sec):
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         draft = run_pi_step(db, ctx.backend, "write_section", {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-            "pages": pages, "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, SectionDraft, ctx.course_dir(cid), course_id=cid)
-        section_trace, checks = last_trace_id(), []
+            "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE},
+            SectionDraft, ctx.course_dir(cid), course_id=cid)
+        return sec, pages, draft, last_trace_id()
+
+    with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending_sections))) as pool:
+        drafts = list(pool.map(write, pending_sections))
+
+    # Register all proposed Components before checking any sibling Section's Blocks.
+    for _, _, draft, _ in drafts:
         for raw in draft.proposals:
             try:
                 components.propose(ctx, cid, components.ComponentProposal.model_validate(raw))
             except ValidationError:
                 pass  # a malformed proposal is dropped; Blocks that use it get flagged
-        for pos, raw in enumerate(draft.blocks):
-            block, flags = checked_block(ctx, cid, raw, pages)
-            checks.append({"block": pos, **flags})
+
+    def check_section(item):
+        sec, pages, draft, _ = item
+        return checked_blocks(ctx, cid, draft.blocks, pages)
+
+    def save_section(item, result):
+        sec, _, _, section_trace = item
+        blocks, checks = result
+        for pos, (block, flags) in enumerate(zip(blocks, checks)):
             db.execute("INSERT INTO blocks (section_id, position, component, data, citations, origin, status, flags) VALUES (?,?,?,?,?,?,?,?)",
                        (sec["id"], pos, block["component"], json.dumps(block["data"], ensure_ascii=False),
                         json.dumps(block["citations"], ensure_ascii=False), block["origin"],
                         "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False)))
-        attach_checks(db, section_trace, checks)  # the Blocks' final check results, after any repairs
+        attach_checks(db, section_trace, [{"block": i, **flags} for i, flags in enumerate(checks)])
+        db.execute("UPDATE sections SET generation_status='complete' WHERE id=?", (sec["id"],))
+
+    with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(drafts) or 1)) as pool:
+        futures = {pool.submit(check_section, item): item for item in drafts}
+        for future in as_completed(futures):
+            save_section(futures[future], future.result())
     db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
 
 
-def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | None = None) -> tuple[dict, dict]:
-    """Checks a Block, asks the model to repair it up to REPAIRS times, then judges grounding.
-    Returns the last Block and {"errors": [...], "warnings": [...]}; errors mean the Block is flagged."""
+def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes: dict[int, str] | None = None) -> tuple[list[dict], list[dict]]:
+    """Check a Section's Blocks together, repair failures in parallel, then judge grounding once."""
     sources = source_pages(ctx, cid)
     extra = components.schemas(ctx.db)
-    (block,), (errors,) = check_blocks([raw], sources, extra)
-    if note:
-        errors = [f"owner note: {note}"]
+    blocks, errors = check_blocks(raw, sources, extra)
+    for index, note in (notes or {}).items():
+        errors[index] = [f"owner note: {note}"]
+    failed = set()
     for _ in range(REPAIRS):
-        if not errors:
+        pending = [i for i, errs in enumerate(errors) if errs and i not in failed]
+        if not pending:
             break
+        def repair(index):
+            try:
+                fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {
+                    "block": blocks[index], "errors": errors[index], "pages": pages,
+                    "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, RepairedBlock,
+                    ctx.course_dir(cid), course_id=cid)
+                return index, fixed.block, None, last_trace_id()
+            except StepFailed as e:
+                return index, None, str(e), last_trace_id()
+
+        with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending))) as pool:
+            repaired = list(pool.map(repair, pending))
+        candidates, candidate_indices = [], []
+        for index, fixed, failure, trace_id in repaired:
+            if failure or fixed is None:
+                errors[index].append(failure or "repair returned nothing")
+                failed.add(index)
+            else:
+                blocks[index] = fixed
+                candidates.append(fixed)
+                candidate_indices.append(index)
+        if candidates:
+            normalized, new_errors = check_blocks(candidates, sources, extra)
+            trace_ids = {index: trace_id for index, _, failure, trace_id in repaired if not failure}
+            for index, block, block_errors in zip(candidate_indices, normalized, new_errors):
+                blocks[index], errors[index] = block, block_errors
+                attach_checks(ctx.db, trace_ids[index], {"errors": block_errors})
+
+    flags = []
+    for block, block_errors in zip(blocks, errors):
+        state_errors, warnings = components.status_flags(ctx.db, block["component"]) if not block_errors else ([], [])
+        flags.append({"errors": block_errors + state_errors, "warnings": warnings})
+
+    grounded_indices = [i for i, (block, flag) in enumerate(zip(blocks, flags))
+                        if not flag["errors"] and block["origin"] == "from_source"]
+    if grounded_indices:
+        page_map = {(p["source"], p["page"]): p for i in grounded_indices
+                    for p in page_texts(ctx, cid, blocks[i]["citations"])}
+        ground_inputs = [{"block": i, "content": blocks[i],
+                          "citations": blocks[i]["citations"]}
+                         for i in grounded_indices]
         try:
-            fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {"block": block, "errors": errors, "pages": pages,
-                                "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, RepairedBlock, ctx.course_dir(cid), course_id=cid)
+            review = run_pi_step(ctx.db, ctx.backend, "judge_grounding", {
+                "blocks": ground_inputs, "pages": list(page_map.values())}, GroundingBatch,
+                ctx.course_dir(cid), course_id=cid)
+            results = {r.block: r for r in review.results}
+            if not results and review.grounded is not None:
+                results = {i: GroundingResult(block=i, grounded=review.grounded, reason=review.reason)
+                           for i in grounded_indices}
+            for index in grounded_indices:
+                result = results.get(index)
+                if result is None:
+                    flags[index]["warnings"].append("grounding judge returned no result for this Block")
+                elif not result.grounded:
+                    flags[index]["warnings"].append(f"grounding: {result.reason or 'not supported by its Citations'}")
         except StepFailed as e:
-            errors = errors + [str(e)]
-            break
-        (block,), (errors,) = check_blocks([fixed.block], sources, extra)
-        attach_checks(ctx.db, last_trace_id(), {"errors": errors})
-    state_errors, warnings = components.status_flags(ctx.db, block["component"]) if not errors else ([], [])
-    errors = errors + state_errors
-    if not errors and block["origin"] == "from_source":
-        cited = page_texts(ctx, cid, block["citations"])
-        try:
-            g = run_pi_step(ctx.db, ctx.backend, "judge_grounding", {"block": block, "pages": cited}, Grounding,
-                            ctx.course_dir(cid), course_id=cid)
-            if not g.grounded:
-                warnings.append(f"grounding: {g.reason or 'not supported by its Citations'}")
-        except StepFailed as e:
-            warnings.append(f"grounding judge failed: {e}")
-    return block, {"errors": errors, "warnings": warnings}
+            for index in grounded_indices:
+                flags[index]["warnings"].append(f"grounding judge failed: {e}")
+    return blocks, flags
+
+
+def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | None = None) -> tuple[dict, dict]:
+    """Single-Block adapter for edits and regeneration endpoints."""
+    blocks, flags = checked_blocks(ctx, cid, [raw], pages, {0: note} if note else None)
+    return blocks[0], flags[0]
 
 
 def block_json(row) -> dict:

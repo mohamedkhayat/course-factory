@@ -125,3 +125,15 @@ def test_pi_backend_is_killed_after_its_timeout(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
     with pytest.raises(StepFailed):
         PiBackend(timeout=1)("read_page", "p", [], tmp_path)
+
+
+@pytest.mark.parametrize("raw, want", [
+    ('{"a": 1} trailing words {"b": 2}', {"a": 1}),  # "Extra data" after the object
+    ('```json\n{"a": [1, 2,],}\n```', {"a": [1, 2]}),
+    ('{"a": "line one\nline two"}', {"a": "line one\nline two"}),  # a raw newline inside a string
+    ('{"a": 1 "b": 2}', {"a": 1, "b": 2}),
+    ('{a: 1}', {"a": 1}),
+])
+def test_model_json_is_healed_without_a_retry(raw, want):
+    from course_factory.pi_step import parse_json
+    assert parse_json(raw) == want

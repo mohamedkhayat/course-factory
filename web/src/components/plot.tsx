@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { compileExpr } from "@/lib/math";
+import { compileExpr, plotVariable } from "@/lib/math";
 import { Md } from "./md";
 
 const W = 560, H = 300, PAD = 32;
@@ -50,9 +50,11 @@ function Graph({ fns, range }: { fns: { f: (x: number) => number; label: string 
 }
 
 export function Plot({ data }: { data: { title?: string; functions: { expr: string; label?: string }[]; x_range?: [number, number] } }) {
-  const fns = data.functions.map((f) => ({ f: compileExpr(f.expr), label: f.label || f.expr }))
-    .filter((f): f is { f: NonNullable<ReturnType<typeof compileExpr>>; label: string } => !!f.f)
-    .map(({ f, label }) => ({ f: (x: number) => f({ x }), label }));
+  const fns = data.functions.flatMap((fn) => {
+    const variable = plotVariable(fn.expr);
+    const f = compileExpr(fn.expr);
+    return f ? [{ f: (x: number) => f({ [variable]: x }), label: fn.label || fn.expr }] : [];
+  });
   return (
     <div>
       {data.title && <h4 className="mb-2 font-medium">{data.title}</h4>}
