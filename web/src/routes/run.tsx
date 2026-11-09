@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { PageViewer } from "@/components/blocks";
+import { Md } from "@/components/md";
 import { duration, get, pageUrl, readEvents, send, type Citation, type Course, type Gpu } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
@@ -41,18 +42,29 @@ function PipelineStrip({ pipeline }: { pipeline: Step[] }) {
   );
 }
 
-function Tail({ label, text, live }: { label: string; text: string; live: boolean }) {
-  const box = useRef<HTMLPreElement>(null);
+/** The transcription inside a step's JSON answer, readable while it is still streaming (the closing quote may not be there yet). */
+export function streamedText(raw: string): string {
+  const m = /"text"\s*:\s*"/.exec(raw);
+  if (!m) return raw.trimStart().startsWith("{") ? "" : raw;
+  let body = raw.slice(m.index + m[0].length);
+  const end = body.search(/(?<!\\)(?:\\\\)*"/);  // first quote not escaped by a backslash
+  if (end >= 0) body = body.slice(0, end + (body.slice(end).match(/^(?:\\\\)*/)?.[0].length ?? 0));
+  body = body.replace(/(?<!\\)((?:\\\\)*)\\$/, "$1");  // an escape cut mid-stream
+  try { return JSON.parse(`"${body}"`) as string; } catch { return body.replaceAll("\\n", "\n"); }
+}
+
+function Tail({ label, live, children, text }: { label: string; live: boolean; text: string; children: React.ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);  // follow new text unless the reader scrolled up
   useEffect(() => { if (box.current && pinned.current) box.current.scrollTop = box.current.scrollHeight; }, [text]);
   return (
-    <div>
-      <p className="mb-1 flex items-center gap-2 text-xs font-medium text-muted-foreground">{label}
+    <div className="min-w-0">
+      <p className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">{label}
         {live && <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />}</p>
-      <pre ref={box} onScroll={(e) => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
-           className="h-40 overflow-auto whitespace-pre-wrap rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed text-muted-foreground">
-        {text || "…"}
-      </pre>
+      <div ref={box} onScroll={(e) => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
+           className="h-48 overflow-y-auto overscroll-contain rounded-md bg-muted/50 px-4 py-3">
+        {text ? children : <span className="text-sm text-muted-foreground">Waiting for the model…</span>}
+      </div>
     </div>
   );
 }
@@ -71,7 +83,7 @@ function Now({ cid, a }: { cid: number; a: Activity }) {
         <span className="tabular ml-auto text-xs text-muted-foreground">{a.elapsed} s{a.attempt > 1 && ` · attempt ${a.attempt} of 3`}</span>
       </div>
       {detail.map(([k, v]) => <p key={k} className="mt-1 truncate text-sm text-muted-foreground"><span className="capitalize">{k.replaceAll("_", " ")}</span>: {v}</p>)}
-      <div className={cn("mt-3 grid gap-4", page && "sm:grid-cols-[9rem_minmax(0,1fr)]")}>
+      <div className={cn("mt-3 grid gap-4", page && "sm:grid-cols-[11rem_minmax(0,1fr)]")}>
         {page && (
           <div className="grid aspect-[1/1.414] w-36 place-items-center self-start rounded-sm bg-muted text-xs text-muted-foreground sm:w-full">
             <span className="col-start-1 row-start-1">Page {page.page}</span>
@@ -80,9 +92,14 @@ function Now({ cid, a }: { cid: number; a: Activity }) {
                  className="col-start-1 row-start-1 size-full rounded-sm bg-white object-contain shadow-[0_1px_3px_oklch(0_0_0/0.18)]" />
           </div>
         )}
-        <div className="grid min-w-0 gap-3 md:grid-cols-2">
-          <Tail label="Thinking" text={a.thinking} live={!a.output} />
-          <Tail label="Output" text={a.output} live={!!a.output} />
+        <div className="min-w-0 space-y-4">
+          <Tail label="Thinking" text={a.thinking} live={!a.output}>
+            <p className="max-w-[75ch] whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{a.thinking}</p>
+          </Tail>
+          <Tail label={a.step === "read_page" ? "Transcription" : "Output"} text={a.output} live={!!a.output}>
+            {a.step === "read_page" ? <Md className="prose-cf !text-[0.95rem]">{streamedText(a.output)}</Md>
+              : <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{a.output}</pre>}
+          </Tail>
         </div>
       </div>
     </section>
