@@ -92,3 +92,21 @@ def test_lab_trace_records_each_steps_proof(lab, client):
     build = next(t for t in client.get(f"/api/courses/{cid}/traces").json() if t["step"] == "build_lab")
     proofs = json.loads(build["checks"])
     assert [p["step"] for p in proofs] == [1, 2, 3, 4] and not proofs[0]["errors"] and proofs[2]["errors"]
+
+
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+
+def test_lab_tutor_sees_code_output_and_plots_but_not_the_answer(lab, client, model):
+    cid, l = lab
+    step = l["steps"][0]
+    outputs = [{"output_type": "error", "ename": "TypeError", "evalue": "x", "traceback": ["\x1b[31mTypeError\x1b[0m: unsupported operand"]},
+               {"output_type": "display_data", "data": {"image/png": PNG, "text/plain": "<Figure>"}}]
+    r = client.post(f"/api/courses/{cid}/tutor", json={"question": "why?", "lab_step_id": step["id"],
+                                                         "code": "def f(x):\n    pass", "outputs": outputs})
+    text = "".join(json.loads(b.split("data: ", 1)[1])["text"] for b in r.text.split("\n\n") if b.startswith("event: token"))
+    assert text.endswith("(1 plots seen)")
+    prompt = next(p for s, p in model.prompts if s == "lab_tutor")
+    assert "def f(x):\n    pass" in prompt and "TypeError: unsupported operand" in prompt and "\x1b" not in prompt
+    assert "return x**2" not in prompt and "f(3) == 9" not in prompt  # no Solution, no Check
+    assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "lab_step_id": 999}).status_code == 404

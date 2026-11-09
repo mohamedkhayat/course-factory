@@ -61,7 +61,7 @@ test("found gate, outline gate, then Review and publish", async () => {
   assert.deepEqual(p.errors, []);
 });
 
-test("Lab editor runs a cell with Shift+Enter", async () => {
+test("Lab editor runs a cell with Shift+Enter, and the Lab tutor answers", async () => {
   const p = await page();
   await p.goto(`${BASE}/c/1/labs/1`);
   const editor = p.getByLabel("Code for step 1");
@@ -70,6 +70,10 @@ test("Lab editor runs a cell with Shift+Enter", async () => {
   await p.keyboard.type("print(6 * 7)");
   await p.keyboard.press("Shift+Enter");
   await p.getByText("42", { exact: true }).waitFor({ timeout: 60_000 });
+  await p.getByRole("button", { name: "Ask the tutor" }).first().click();
+  await p.getByLabel("Question").fill("why?");
+  await p.getByLabel("Question").press("Enter");
+  await p.getByText(/plots seen/).waitFor();
   assert.deepEqual(p.errors, []);
 });
 

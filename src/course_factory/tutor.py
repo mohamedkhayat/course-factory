@@ -1,8 +1,10 @@
 """The tutor: Live work that answers from the Course's material, cites pages, and streams over SSE."""
 
+import base64
 import datetime as dt
 import json
 import re
+import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -30,6 +32,38 @@ class Ask(BaseModel):
     question: str = Field(min_length=1)
     section_id: int | None = None
     conversation_id: int | None = None
+    lab_step_id: int | None = None  # the Lab tutor: coaches on the learner's code, outputs and plots
+    code: str = Field("", max_length=50_000)
+    outputs: list[dict] = Field([], max_length=50)  # nbformat outputs of the learner's last run
+
+
+MAX_PLOTS = 4
+OUTPUT_CHARS = 4000
+
+
+def output_text(outputs: list[dict]) -> str:
+    """The text a run printed, ANSI codes stripped and capped, for the Lab tutor."""
+    parts = []
+    for o in outputs:
+        text = o.get("text") or (o.get("data") or {}).get("text/plain") or "\n".join(o.get("traceback") or [])
+        parts.append("".join(text) if isinstance(text, list) else str(text))
+    return re.sub(r"\x1b\[[0-9;]*m", "", "\n".join(parts))[-OUTPUT_CHARS:]
+
+
+def save_plots(outputs: list[dict], folder) -> tuple:
+    """The run's PNG plots as files, so the model sees them."""
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for o in outputs:
+        png = (o.get("data") or {}).get("image/png")
+        if png and len(paths) < MAX_PLOTS:
+            p = folder / f"{uuid.uuid4().hex[:10]}.png"
+            try:
+                p.write_bytes(base64.b64decode("".join(png) if isinstance(png, list) else png, validate=True))
+            except ValueError:
+                continue  # not base64: skip the plot
+            paths.append(p)
+    return tuple(paths)
 
 
 def sse(event: str, data) -> str:
@@ -65,17 +99,29 @@ def router(ctx: Ctx) -> APIRouter:
             raise HTTPException(404, "no such conversation")
         history = [{"role": m["role"], "text": m["text"]} for m in db.execute(
             "SELECT role, text FROM tutor_messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?", (conv, HISTORY))][::-1] if conv else []
-        pages = page_texts(ctx, cid, json.loads(section["pages"])) if section else []
-        passages = [{"source": p["source"], "page": p["page"], "text": p["text"]}
-                    for p in searchm.search(db, ctx.search, cid, body.question, PASSAGES)]
-        allowed = {(p["source"], p["page"]) for p in pages + passages}
-        inputs = {"section": section["title"] if section else "", "pages": pages, "passages": passages,
-                  "history": history, "question": body.question}
+        files: tuple = ()
+        if body.lab_step_id is not None:
+            step = db.execute("SELECT st.statement FROM lab_steps st JOIN labs l ON l.id=st.lab_id WHERE st.id=? AND l.course_id=?",
+                              (body.lab_step_id, cid)).fetchone()
+            if step is None:
+                raise HTTPException(404, "no such Lab Step")
+            # no Check, no Solution: the tutor can't give away what it never sees
+            name, allowed = "lab_tutor", set()
+            inputs = {"statement": step["statement"], "code": body.code, "outputs": output_text(body.outputs),
+                      "history": history, "question": body.question}
+            files = save_plots(body.outputs, ctx.course_dir(cid) / "tutor" / "plots")
+        else:
+            pages = page_texts(ctx, cid, json.loads(section["pages"])) if section else []
+            passages = [{"source": p["source"], "page": p["page"], "text": p["text"]}
+                        for p in searchm.search(db, ctx.search, cid, body.question, PASSAGES)]
+            name, allowed = "tutor", {(p["source"], p["page"]) for p in pages + passages}
+            inputs = {"section": section["title"] if section else "", "pages": pages, "passages": passages,
+                      "history": history, "question": body.question}
 
         def events():
             chunks = []
             try:
-                for chunk in stream_pi_step(db, ctx.backend, "tutor", inputs, ctx.course_dir(cid), course_id=cid):
+                for chunk in stream_pi_step(db, ctx.backend, name, inputs, ctx.course_dir(cid), files, course_id=cid):
                     chunks.append(chunk)
                     yield sse("token", {"text": chunk})
             except Exception as e:  # the Trace already has it; tell the panel

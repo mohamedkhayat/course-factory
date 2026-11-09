@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Download, Play } from "lucide-react";
+import { Check, Download, MessageCircle, Play } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
 import { Md } from "@/components/md";
 import { Button } from "@/components/ui/button";
 import { get, send } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
+import { Tutor } from "./reader";
 import { useCid } from "./run";
 
 type LabStep = { id: number; position: number; statement: string; starter: string; hints: string[]; hints_left: number; passed: boolean; gave_up: boolean; solution: string | null };
@@ -36,8 +37,12 @@ const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 function Output({ o }: { o: Out }) {
   if (o.output_type === "stream") return <pre className="whitespace-pre-wrap">{join(o.text)}</pre>;
   if (o.output_type === "error") return <pre className="whitespace-pre-wrap text-destructive">{stripAnsi((o.traceback ?? []).join("\n")) || `${o.ename}: ${o.evalue}`}</pre>;
-  const png = o.data?.["image/png"];
-  if (png) return <img src={`data:image/png;base64,${join(png)}`} alt="Plot output" className="max-w-full bg-white" />;
+  const png = o.data?.["image/png"], jpeg = o.data?.["image/jpeg"], svg = o.data?.["image/svg+xml"], html = o.data?.["text/html"];
+  if (png || jpeg) return <img src={`data:image/${png ? "png" : "jpeg"};base64,${join(png ?? jpeg)}`} alt="Plot output" className="max-w-full bg-white" />;
+  if (svg) return <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(join(svg))}`} alt="Plot output" className="max-w-full bg-white" />;
+  // HTML (e.g. a DataFrame) renders in a scriptless sandbox: it can't touch the app
+  if (html) return <iframe sandbox="" srcDoc={`<style>body{font:13px system-ui;margin:0}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:2px 6px}</style>${join(html)}`}
+                           title="HTML output" className="h-64 w-full resize-y rounded bg-white" />;
   return <pre className="whitespace-pre-wrap">{join(o.data?.["text/plain"])}</pre>;
 }
 
@@ -70,6 +75,7 @@ function StepCell({ cid, lid, step, run, onChange }: { cid: number; lid: number;
   const [out, setOut] = useState<Out[]>([]);
   const [busy, setBusy] = useState<"run" | "check" | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [tutor, setTutor] = useState(false);
   const base = `/api/courses/${cid}/labs/${lid}/steps/${step.id}`;
   const exec = async () => {
     setBusy("run"); setOut([]); setMsg(null);
@@ -99,7 +105,10 @@ function StepCell({ cid, lid, step, run, onChange }: { cid: number; lid: number;
         <Button size="sm" variant="outline" onClick={check} disabled={!!busy || step.passed}>{busy === "check" ? "Checking…" : "Check"}</Button>
         {step.hints_left > 0 && !step.passed && <Button size="sm" variant="ghost" onClick={() => send(`${base}/hint`).then(onChange)}>Hint</Button>}
         {!step.passed && !step.gave_up && <Button size="sm" variant="ghost" onClick={() => send(`${base}/give-up`).then(onChange)}>Show the solution</Button>}
+        <Button size="sm" variant="ghost" className="ml-auto" aria-expanded={tutor} onClick={() => setTutor(!tutor)}><MessageCircle className="size-4" />Ask the tutor</Button>
       </div>
+      {tutor && <Tutor cid={cid} className="mt-3 h-96 rounded-md border" onCite={() => {}} onClose={() => setTutor(false)}
+                       lab={() => ({ lab_step_id: step.id, code, outputs: out })} />}
     </li>
   );
 }

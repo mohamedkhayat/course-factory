@@ -46,6 +46,7 @@ class FakeModel:
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
             "write_section": self._section,
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
+            "lab_tutor": lambda prompt, files: f"Look at what `f` returns. ({len(files)} plots seen)",
             "tutor": lambda prompt, files: "Une fonction est « convexe » si... [cours.pdf p.1] [made_up.pdf p.2]",
             "derive_scheme": lambda prompt, files: {"scheme": [{"step": "Poser le pas", "points": 1}, {"step": "Calculer", "points": 1}]},
             "transcribe_copy": lambda prompt, files: {"text": f"écrit à la main ({len(files)} images)"},

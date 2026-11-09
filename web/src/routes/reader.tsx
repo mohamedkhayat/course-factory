@@ -11,13 +11,17 @@ import { useCid } from "./run";
 
 type Msg = { role: "learner" | "tutor"; text: string; citations?: Citation[]; error?: boolean };
 
-function Tutor({ cid, sectionId, onCite, onClose }: { cid: number; sectionId?: number; onCite: (c: Citation) => void; onClose: () => void }) {
+/** The tutor panel. With `lab`, it coaches on a Lab Step: the learner's current code and last outputs go with each question. */
+export function Tutor({ cid, sectionId, lab, onCite, onClose, className }: {
+  cid: number; sectionId?: number; lab?: () => { lab_step_id: number; code: string; outputs: unknown[] };
+  onCite: (c: Citation) => void; onClose: () => void; className?: string;
+}) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [q, setQ] = useState("");
   const [conv, setConv] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [msgs]);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs]); // braces: scrollIntoView can return a Promise, not a cleanup
   const ask = async () => {
     const question = q.trim();
     if (!question || busy) return;
@@ -26,7 +30,7 @@ function Tutor({ cid, sectionId, onCite, onClose }: { cid: number; sectionId?: n
     const patch = (f: (m: Msg) => Msg) => setMsgs((all) => [...all.slice(0, -1), f(all[all.length - 1])]);
     try {
       const res = await fetch(`/api/courses/${cid}/tutor`, { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question, section_id: sectionId ?? null, conversation_id: conv }) });
+        body: JSON.stringify({ question, section_id: sectionId ?? null, conversation_id: conv, ...lab?.() }) });
       await readEvents(res, (ev, d) => {
         if (ev === "token") patch((m) => ({ ...m, text: m.text + d.text }));
         if (ev === "done") { setConv(d.conversation_id); patch((m) => ({ ...m, citations: d.citations })); }
@@ -37,13 +41,14 @@ function Tutor({ cid, sectionId, onCite, onClose }: { cid: number; sectionId?: n
     } finally { setBusy(false); }
   };
   return (
-    <aside className="flex h-full flex-col border-l border-border bg-card" aria-label="Tutor">
+    <aside className={cn("flex h-full flex-col border-l border-border bg-card", className)} aria-label="Tutor">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <p className="font-medium">Tutor</p>
         <Button size="icon" variant="ghost" className="size-7" onClick={onClose} aria-label="Close the tutor"><X className="size-4" /></Button>
       </div>
       <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3 text-[0.95rem]">
-        {!msgs.length && <p className="text-sm text-muted-foreground">Ask about this Section. Answers come from your course material and cite its pages.</p>}
+        {!msgs.length && <p className="text-sm text-muted-foreground">{lab ? "Ask about your code. The tutor sees it, its output and plots, and coaches you without giving the answer."
+          : "Ask about this Section. Answers come from your course material and cite its pages."}</p>}
         {msgs.map((m, i) => (
           <div key={i} className={cn(m.role === "learner" ? "ml-8 rounded-md bg-muted px-3 py-2" : "", m.error && "text-destructive")}>
             {m.text ? <Md>{m.text}</Md> : <span className="text-muted-foreground">Thinking…</span>}
@@ -57,7 +62,7 @@ function Tutor({ cid, sectionId, onCite, onClose }: { cid: number; sectionId?: n
         <div ref={end} />
       </div>
       <form className="flex gap-2 border-t border-border p-3" onSubmit={(e) => { e.preventDefault(); ask(); }}>
-        <Textarea value={q} onChange={(e) => setQ(e.target.value)} rows={2} placeholder="Why is the Hessian positive definite here?" aria-label="Question"
+        <Textarea value={q} onChange={(e) => setQ(e.target.value)} rows={2} placeholder={lab ? "Why does this raise a TypeError?" : "Why is the Hessian positive definite here?"} aria-label="Question"
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); } }} className="min-h-0 resize-none" />
         <Button type="submit" size="icon" disabled={busy || !q.trim()} aria-label="Ask"><Send className="size-4" /></Button>
       </form>
