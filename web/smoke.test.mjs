@@ -43,16 +43,33 @@ test("found gate, outline gate, then Review and publish", async () => {
   await p.getByRole("button", { name: /propose an outline/ }).click();
   await p.getByRole("heading", { name: "Proposed outline" }).waitFor({ timeout: 30_000 });
   await p.getByLabel("Chapter 1 title").fill("Convexité (édité)");
+  await p.getByLabel("Chapter 2 Section 2 title").fill("Exercices corrigés");
+  await p.getByRole("button", { name: "Start a new Chapter here" }).nth(2).click(); // Chapter 2's second Section starts Chapter 3
+  assert.equal(await p.getByLabel("Chapter 3 title").inputValue(), "Exercices corrigés");
   await p.getByRole("button", { name: "Save changes" }).click();
+  await p.getByRole("button", { name: /Approve, write the Chapters/ }).waitFor();
+  assert.equal(await p.getByLabel(/^Chapter \d title$/).count(), 3);
   await p.getByRole("button", { name: /Approve, write the Chapters/ }).click();
-  await p.getByRole("link", { name: /Review/ }).first().waitFor({ timeout: 60_000 });
-  await p.goto(p.url() + "/review");
+  await p.getByText("The Chapters are written and wait for your review").waitFor({ timeout: 60_000 });
+  await p.getByRole("link", { name: "Review Chapters" }).click();
   await p.getByRole("heading", { name: "Convexité (édité)" }).waitFor();
   const publish = p.getByRole("button", { name: "Publish" }).first();
   if (await publish.isEnabled()) {
     await publish.click();
     await p.getByRole("heading", { name: "Convexité (édité)" }).waitFor({ state: "detached" });
   }
+  assert.deepEqual(p.errors, []);
+});
+
+test("Lab editor runs a cell with Shift+Enter", async () => {
+  const p = await page();
+  await p.goto(`${BASE}/c/1/labs/1`);
+  const editor = p.getByLabel("Code for step 1");
+  await editor.click();
+  await p.keyboard.press("ControlOrMeta+a");
+  await p.keyboard.type("print(6 * 7)");
+  await p.keyboard.press("Shift+Enter");
+  await p.getByText("42", { exact: true }).waitFor({ timeout: 60_000 });
   assert.deepEqual(p.errors, []);
 });
 

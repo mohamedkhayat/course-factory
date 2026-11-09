@@ -59,7 +59,7 @@ export function Review() {
   const cid = useCid();
   const qc = useQueryClient();
   const { data = [] } = useQuery({ queryKey: ["review", cid], queryFn: () => get<{ id: number; title: string; blocks: RBlock[] }[]>(`/api/courses/${cid}/review`) });
-  const publish = useMutation({ mutationFn: (chid: number) => send(`/api/courses/${cid}/chapters/${chid}/publish`), onSuccess: () => qc.invalidateQueries({ queryKey: ["review", cid] }) });
+  const publish = useMutation({ mutationFn: (chid: number) => send(`/api/courses/${cid}/chapters/${chid}/publish`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["review", cid] }); qc.invalidateQueries({ queryKey: ["run", cid] }); } });
   return (
     <Page title="Review">
       {!data.length && <p className="text-muted-foreground">Nothing waits for review.</p>}

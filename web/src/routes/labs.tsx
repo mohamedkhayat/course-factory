@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Download, Play } from "lucide-react";
+import { CodeEditor } from "@/components/code-editor";
 import { Md } from "@/components/md";
 import { Button } from "@/components/ui/button";
 import { get, send } from "@/lib/api";
@@ -10,7 +11,7 @@ import { errText, Page } from "./home";
 import { useCid } from "./run";
 
 type LabStep = { id: number; position: number; statement: string; starter: string; hints: string[]; hints_left: number; passed: boolean; gave_up: boolean; solution: string | null };
-type Lab = { id: number; title: string; intro: string; flags: string[]; steps: LabStep[]; kernel_running: boolean };
+type Lab = { id: number; title: string; intro: string; flags: { step: number; statement: string; errors: string[] }[]; steps: LabStep[]; kernel_running: boolean };
 type Out = { output_type: string; text?: string | string[]; data?: Record<string, string | string[]>; ename?: string; evalue?: string; traceback?: string[] };
 
 export function Labs() {
@@ -88,9 +89,7 @@ function StepCell({ cid, lid, step, run, onChange }: { cid: number; lid: number;
         {step.passed ? <span className="flex items-center gap-1 text-sm text-ok"><Check className="size-4" />Passed</span> : step.gave_up && <span className="text-sm text-muted-foreground">Solution shown</span>}
       </div>
       <div className="prose-cf mt-1"><Md>{step.statement}</Md></div>
-      <textarea value={code} onChange={(e) => setCode(e.target.value)} spellCheck={false} aria-label={`Code for step ${step.position + 1}`}
-                onKeyDown={(e) => { if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); exec(); } }}
-                className="mt-3 min-h-28 w-full resize-y rounded-md border border-input bg-muted/50 p-3 font-mono text-sm" rows={Math.max(4, code.split("\n").length + 1)} />
+      <CodeEditor value={code} onChange={setCode} onRun={exec} label={`Code for step ${step.position + 1}`} />
       {out.length > 0 && <div className="mt-2 max-h-96 overflow-auto rounded-md border border-border p-3 font-mono text-xs">{out.map((o, i) => <Output key={i} o={o} />)}</div>}
       {msg && <p className="mt-2 text-sm text-destructive">{msg}</p>}
       {step.hints.map((h, i) => <div key={i} className="mt-2 rounded-md bg-warn/12 px-3 py-2 text-sm"><Md>{h}</Md></div>)}
@@ -120,7 +119,7 @@ export function LabView() {
         <a href={`/api/courses/${cid}/labs/${lid}/notebook`} className={cn("inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground")}><Download className="size-4" />Notebook</a>
       </div>
       <div className="prose-cf mt-2"><Md>{lab.intro}</Md></div>
-      {lab.flags.length > 0 && <p className="mt-2 text-sm text-warn">{lab.flags.join(" · ")}</p>}
+      {lab.flags.map((f) => <p key={f.step} className="mt-2 text-sm text-warn" title={f.errors.join("\n")}>Step {f.step} of the TP was left out: its Check couldn't be proven ({f.statement})</p>)}
       <p className="mt-2 text-xs text-muted-foreground">Code runs in an isolated kernel with no network. Shift+Enter runs a cell.</p>
       <ol className="mt-4 divide-y divide-border border-t border-border">
         {lab.steps.map((s) => <StepCell key={s.id} cid={cid} lid={lid} step={s} run={run} onChange={refresh} />)}

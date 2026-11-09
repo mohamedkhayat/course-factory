@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, BookOpen, ClipboardList, FlaskConical, Layers, Timer, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, ClipboardList, FlaskConical, Layers, Merge, Scissors, SplitSquareVertical, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -10,7 +10,10 @@ import { get, readEvents, send, type Citation, type Course } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
 
-type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number };
+type Gpu = { name: string; util: number; mem_used_mb: number; mem_total_mb: number };
+type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number; seconds_left?: number | null; gpu?: Gpu | null };
+
+const duration = (s: number) => (s < 90 ? "under 2 min" : s < 5400 ? `about ${Math.round(s / 60)} min` : `about ${(s / 3600).toFixed(1)} h`);
 type Source = { id: number; name: string; pages: number; role: string; paired_with: number | null; excluded: boolean };
 const ROLES = ["course notes", "exercise sheet", "lab", "past exam", "correction", "personal notes", "data"];
 const PRIORITIES = ["focus", "normal", "light", "skip"] as const;
@@ -109,7 +112,38 @@ function FoundGate({ cid }: { cid: number }) {
   );
 }
 
-type OChapter = { id: number; title: string; priority: string; exam_hits: number; exam_weight: number; sections: { id: number; title: string; pages: { source: string; page: number }[] }[] };
+type OSection = { id: number; title: string; pages: { source: string; page: number }[] };
+type OChapter = { id: number; title: string; priority: string; sections: OSection[] };
+let tempId = -1; // ids for Chapters and Sections made by a split, until the outline is saved
+
+/** Pure outline edits at Chapter and Section level; each returns a new outline. */
+const edits = {
+  moveChapter: (o: OChapter[], i: number, d: number) => { const n = [...o]; [n[i], n[i + d]] = [n[i + d], n[i]]; return n; },
+  mergeChapter: (o: OChapter[], i: number) =>
+    o.flatMap((c, k) => (k === i ? [{ ...c, sections: [...c.sections, ...o[i + 1].sections] }] : k === i + 1 ? [] : [c])),
+  splitChapter: (o: OChapter[], i: number, j: number) => o.flatMap((c, k) => k !== i ? [c] : [
+    { ...c, sections: c.sections.slice(0, j) },
+    { id: tempId--, title: c.sections[j].title, priority: c.priority, sections: c.sections.slice(j) }]),
+  section: (o: OChapter[], i: number, f: (s: OSection[]) => OSection[]) => o.map((c, k) => (k === i ? { ...c, sections: f(c.sections) } : c)),
+  /** Moves a Section up or down; past the end of its Chapter it joins the neighbouring one. */
+  moveSection: (o: OChapter[], i: number, j: number, d: number) => {
+    const sec = o[i].sections[j], to = j + d;
+    if (to >= 0 && to < o[i].sections.length) return edits.section(o, i, (ss) => { const n = [...ss]; [n[j], n[to]] = [n[to], n[j]]; return n; });
+    const out = edits.section(o, i, (ss) => ss.filter((_, k) => k !== j));
+    return edits.section(out, i + d, (ss) => (d < 0 ? [...ss, sec] : [sec, ...ss]));
+  },
+  splitSection: (o: OChapter[], i: number, j: number) => edits.section(o, i, (ss) => ss.flatMap((s, k) => {
+    if (k !== j) return [s];
+    const half = Math.ceil(s.pages.length / 2);
+    return [{ ...s, pages: s.pages.slice(0, half) }, { id: tempId--, title: `${s.title} (2)`, pages: s.pages.slice(half) }];
+  })),
+  mergeSection: (o: OChapter[], i: number, j: number) => edits.section(o, i, (ss) =>
+    ss.flatMap((s, k) => (k === j ? [{ ...s, pages: [...s.pages, ...ss[j + 1].pages] }] : k === j + 1 ? [] : [s]))),
+};
+
+function Icon({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  return <Button size="icon" variant="ghost" className="size-7" disabled={disabled} onClick={onClick} aria-label={label} title={label}>{children}</Button>;
+}
 
 function OutlineGate({ cid }: { cid: number }) {
   const qc = useQueryClient();
@@ -124,29 +158,43 @@ function OutlineGate({ cid }: { cid: number }) {
   if (!draft) return null;
   const dirty = JSON.stringify(draft) !== JSON.stringify(data?.chapters);
   const set = (i: number, patch: Partial<OChapter>) => setDraft(draft.map((c, k) => (k === i ? { ...c, ...patch } : c)));
-  const move = (i: number, d: number) => { const n = [...draft]; [n[i], n[i + d]] = [n[i + d], n[i]]; setDraft(n); };
+  const setSec = (i: number, j: number, title: string) => setDraft(edits.section(draft, i, (ss) => ss.map((s, k) => (k === j ? { ...s, title } : s))));
+  const last = draft.length - 1;
   return (
     <section>
       <h2 className="font-display text-xl font-semibold">Proposed outline</h2>
-      <p className="mt-1 text-sm text-muted-foreground">Rename, reorder, and set how much attention each Chapter gets. Exam hits count how often past exams test it.</p>
+      <p className="mt-1 text-sm text-muted-foreground">Rename, reorder, merge and split Chapters and Sections, and set how much attention each Chapter gets. Exam Weight is worked out from the past papers once you approve.</p>
       <ol className="mt-4 divide-y divide-border border-y border-border">
         {draft.map((c, i) => (
           <li key={c.id} className="py-3">
             <div className="flex flex-wrap items-center gap-2">
               <span className="tabular w-6 text-sm text-muted-foreground">{i + 1}</span>
               <Input value={c.title} onChange={(e) => set(i, { title: e.target.value })} className="h-8 min-w-48 flex-1 font-medium" aria-label={`Chapter ${i + 1} title`} />
-              <span className="tabular text-xs text-muted-foreground" title="How often past exams test this Chapter">{c.exam_hits} exam hits · weight {Math.round(c.exam_weight * 100)}%</span>
               <div className="flex rounded-md border border-border" role="radiogroup" aria-label="Priority">
                 {PRIORITIES.map((p) => (
                   <button key={p} type="button" role="radio" aria-checked={c.priority === p} onClick={() => set(i, { priority: p })}
                           className={cn("px-2 py-1 text-xs capitalize first:rounded-l-md last:rounded-r-md", c.priority === p ? "bg-primary text-primary-foreground" : "hover:bg-accent")}>{p}</button>
                 ))}
               </div>
-              <Button size="icon" variant="ghost" className="size-7" disabled={i === 0} onClick={() => move(i, -1)} aria-label="Move up"><ArrowUp className="size-4" /></Button>
-              <Button size="icon" variant="ghost" className="size-7" disabled={i === draft.length - 1} onClick={() => move(i, 1)} aria-label="Move down"><ArrowDown className="size-4" /></Button>
-              <Button size="icon" variant="ghost" className="size-7" disabled={draft.length === 1} onClick={() => setDraft(draft.filter((_, k) => k !== i))} aria-label="Remove Chapter"><X className="size-4" /></Button>
+              <Icon label="Move up" disabled={i === 0} onClick={() => setDraft(edits.moveChapter(draft, i, -1))}><ArrowUp className="size-4" /></Icon>
+              <Icon label="Move down" disabled={i === last} onClick={() => setDraft(edits.moveChapter(draft, i, 1))}><ArrowDown className="size-4" /></Icon>
+              <Icon label="Merge with the next Chapter" disabled={i === last} onClick={() => setDraft(edits.mergeChapter(draft, i))}><Merge className="size-4" /></Icon>
+              <Icon label="Remove Chapter" disabled={draft.length === 1} onClick={() => setDraft(draft.filter((_, k) => k !== i))}><X className="size-4" /></Icon>
             </div>
-            <p className="ml-8 mt-1 text-sm text-muted-foreground">{c.sections.map((s) => s.title).join(" · ")}</p>
+            <ol className="ml-8 mt-2 space-y-1">
+              {c.sections.map((s, j) => (
+                <li key={s.id} className="flex flex-wrap items-center gap-1">
+                  <Input value={s.title} onChange={(e) => setSec(i, j, e.target.value)} className="h-7 min-w-40 flex-1 text-sm" aria-label={`Chapter ${i + 1} Section ${j + 1} title`} />
+                  <span className="tabular w-14 text-right text-xs text-muted-foreground" title={s.pages.map((p) => `${p.source} p.${p.page}`).join(", ")}>{s.pages.length} pp.</span>
+                  <Icon label="Move Section up" disabled={i === 0 && j === 0} onClick={() => setDraft(edits.moveSection(draft, i, j, -1))}><ArrowUp className="size-3.5" /></Icon>
+                  <Icon label="Move Section down" disabled={i === last && j === c.sections.length - 1} onClick={() => setDraft(edits.moveSection(draft, i, j, 1))}><ArrowDown className="size-3.5" /></Icon>
+                  <Icon label="Split Section" disabled={s.pages.length < 2} onClick={() => setDraft(edits.splitSection(draft, i, j))}><Scissors className="size-3.5" /></Icon>
+                  <Icon label="Merge with the next Section" disabled={j === c.sections.length - 1} onClick={() => setDraft(edits.mergeSection(draft, i, j))}><Merge className="size-3.5" /></Icon>
+                  <Icon label="Start a new Chapter here" disabled={j === 0} onClick={() => setDraft(edits.splitChapter(draft, i, j))}><SplitSquareVertical className="size-3.5" /></Icon>
+                  <Icon label="Remove Section" onClick={() => setDraft(edits.section(draft, i, (ss) => ss.filter((_, k) => k !== j)))}><X className="size-3.5" /></Icon>
+                </li>
+              ))}
+            </ol>
           </li>
         ))}
       </ol>
@@ -233,6 +281,10 @@ export function Run() {
         <div className="mb-8 space-y-2" aria-live="polite">
           <p className="text-sm">Working: {run.next?.join(", ").replaceAll("_", " ") ?? "…"}</p>
           {run.pages_total > 0 && <><Progress value={(100 * run.pages_read) / run.pages_total} /><p className="tabular text-xs text-muted-foreground">{run.pages_read} of {run.pages_total} pages read</p></>}
+          <p className="tabular text-xs text-muted-foreground">
+            {run.seconds_left != null ? `${duration(run.seconds_left)} left until the next step` : "Estimating time left…"}
+            {run.gpu && <> · GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</>}
+          </p>
         </div>
       )}
       {run.status === "failed" && (
@@ -244,7 +296,14 @@ export function Run() {
       )}
       {run.gate === "found" && <FoundGate cid={cid} />}
       {run.gate === "outline" && <OutlineGate cid={cid} />}
-      {(run.status === "done" || run.status === "running") && !run.gate && (
+      {run.gate === "chapter_review" && (
+        <div className="mb-8 rounded-md border border-border px-4 py-3">
+          <p className="font-medium">The Chapters are written and wait for your review</p>
+          <p className="mt-1 text-sm text-muted-foreground">Publishing the last one finishes the Run. Published Chapters can be read already.</p>
+          <Link to="/c/$cid/review" params={{ cid: String(cid) }} className="mt-3 inline-block"><Button size="sm">Review Chapters</Button></Link>
+        </div>
+      )}
+      {(run.status === "done" || run.status === "running" || run.gate === "chapter_review") && run.gate !== "found" && run.gate !== "outline" && (
         <ul className="grid gap-3 sm:grid-cols-2">
           {STUDY.map(([to, label, Icon, hint]) => (
             <li key={to}>
@@ -255,8 +314,8 @@ export function Run() {
           ))}
         </ul>
       )}
-      {run.status === "done" && <Search cid={cid} />}
-      {run.status === "done" && course && <Settings cid={cid} course={course} />}
+      {(run.status === "done" || run.gate === "chapter_review") && <Search cid={cid} />}
+      {(run.status === "done" || run.gate === "chapter_review") && course && <Settings cid={cid} course={course} />}
     </Page>
   );
 }
