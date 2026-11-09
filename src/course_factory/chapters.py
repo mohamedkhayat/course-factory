@@ -42,6 +42,7 @@ class RepairedBlock(BaseModel):
 class GroundingResult(BaseModel):
     block: int
     grounded: bool
+    contradicts: bool = False  # ungrounded because it disagrees with its pages, not just goes beyond them
     reason: str = ""
 
 
@@ -145,75 +146,80 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
 
 
 def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes: dict[int, str] | None = None) -> tuple[list[dict], list[dict]]:
-    """Check a Section's Blocks together, repair failures in parallel, then judge grounding once."""
+    """Check a Section's Blocks together, repair failures in parallel, then judge grounding in one call.
+    A Block that goes beyond its pages becomes model-added; one that contradicts them is repaired once and judged again."""
     sources = source_pages(ctx, cid)
     extra = components.schemas(ctx.db)
     blocks, errors = check_blocks(raw, sources, extra)
     for index, note in (notes or {}).items():
         errors[index] = [f"owner note: {note}"]
-    failed = set()
-    for _ in range(REPAIRS):
-        pending = [i for i, errs in enumerate(errors) if errs and i not in failed]
-        if not pending:
-            break
-        def repair(index):
-            try:
-                fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {
-                    "block": blocks[index], "errors": errors[index], "pages": pages,
-                    "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, RepairedBlock,
-                    ctx.course_dir(cid), course_id=cid)
-                return index, fixed.block, None, last_trace_id()
-            except StepFailed as e:
-                return index, None, str(e), last_trace_id()
+    warnings: list[list[str]] = [[] for _ in blocks]
 
-        with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending))) as pool:
-            repaired = list(pool.map(repair, pending))
-        candidates, candidate_indices = [], []
-        for index, fixed, failure, trace_id in repaired:
-            if failure or fixed is None:
-                errors[index].append(failure or "repair returned nothing")
-                failed.add(index)
-            else:
-                blocks[index] = fixed
-                candidates.append(fixed)
-                candidate_indices.append(index)
-        if candidates:
-            normalized, new_errors = check_blocks(candidates, sources, extra)
-            trace_ids = {index: trace_id for index, _, failure, trace_id in repaired if not failure}
-            for index, block, block_errors in zip(candidate_indices, normalized, new_errors):
-                blocks[index], errors[index] = block, block_errors
-                attach_checks(ctx.db, trace_ids[index], {"errors": block_errors})
+    def repair(index):
+        try:
+            fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {
+                "block": blocks[index], "errors": errors[index], "pages": pages,
+                "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, RepairedBlock,
+                ctx.course_dir(cid), course_id=cid)
+            return index, fixed.block, None, last_trace_id()
+        except StepFailed as e:
+            return index, None, str(e), last_trace_id()
 
-    flags = []
-    for block, block_errors in zip(blocks, errors):
-        state_errors, warnings = components.status_flags(ctx.db, block["component"]) if not block_errors else ([], [])
-        flags.append({"errors": block_errors + state_errors, "warnings": warnings})
+    def repair_all(rounds: int, only: set[int]):
+        failed = set()
+        for _ in range(rounds):
+            pending = [i for i in only if errors[i] and i not in failed]
+            if not pending:
+                return
+            with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending))) as pool:
+                repaired = list(pool.map(repair, pending))
+            fixed = [(i, b, t) for i, b, failure, t in repaired if not failure and b is not None]
+            for i, _, failure, _ in repaired:
+                if failure:
+                    errors[i].append(failure)
+                    failed.add(i)
+            if fixed:
+                normalized, new_errors = check_blocks([b for _, b, _ in fixed], sources, extra)
+                for (i, _, trace_id), block, block_errors in zip(fixed, normalized, new_errors):
+                    blocks[i], errors[i] = block, block_errors
+                    attach_checks(ctx.db, trace_id, {"errors": block_errors})
 
-    grounded_indices = [i for i, (block, flag) in enumerate(zip(blocks, flags))
-                        if not flag["errors"] and block["origin"] == "from_source"]
-    if grounded_indices:
-        page_map = {(p["source"], p["page"]): p for i in grounded_indices
-                    for p in page_texts(ctx, cid, blocks[i]["citations"])}
-        ground_inputs = [{"block": i, "content": blocks[i],
-                          "citations": blocks[i]["citations"]}
-                         for i in grounded_indices]
+    def judge(indices: list[int]) -> list[int]:
+        """Judges grounding in one call; returns the Blocks that contradict their pages, with the reason as their error."""
+        page_map = {(p["source"], p["page"]): p for i in indices for p in page_texts(ctx, cid, blocks[i]["citations"])}
         try:
             review = run_pi_step(ctx.db, ctx.backend, "judge_grounding", {
-                "blocks": ground_inputs, "pages": list(page_map.values())}, GroundingBatch,
-                ctx.course_dir(cid), course_id=cid)
-            results = {r.block: r for r in review.results}
-            if not results and review.grounded is not None:
-                results = {i: GroundingResult(block=i, grounded=review.grounded, reason=review.reason)
-                           for i in grounded_indices}
-            for index in grounded_indices:
-                result = results.get(index)
-                if result is None:
-                    flags[index]["warnings"].append("grounding judge returned no result for this Block")
-                elif not result.grounded:
-                    flags[index]["warnings"].append(f"grounding: {result.reason or 'not supported by its Citations'}")
+                "blocks": [{"block": i, "content": blocks[i], "citations": blocks[i]["citations"]} for i in indices],
+                "pages": list(page_map.values())}, GroundingBatch, ctx.course_dir(cid), course_id=cid)
         except StepFailed as e:
-            for index in grounded_indices:
-                flags[index]["warnings"].append(f"grounding judge failed: {e}")
+            for i in indices:
+                warnings[i].append(f"grounding judge failed: {e}")
+            return []
+        results = {r.block: r for r in review.results}
+        if not results and review.grounded is not None:
+            results = {i: GroundingResult(block=i, grounded=review.grounded, reason=review.reason) for i in indices}
+        contradicted = []
+        for i in indices:
+            r = results.get(i)
+            if r is None:
+                warnings[i].append("grounding judge returned no result for this Block")
+            elif r.contradicts:
+                errors[i] = [f"contradicts its cited pages: {r.reason}"]
+                contradicted.append(i)
+            elif not r.grounded:
+                blocks[i]["origin"] = "model_added"  # goes beyond its pages: its Citations stay as references
+        return contradicted
+
+    repair_all(REPAIRS, set(range(len(blocks))))
+    contradicted = judge([i for i, b in enumerate(blocks) if not errors[i] and b["origin"] == "from_source"])
+    if contradicted:
+        repair_all(1, set(contradicted))
+        judge([i for i in contradicted if not errors[i]])
+
+    flags = []
+    for block, block_errors, block_warnings in zip(blocks, errors, warnings):
+        state_errors, state_warnings = components.status_flags(ctx.db, block["component"]) if not block_errors else ([], [])
+        flags.append({"errors": block_errors + state_errors, "warnings": block_warnings + state_warnings})
     return blocks, flags
 
 

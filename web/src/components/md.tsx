@@ -5,11 +5,26 @@ import remarkMath from "remark-math";
 import katex from "katex";
 import { cn } from "@/lib/utils";
 
+type MdNode = { type: string; position?: { start: { offset?: number } }; data?: object; children?: MdNode[] };
+
+/** remark-math renders $$x$$ written on one line as inline math; the Catalogue (and the render checks) mean display. */
+function displayDoubleDollar() {
+  return (tree: MdNode, file: { value: unknown }) => {
+    const src = String(file.value);
+    const visit = (n: MdNode) => {
+      if (n.type === "inlineMath" && src.startsWith("$$", n.position?.start.offset ?? -1))
+        n.data = { ...n.data, hProperties: { className: ["language-math", "math-display"] } };
+      n.children?.forEach(visit);
+    };
+    visit(tree);
+  };
+}
+
 /** Markdown with $inline$ and $$display$$ math. Raw HTML is never rendered. */
 export function Md({ children, className }: { children: string; className?: string }) {
   return (
     <div className={cn("prose-cf", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{children}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, displayDoubleDollar]} rehypePlugins={[rehypeKatex]}>{children}</ReactMarkdown>
     </div>
   );
 }

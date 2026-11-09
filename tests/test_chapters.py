@@ -150,13 +150,24 @@ def test_from_source_block_needs_a_real_citation(client, material, model):
     assert "at least one Citation" in got[0]["flags"][0] and "does not exist" in got[1]["flags"][0]
 
 
-def test_grounding_judge_warns_without_flagging(client, material, model):
+def test_a_block_going_beyond_its_pages_becomes_model_added(client, material, model):
     model.handlers["judge_grounding"] = lambda prompt, files: {"grounded": False, "reason": "the bound is not in the notes"}
     cid = generate(client, material, model)
     b = first_block(client, cid)
-    assert b["status"] == "ok" and b["flags"] == ["grounding: the bound is not in the notes"]
+    assert b["status"] == "ok" and b["flags"] == [] and b["origin"] == "model_added"
+    assert b["citations"]  # kept as references
     judged = [p for step, p in model.prompts if step == "judge_grounding"]
-    assert len(judged) == 3  # only the From source Blocks, one per Section
+    assert len(judged) == 3  # only the From source Blocks, one call per Section
+
+
+def test_a_block_contradicting_its_pages_is_repaired_and_judged_again(client, material, model):
+    verdicts = iter([{"results": [{"block": 0, "grounded": False, "contradicts": True, "reason": "Sp(A) is wrong"}]}])
+    model.handlers["judge_grounding"] = lambda prompt, files: next(verdicts, {"grounded": True, "reason": ""})
+    cid = generate(client, material, model)
+    b = first_block(client, cid)
+    assert b["status"] == "ok" and b["origin"] == "from_source"
+    repairs = [p for step, p in model.prompts if step == "repair_block"]
+    assert len(repairs) == 1 and "Sp(A) is wrong" in repairs[0]
 
 
 def test_owner_edit_is_revalidated(client, material, model):

@@ -12,6 +12,7 @@ import sympy as sp
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application, convert_xor
 
 from .catalogue import CATALOGUE, BlockDraft, validate_data
+from .pi_step import LATEX_WORDS
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 MATH_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.S)
@@ -151,6 +152,25 @@ TEXT_FIXES = [
     (re.compile(r"\$\$\$\$"), "$$\n$$"),  # two display formulas run together
     (re.compile(r"(\\text\{[^{}]*?)(\\[A-Za-z]+)([^{}]*\})"), r"\1}\2\\text{\3"),  # math command inside \text{}
 ]
+MATH_SPAN = re.compile(r"(\$\$.+?\$\$|\$[^$]+?\$)", re.S)
+OUTSIDE_MATH = [
+    (re.compile(r"\\n([A-Za-z]*)"), lambda m: m[0] if "n" + m[1] in LATEX_WORDS else "\n" + m[1]),  # "\nLa" is a newline, "\neq" is not
+    (re.compile(r"\\q?quad\s*"), " "),
+]
+MERMAID_LIST = re.compile(r'(["|]\s*)(\d+\.|[-+*])(?=\s)')  # a label starting like a Markdown list fails to render
+LIST_FIELDS = {"steps", "hints"}
+
+
+def heal_markdown(s: str) -> str:
+    for pattern, repl in TEXT_FIXES:
+        s = pattern.sub(repl, s)
+    if s.count("$$") % 2:
+        s += "$$"  # the last display formula was never closed
+    parts = MATH_SPAN.split(s)
+    for i in range(0, len(parts), 2):
+        for pattern, fix in OUTSIDE_MATH:
+            parts[i] = pattern.sub(fix, parts[i])
+    return "".join(parts)
 
 
 def heal_text(data, key: str = ""):
@@ -158,11 +178,14 @@ def heal_text(data, key: str = ""):
     if isinstance(data, dict):
         return {k: heal_text(v, k) for k, v in data.items()}
     if isinstance(data, list):
-        return [heal_text(v, key) for v in data]
-    if isinstance(data, str) and key not in NOT_MARKDOWN - {"latex"}:
-        for pattern, repl in TEXT_FIXES:
-            data = pattern.sub(repl, data)
-    return data
+        return [heal_text(v, key) for v in data if not (key in LIST_FIELDS and isinstance(v, str) and not v.strip())]
+    if not isinstance(data, str):
+        return data
+    if key == "mermaid":
+        return MERMAID_LIST.sub(lambda m: m[1] + (m[2][:-1] + "#46;" if m[2].endswith(".") else f"#{ord(m[2])};"), data)
+    if key == "latex":
+        return TEXT_FIXES[2][0].sub(TEXT_FIXES[2][1], data)
+    return data if key in NOT_MARKDOWN else heal_markdown(data)
 
 
 def iteration_rows(data: dict) -> list[dict]:

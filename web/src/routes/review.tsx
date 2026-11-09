@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BlockBody } from "@/components/blocks";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,20 @@ import { errText, Page } from "./home";
 import { useCid } from "./run";
 
 type RBlock = Block & { section: string };
+
+/** Mounts its children once they come near the viewport: Review lists hundreds of Blocks full of math and diagrams. */
+function Lazy({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || shown) return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setShown(true); io.disconnect(); } }, { rootMargin: "1500px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [shown]);
+  return <div ref={ref}>{shown ? children : <div className="h-48" />}</div>;
+}
 
 function ReviewBlock({ cid, b }: { cid: number; b: RBlock }) {
   const qc = useQueryClient();
@@ -37,7 +51,7 @@ function ReviewBlock({ cid, b }: { cid: number; b: RBlock }) {
           <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={12} className="font-mono text-xs" aria-label="Block data (JSON)" />
           <div className="flex gap-2"><Button size="sm" onClick={save}>Save</Button><Button size="sm" variant="ghost" onClick={() => setMode("view")}>Cancel</Button></div>
         </div>
-      ) : <div className="prose-cf"><BlockBody block={b} cid={cid} /></div>}
+      ) : <Lazy><div className="prose-cf"><BlockBody block={b} cid={cid} /></div></Lazy>}
       {mode === "regen" && (
         <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); act.mutate({ path: "regenerate", body: { note: text } }); }}>
           <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="What should change?" aria-label="Note for the model" />

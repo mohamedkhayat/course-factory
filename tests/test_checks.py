@@ -55,3 +55,29 @@ def test_text_the_model_mangled_is_repaired_before_rendering():
     (fixed,), (errors,) = check_blocks([block], {})
     assert errors == []
     assert fixed["data"]["steps"] == ["$$a = 1$$\n$$= b$$", "Soit :\n1. $u$", r"$f \text{ }\mu\text{-fortement convexe}$"]
+
+
+def heal(component, data):
+    (fixed,), (errors,) = check_blocks([{"component": component, "origin": "model_added", "citations": [], "data": data}], {})
+    assert errors == []
+    return fixed["data"]
+
+
+def test_empty_steps_and_hints_are_dropped():
+    assert heal("worked_example", {"title": "t", "problem": "p", "steps": ["a", "", " "], "answer": "x"})["steps"] == ["a"]
+    assert heal("exercise", {"title": "t", "statement": "s", "hints": ["", "h"], "correction": "c"})["hints"] == ["h"]
+
+
+def test_a_display_formula_left_open_is_closed():
+    assert heal("prose", {"markdown": "est\n$$\\rho^*=\\frac{2}{3}."})["markdown"] == "est\n$$\\rho^*=\\frac{2}{3}.$$"
+
+
+def test_latex_escapes_outside_math_become_text():
+    md = r"$$a$$\nLa mise $\nabla f$ ok\n- b; $x$;\quad $y$ \neq"
+    assert heal("prose", {"markdown": md})["markdown"] == "$$a$$\nLa mise $\\nabla f$ ok\n- b; $x$; $y$ \\neq"
+
+
+def test_diagram_labels_starting_like_a_markdown_list_are_escaped():
+    src = 'flowchart TD\n  A["1. start"] -->|"+ J convexe"| B["- end"]'
+    assert heal("diagram", {"mermaid": src, "caption": "c"})["mermaid"] == \
+        'flowchart TD\n  A["1#46; start"] -->|"#43; J convexe"| B["#45; end"]'
