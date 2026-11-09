@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { get, pageUrl, send, type Block, type Citation } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Md, Tex } from "./md";
+import { Md, MdLine, Tex } from "./md";
 import { Explorer, Plot } from "./plot";
 
 type P<T = any> = { data: T; cid: number; block: Block };
@@ -24,7 +24,7 @@ const KIND: Record<string, string> = { definition: "Définition", theorem: "Thé
 function TheoremBox({ data }: P) {
   return (
     <div className="rounded-md border border-foreground/25 bg-card px-5 py-4">
-      <p className="mb-1 font-serif text-base"><span className="font-semibold">{KIND[data.kind] ?? data.kind}</span>{data.title && <span className="text-muted-foreground"> — {data.title}</span>}</p>
+      <p className="mb-1 font-serif text-base"><span className="font-semibold">{KIND[data.kind] ?? data.kind}</span>{data.title && <span className="text-muted-foreground"> — <MdLine>{data.title}</MdLine></span>}</p>
       <Md>{data.statement}</Md>
       {data.proof && <Reveal label="Démonstration"><Md>{data.proof}</Md></Reveal>}
     </div>
@@ -34,7 +34,7 @@ function TheoremBox({ data }: P) {
 function WorkedExample({ data }: P) {
   return (
     <div>
-      <h4 className="font-medium">{data.title}</h4>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
       <Md>{data.problem}</Md>
       <ol className="mt-2 space-y-1 border-l border-border pl-4">
         {data.steps.map((s: string, i: number) => <li key={i} className="flex gap-3"><span className="tabular pt-1 text-sm text-muted-foreground">{i + 1}</span><Md>{s}</Md></li>)}
@@ -48,7 +48,7 @@ function Exercise({ data }: P) {
   const [shown, setShown] = useState(0);
   return (
     <div>
-      <h4 className="font-medium">{data.title}</h4>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
       <Md>{data.statement}</Md>
       {data.hints.slice(0, shown).map((h: string, i: number) => (
         <div key={i} className="mt-2 flex gap-2 text-sm"><Lightbulb className="mt-1 size-4 text-warn" /><Md>{h}</Md></div>
@@ -115,7 +115,7 @@ function Quiz({ data, cid, block }: P) {
 function KeyFormula({ data }: P) {
   return (
     <div className="rounded-md bg-muted/60 px-5 py-3">
-      <p className="text-sm font-medium text-muted-foreground">{data.name}</p>
+      <p className="text-sm font-medium text-muted-foreground"><MdLine>{data.name}</MdLine></p>
       <Tex latex={data.latex} />
       <Md>{data.meaning}</Md>
     </div>
@@ -142,7 +142,7 @@ function Callout({ data }: P) {
 function Algorithm({ data }: P) {
   return (
     <div className="rounded-md border border-border px-5 py-4">
-      <p className="font-semibold">Algorithme — {data.name}</p>
+      <p className="font-semibold">Algorithme — <MdLine>{data.name}</MdLine></p>
       <div className="mt-1 text-sm"><span className="text-muted-foreground">Entrée : </span><Md className="inline-block">{data.inputs}</Md></div>
       <ol className="my-2 space-y-1">
         {data.steps.map((s: string, i: number) => <li key={i} className="flex gap-3"><span className="tabular pt-1 font-mono text-xs text-muted-foreground">{String(i + 1).padStart(2, "0")}</span><Md>{s}</Md></li>)}
@@ -158,7 +158,7 @@ function Table({ headers, rows, caption }: { headers: string[]; rows: unknown[][
   return (
     <figure className="overflow-x-auto">
       <table className="w-full border-collapse text-sm">
-        <thead><tr>{headers.map((h) => <th key={h} className="border-b border-foreground/30 px-3 py-1.5 text-left font-semibold">{h}</th>)}</tr></thead>
+        <thead><tr>{headers.map((h) => <th key={h} className="border-b border-foreground/30 px-3 py-1.5 text-left font-semibold"><MdLine>{h}</MdLine></th>)}</tr></thead>
         <tbody>{rows.map((r, i) => <tr key={i} className="border-b border-border/70">{r.map((c, j) => <td key={j} className="px-3 py-1.5 align-top">{typeof c === "string" ? <Md className="[&_p]:my-0">{c}</Md> : fmt(c)}</td>)}</tr>)}</tbody>
       </table>
       {caption && <figcaption className="mt-2 text-sm text-muted-foreground"><Md>{caption}</Md></figcaption>}

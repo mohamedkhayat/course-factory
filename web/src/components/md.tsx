@@ -29,6 +29,15 @@ export function Md({ children, className }: { children: string; className?: stri
   );
 }
 
+/** One line of Markdown with math, for titles, names and table headers (no wrapping paragraph). */
+export function MdLine({ children }: { children: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]} components={{ p: ({ children }) => <>{children}</> }}>
+      {children}
+    </ReactMarkdown>
+  );
+}
+
 export function Tex({ latex, display = true }: { latex: string; display?: boolean }) {
   const html = katex.renderToString(latex, { displayMode: display, throwOnError: false });
   return <span className="block overflow-x-auto" dangerouslySetInnerHTML={{ __html: html }} />;

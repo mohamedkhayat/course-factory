@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { compileExpr, plotVariable } from "@/lib/math";
-import { Md } from "./md";
+import { Md, MdLine } from "./md";
 
 const W = 560, H = 300, PAD = 32;
 const COLORS = ["var(--primary)", "var(--warn)", "var(--ok)", "var(--destructive)"];
@@ -57,7 +57,7 @@ export function Plot({ data }: { data: { title?: string; functions: { expr: stri
   });
   return (
     <div>
-      {data.title && <h4 className="mb-2 font-medium">{data.title}</h4>}
+      {data.title && <h4 className="mb-2 font-medium"><MdLine>{data.title}</MdLine></h4>}
       <Graph fns={fns} range={data.x_range ?? [-5, 5]} />
     </div>
   );
@@ -70,7 +70,7 @@ export function Explorer({ data }: { data: { title: string; expr: string; params
   const f = useMemo(() => compileExpr(data.expr), [data.expr]);
   return (
     <div className="space-y-3">
-      <h4 className="font-medium">{data.title}</h4>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
       <div className="grid gap-2 sm:grid-cols-2">
         {data.params.map((p) => (
           <label key={p.name} className="flex items-center gap-3 text-sm">
