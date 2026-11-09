@@ -10,6 +10,12 @@ from .context import Ctx, Role
 from .pi_step import StepFailed, run_pi_step
 
 DATA_SUFFIXES = {".csv", ".txt", ".json", ".xlsx", ".npy", ".mat", ".dat"}
+JUNK_DIRS = {"__pycache__", "node_modules", "site-packages", "venv"}  # tooling, not course material
+
+
+def is_material(rel: Path) -> bool:
+    """False for hidden files and anything inside a hidden folder (.venv, .git), a virtualenv or a cache."""
+    return not any(part.startswith(".") or part in JUNK_DIRS for part in rel.parts)
 
 
 class PageReading(BaseModel):
@@ -31,7 +37,7 @@ def import_sources(ctx: Ctx, cid: int) -> None:
     db = ctx.db
     folder = Path(db.execute("SELECT folder FROM courses WHERE id=?", (cid,)).fetchone()["folder"])
     dest = ctx.course_dir(cid) / "sources"
-    for f in sorted(p for p in folder.rglob("*") if p.is_file() and not p.name.startswith(".")):
+    for f in sorted(p for p in folder.rglob("*") if p.is_file() and is_material(p.relative_to(folder))):
         rel = f.relative_to(folder)
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, dest / rel)

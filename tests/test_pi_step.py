@@ -97,6 +97,19 @@ def test_pi_backend_streams_thinking_and_output_and_returns_the_answer(tmp_path,
     assert seen == [("thinking", "hmm"), ("output", '{"a"')]
 
 
+def test_a_prompt_too_big_for_the_command_line_reaches_pi_whole(tmp_path, monkeypatch):
+    from course_factory.pi_step import PiBackend
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    end = {"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]}}
+    (bin_dir / "pi").write_text("#!/bin/sh\nwc -c > \"$0.got\"\necho '" + json.dumps(end) + "'\n")
+    (bin_dir / "pi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    prompt = "x" * 3_000_000  # Linux refuses a single argument over 128 KB
+    assert PiBackend()("propose_roles", prompt, [], tmp_path) == "ok"
+    assert (bin_dir / "pi.got").read_text().strip() == str(len(prompt))
+
+
 def test_pi_backend_is_killed_after_its_timeout(tmp_path, monkeypatch):
     from course_factory.pi_step import PiBackend
     bin_dir = tmp_path / "bin"

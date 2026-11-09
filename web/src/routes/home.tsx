@@ -101,6 +101,8 @@ async function droppedFiles(items: DataTransferItemList): Promise<File[]> {
 const pathOf = (f: File) => f.webkitRelativePath || f.name;
 const mb = (n: number) => `${(n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 
+const JUNK = new Set(["__pycache__", "node_modules", "site-packages", "venv"]);  // tooling, not course material
+
 function NewCourse({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const nav = useNavigate();
   const [name, setName] = useState("");
@@ -109,7 +111,7 @@ function NewCourse({ open, onOpenChange }: { open: boolean; onOpenChange: (o: bo
   const [progress, setProgress] = useState(0);
   const folderInput = useRef<HTMLInputElement>(null), filesInput = useRef<HTMLInputElement>(null);
   const take = (picked: File[]) => {
-    const kept = picked.filter((f) => !pathOf(f).split("/").some((part) => part.startsWith(".")));  // no hidden files
+    const kept = picked.filter((f) => !pathOf(f).split("/").some((part) => part.startsWith(".") || JUNK.has(part)));  // same rule as the server
     setFiles(kept);
     if (!name && kept[0]) setName(pathOf(kept[0]).includes("/") ? pathOf(kept[0]).split("/")[0] : "");
   };

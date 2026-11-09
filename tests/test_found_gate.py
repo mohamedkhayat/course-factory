@@ -201,3 +201,14 @@ def test_the_course_list_summarises_each_course_for_the_home_hub(client, materia
 
 def test_system_reports_model_and_gpu(client):
     assert set(client.get("/api/system").json()) == {"model", "gpu"}
+
+
+def test_virtualenvs_caches_and_hidden_folders_are_not_imported(client, material):
+    for junk in ("viz/.venv/lib/site.py", "viz/venv/lib/python3.13/site-packages/m/icon.pdf", "viz/__pycache__/a.pyc",
+                 "web/node_modules/x/index.js", ".git/HEAD"):
+        (material / junk).parent.mkdir(parents=True, exist_ok=True)
+        (material / junk).write_text("x")
+    (material / "viz" / "plot.py").write_text("print(1)")
+    cid = start(client, material)
+    names = {s["name"] for s in client.get(f"/api/courses/{cid}/found").json()["sources"]}
+    assert names == {"cours.pdf", "TD1.pdf", "TD1_corrige.pdf", "data.csv", "viz/plot.py"}

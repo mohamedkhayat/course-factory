@@ -6,6 +6,7 @@ import re
 import os
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Iterator
@@ -230,7 +231,7 @@ class PiBackend:
 
     def _cmd(self, prompt, files):
         return ["pi", "-p", "--mode", "json", "--no-session", "--no-extensions", "--no-skills",
-                "--no-context-files", "--no-tools", "--model", self.model, "--", *[f"@{f}" for f in files], prompt]
+                "--no-context-files", "--no-tools", "--model", self.model, "--", *[f"@{f}" for f in files]]
 
     def __call__(self, step, prompt, files, workdir):
         lines = []
@@ -248,7 +249,11 @@ class PiBackend:
     def _events(self, prompt, files, workdir) -> Iterator[tuple[str, dict]]:
         """pi's JSON event lines, each with its assistant message event ({} for other events). Killed after the timeout."""
         workdir.mkdir(parents=True, exist_ok=True)
-        with subprocess.Popen(self._cmd(prompt, files), cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
+        stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
+        stdin.write(prompt)
+        stdin.seek(0)
+        with stdin, subprocess.Popen(self._cmd(prompt, files), cwd=workdir, stdin=stdin, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True) as proc:
             timer = threading.Timer(self.timeout, proc.kill)
             timer.start()
             try:
