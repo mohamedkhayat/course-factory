@@ -1,22 +1,28 @@
 import { Fragment, useState } from "react";
 import { Check, Lightbulb, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { send, type Block } from "@/lib/api";
+import { readEvents, send, type Block } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./code-editor";
 import { Md, MdLine } from "./md";
 
 type P<T = any> = { data: T; cid: number; block: Block };
-type Blank = { answers: string[]; hint: string };
+type Blank = { answers: string[]; regex?: string; hint: string };
 
 const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** Accepted when it equals an answer (case and spacing ignored) or the whole of it matches the blank's regex. */
+function accepts(b: Blank, value: string) {
+  if (b.answers.some((a) => norm(a) === norm(value))) return true;
+  try { return !!b.regex && new RegExp(`^(?:${b.regex})$`, "i").test(value.trim()); } catch { return false; }
+}
 
 /** Text or code with gaps; each gap is checked against its accepted answers, case and spacing ignored. */
 export function FillBlanks({ data }: P<{ title: string; language: string; template: string; blanks: Blank[]; explanation: string }>) {
   const [values, setValues] = useState<string[]>(data.blanks.map(() => ""));
   const [checked, setChecked] = useState(false);
   const [shown, setShown] = useState<Set<number>>(new Set());
-  const ok = (i: number) => data.blanks[i].answers.some((a) => norm(a) === norm(values[i]));
+  const ok = (i: number) => accepts(data.blanks[i], values[i]);
   const parts = data.template.split(/\[\[(\d+)\]\]/);
   const all = checked && data.blanks.every((_, i) => ok(i));
   const gap = (i: number) => {
@@ -52,7 +58,29 @@ export function FillBlanks({ data }: P<{ title: string; language: string; templa
 type Grade = { correct: boolean; feedback: string; hint: string };
 
 /** Starter code to complete in an editor; the answer is graded by the model, hints go from written to model-made. */
-export function CodeExercise({ data, cid, block }: P<{ title: string; task: string; language: string; starter: string; solution: string; hints: string[] }>) {
+type CodeData = { title: string; task: string; language: string; starter: string; solution: string; hints: string[]; blanks?: Blank[] };
+
+const Solution = ({ code }: { code: string }) => (
+  <details className="mt-3 rounded-md border border-border/80">
+    <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground">Reference solution</summary>
+    <pre className="overflow-x-auto border-t border-border/80 px-3 py-2 font-mono text-[0.85rem]">{code}</pre>
+  </details>
+);
+
+/** Code with blanks is checked by match, like fill_blanks; free-form code goes to the model grader. */
+export function CodeExercise(props: P<CodeData>) {
+  const { data } = props;
+  if (!data.blanks?.length) return <FreeCode {...props} />;
+  return (
+    <div>
+      <Md>{data.task}</Md>
+      <FillBlanks {...props} data={{ title: data.title, language: data.language || "text", template: data.starter, blanks: data.blanks, explanation: "" }} />
+      <Solution code={data.solution} />
+    </div>
+  );
+}
+
+function FreeCode({ data, cid, block }: P<CodeData>) {
   const [code, setCode] = useState(data.starter);
   const [grade, setGrade] = useState<Grade | null>(null);
   const [hints, setHints] = useState<string[]>([]);
@@ -72,9 +100,17 @@ export function CodeExercise({ data, cid, block }: P<{ title: string; task: stri
   const hint = async () => {
     if (hints.length < data.hints.length) return setHints([...hints, data.hints[hints.length]]);
     setBusy(true);
-    try {
-      const g = await send<Grade>(`/api/courses/${cid}/blocks/${block.id}/grade`, { code });
-      setHints([...hints, g.hint || g.feedback]);
+    setError("");
+    let text = "";
+    const k = hints.length;
+    try {  // past the written hints, the tutor coaches on the current code; it never sees the solution
+      const res = await fetch(`/api/courses/${cid}/tutor`, { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: "Give me one short hint for the next thing to fix in my code. Do not give the answer.", block_id: block.id, code }) });
+      if (!res.ok) throw new Error(String(res.status));
+      await readEvents(res, (ev, d) => {
+        if (ev === "token") { text += d.text; setHints((h) => [...h.slice(0, k), text]); }
+        if (ev === "error") throw new Error(d.message);
+      });
     } catch {
       setError("More hints are only available once the Chapter is published.");
     } finally {
@@ -99,10 +135,7 @@ export function CodeExercise({ data, cid, block }: P<{ title: string; task: stri
         <Button size="sm" variant="outline" onClick={hint} disabled={busy}>Hint</Button>
         <Button size="sm" variant="ghost" onClick={() => { setCode(data.starter); setGrade(null); }}>Reset</Button>
       </div>
-      <details className="mt-3 rounded-md border border-border/80">
-        <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground">Reference solution</summary>
-        <pre className="overflow-x-auto border-t border-border/80 px-3 py-2 font-mono text-[0.85rem]">{data.solution}</pre>
-      </details>
+      <Solution code={data.solution} />
     </div>
   );
 }

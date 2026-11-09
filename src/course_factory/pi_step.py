@@ -94,8 +94,8 @@ def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], wo
 
 
 def model_for(step: str, attempt: int = 1) -> str:
-    """The model a step runs on: CF_MODEL_<STEP>, else CF_MODEL; the last attempt goes to CF_FALLBACK_MODEL when it is set."""
-    if attempt == ATTEMPTS and os.environ.get("CF_FALLBACK_MODEL"):
+    """The model a step runs on: CF_MODEL_<STEP>, else CF_MODEL; one extra attempt after the retries goes to CF_FALLBACK_MODEL."""
+    if attempt > ATTEMPTS and os.environ.get("CF_FALLBACK_MODEL"):
         return os.environ["CF_FALLBACK_MODEL"]
     return os.environ.get(f"CF_MODEL_{step.upper()}") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
 
@@ -274,7 +274,7 @@ def run_pi_step[T: BaseModel](
     watched = None if live else course_id  # background generation shows on the Run screen
     activity_id = uuid4().hex
     try:
-        for attempt in range(1, ATTEMPTS + 1):
+        for attempt in range(1, ATTEMPTS + 1 + bool(os.environ.get("CF_FALLBACK_MODEL"))):
             raw, start = None, time.monotonic()
             _now.model = model_for(step, attempt)
             if watched is not None:

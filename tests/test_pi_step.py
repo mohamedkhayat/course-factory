@@ -151,8 +151,14 @@ def test_each_step_runs_on_its_configured_model_and_the_trace_records_it(conn, t
     assert conn.execute("SELECT model FROM traces").fetchone()[0] == "llama-swap/nemotron3.5-bolt"
 
 
-def test_the_last_attempt_runs_on_the_fallback_model(conn, tmp_path, monkeypatch):
+def test_a_step_that_exhausts_its_retries_runs_once_more_on_the_fallback_model(conn, tmp_path, monkeypatch):
     monkeypatch.setenv("CF_MODEL_READ_PAGE", "fast")
     monkeypatch.setenv("CF_FALLBACK_MODEL", "strong")
-    run_pi_step(conn, answers("{}", "{}", '{"text": "x", "readable": true}'), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
-    assert [r[0] for r in conn.execute("SELECT model FROM traces ORDER BY id")] == ["fast", "fast", "strong"]
+    run_pi_step(conn, answers("{}", "{}", "{}", '{"text": "x", "readable": true}'), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert [r[0] for r in conn.execute("SELECT model FROM traces ORDER BY id")] == ["fast", "fast", "fast", "strong"]
+
+
+def test_without_a_fallback_model_a_step_gets_its_usual_attempts(conn, tmp_path):
+    with pytest.raises(StepFailed):
+        run_pi_step(conn, answers("{}", "{}", "{}", '{"text": "x", "readable": true}'), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 3

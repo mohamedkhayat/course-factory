@@ -1,6 +1,7 @@
 """Generating Chapters Block by Block, checking and repairing Blocks, and the owner's Chapter review."""
 
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pydantic import BaseModel, Field, ValidationError
@@ -125,7 +126,9 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
 
     def check_section(item):
         sec, pages, draft, _ = item
-        return checked_blocks(ctx, cid, draft.blocks, pages)
+        stage = lambda s: db.execute("UPDATE sections SET generation_status=? WHERE id=?", (s, sec["id"]))  # noqa: E731
+        stage("checking")
+        return checked_blocks(ctx, cid, draft.blocks, pages, on_stage=stage)
 
     def save_section(item, result):
         sec, _, _, section_trace = item
@@ -145,7 +148,8 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
     db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
 
 
-def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes: dict[int, str] | None = None) -> tuple[list[dict], list[dict]]:
+def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes: dict[int, str] | None = None,
+                   on_stage: Callable[[str], object] = lambda stage: None) -> tuple[list[dict], list[dict]]:
     """Check a Section's Blocks together, repair failures in parallel, then judge grounding in one call.
     A Block that goes beyond its pages becomes model-added; one that contradicts them is repaired once and judged again."""
     sources = source_pages(ctx, cid)
@@ -171,6 +175,7 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
             pending = [i for i in only if errors[i] and i not in failed]
             if not pending:
                 return
+            on_stage("repairing")
             with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending))) as pool:
                 repaired = list(pool.map(repair, pending))
             fixed = [(i, b, t) for i, b, failure, t in repaired if not failure and b is not None]
@@ -186,6 +191,8 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
 
     def judge(indices: list[int]) -> list[int]:
         """Judges grounding in one call; returns the Blocks that contradict their pages, with the reason as their error."""
+        if indices:
+            on_stage("judging")
         page_map = {(p["source"], p["page"]): p for i in indices for p in page_texts(ctx, cid, blocks[i]["citations"])}
         try:
             review = run_pi_step(ctx.db, ctx.backend, "judge_grounding", {

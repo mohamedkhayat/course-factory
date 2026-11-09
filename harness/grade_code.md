@@ -11,6 +11,9 @@ TASK:
 
 LANGUAGE: {{code_language}}
 
+WHAT THE GRADER MUST CHECK (rubric):
+{{rubric}}
+
 REFERENCE SOLUTION:
 {{solution}}
 

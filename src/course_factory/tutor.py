@@ -33,6 +33,7 @@ class Ask(BaseModel):
     section_id: int | None = None
     conversation_id: int | None = None
     lab_step_id: int | None = None  # the Lab tutor: coaches on the learner's code, outputs and plots
+    block_id: int | None = None  # the same coaching on a code_exercise Block
     code: str = Field("", max_length=50_000)
     outputs: list[dict] = Field([], max_length=50)  # nbformat outputs of the learner's last run
 
@@ -110,6 +111,16 @@ def router(ctx: Ctx) -> APIRouter:
             inputs = {"statement": step["statement"], "code": body.code, "outputs": output_text(body.outputs),
                       "history": history, "question": body.question}
             files = save_plots(body.outputs, ctx.course_dir(cid) / "tutor" / "plots")
+        elif body.block_id is not None:
+            block = db.execute("SELECT b.component, b.data FROM blocks b JOIN sections s ON s.id=b.section_id JOIN chapters c "
+                               "ON c.id=s.chapter_id WHERE b.id=? AND c.course_id=? AND c.status='published'", (body.block_id, cid)).fetchone()
+            if block is None:
+                raise HTTPException(404, "no such Block")
+            if block["component"] != "code_exercise":
+                raise HTTPException(422, "not a code exercise Block")
+            name, allowed = "lab_tutor", set()  # the task only, never the solution
+            inputs = {"statement": json.loads(block["data"])["task"], "code": body.code, "outputs": "",
+                      "history": history, "question": body.question}
         else:
             pages = page_texts(ctx, cid, json.loads(section["pages"])) if section else []
             passages = [{"source": p["source"], "page": p["page"], "text": p["text"]}

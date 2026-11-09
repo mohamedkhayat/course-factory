@@ -13,12 +13,14 @@ from collections import Counter
 from pathlib import Path
 
 from course_factory import db as dbm
-from course_factory.chapters import LANGUAGE_RULE, SectionDraft, catalogue_text, checked_blocks, page_texts, source_pages
+from course_factory.chapters import LANGUAGE_RULE, GroundingBatch, SectionDraft, catalogue_text, checked_blocks, page_texts, source_pages
 from course_factory.checks import check_blocks
 from course_factory.components import schemas
 from course_factory.context import Ctx
 from course_factory.pi_step import PiBackend, StepFailed, run_pi_step
 
+VISUAL = {"plot", "surface_plot", "optimizer_animation", "diagram", "step_diagram", "iteration_table", "terminal", "figure", "explorer"}
+PRACTICE = {"quiz", "fill_blanks", "code_exercise", "exercise"}
 DATA = Path(os.environ.get("CF_DATA", Path.home() / ".local/share/course-factory"))
 
 
@@ -26,6 +28,8 @@ def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
     shutil.copy(DATA / "course-factory.db", work / "course-factory.db")
     db = dbm.connect(work / "course-factory.db")
     ctx = Ctx(db=db, backend=PiBackend(), data_dir=work, search=None)  # type: ignore[arg-type]  # no search in these steps
+    for k in [k for k in os.environ if k.startswith("CF_MODEL_") and k != "CF_MODEL_CONCURRENCY"] + ["CF_FALLBACK_MODEL"]:
+        os.environ.pop(k, None)  # every step runs on the model under test, or the comparison is confounded
     os.environ["CF_MODEL"] = model
     sources, extra, catalogue = source_pages(ctx, cid), schemas(db), catalogue_text(ctx)
     goal = db.execute("SELECT goal FROM courses WHERE id=?", (cid,)).fetchone()["goal"]
@@ -51,6 +55,11 @@ def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
         row["still flagged"] += sum(bool(f["errors"]) for f in flags)
         row["from source"] += sum(b["origin"] == "from_source" for b in blocks)
         used.update(b["component"] for b in blocks)
+        kinds = {b["component"] for b in blocks}
+        row["sections with a visual and practice"] += bool(kinds & VISUAL and kinds & PRACTICE)
+    for (out,) in db.execute("SELECT output FROM traces WHERE id > ? AND step='judge_grounding' AND error IS NULL", (before,)):
+        for r in GroundingBatch.model_validate_json(out).results:
+            row["contradicts" if r.contradicts else "grounded" if r.grounded else "extends"] += 1
     for step, n, failed in db.execute("SELECT step, COUNT(*), SUM(error IS NOT NULL) FROM traces WHERE id > ? GROUP BY step",
                                       (before,)):
         row[f"{step} calls"], row[f"{step} failed"] = n, failed

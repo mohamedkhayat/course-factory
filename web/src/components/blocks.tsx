@@ -214,7 +214,7 @@ function Diagram({ data }: P) {
 }
 
 /** A diagram played step by step: the step's nodes light up, the others fade. */
-function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]; caption: string }[]; caption: string }>) {
+function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]; edges?: [string, string][]; caption: string }[]; caption: string }>) {
   const svg = useMermaid(data.mermaid);
   const box = useRef<HTMLDivElement>(null);
   const [n, setN] = useState(0);
@@ -226,6 +226,15 @@ function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]
       g.style.transition = "opacity 300ms";
       g.style.opacity = lit.has(name) ? "1" : "0.25";
       g.querySelectorAll<SVGElement>("rect, circle, polygon, path").forEach((sh) => { sh.style.stroke = lit.has(name) ? "var(--primary)" : ""; sh.style.strokeWidth = lit.has(name) ? "2.5px" : ""; });
+    });
+    // Mermaid names an edge path L_<from>_<to>_<n> (L-<from>-<to>-<n> in older versions)
+    const edges = (data.steps[n].edges ?? []).map(([a, b]) => [`L_${a}_${b}_`, `L-${a}-${b}-`]).flat();
+    box.current?.querySelectorAll<SVGPathElement>("path.flowchart-link, .edgePaths path").forEach((p) => {
+      const on = edges.some((e) => (p.dataset.id ?? p.id).startsWith(e));
+      p.style.transition = "opacity 300ms";
+      p.style.opacity = on || !edges.length ? "1" : "0.25";
+      p.style.stroke = on ? "var(--primary)" : "";
+      p.style.strokeWidth = on ? "2.5px" : "";
     });
   }, [svg, n, data.steps]);
   return (

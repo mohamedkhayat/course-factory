@@ -14,10 +14,11 @@ import { errText, Page } from "./home";
 type Step = { name: string; label: string; gate: boolean; state: "done" | "current" | "waiting" };
 type Activity = { step: string; attempt: number; elapsed: number; thinking: string; output: string; inputs: Record<string, string> };
 type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number;
-  seconds_left?: number | null; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null; progress?: RunProgressTree };
-type PSection = { title: string; state: "waiting" | "writing" | "done" | "skipped"; blocks: number; flagged: number };
+  seconds_left?: number | null; time_left?: { stage: string; left: number; seconds: number | null }[]; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null; progress?: RunProgressTree };
+type PSection = { title: string; state: "waiting" | "writing" | "checking" | "repairing" | "judging" | "done" | "flagged" | "skipped"; blocks: number; flagged: number };
 type PChapter = { id: number; title: string; sections: PSection[]; done: number; total: number; components?: Record<string, number> };
-type RunProgressTree = { chapters: PChapter[]; pages: number; read: number; sections_done: number; sections_total: number; fraction: number };
+type PFolder = { name: string; sources: { name: string; pages: number; read: number }[]; pages: number; read: number };
+type RunProgressTree = { folders?: PFolder[]; chapters: PChapter[]; pages: number; read: number; sections_done: number; sections_total: number; fraction: number };
 type Trace = { id: number; step: string; inputs: string; output: string | null; error: string | null; owner_action: string | null;
   duration_ms: number | null; checks: string | null; created_at: string };
 
@@ -136,6 +137,7 @@ function CourseMap({ cid, now, live }: { cid: number; now: { source: string; pag
               <p className="mb-1.5 flex items-baseline gap-2 text-sm">
                 <Folder className="size-3.5 shrink-0 self-center text-muted-foreground" aria-hidden />
                 <span className="font-medium">{dir || "Top folder"}</span>
+                <span className="tabular text-xs text-muted-foreground">{files.length} {files.length === 1 ? "file" : "files"}</span>
                 {pages > 0 && <span className="tabular text-xs text-muted-foreground">{Math.round((100 * read) / pages)}%</span>}
               </p>
               <ul className="space-y-px">
@@ -172,6 +174,8 @@ function CourseMap({ cid, now, live }: { cid: number; now: { source: string; pag
 }
 
 /** The approved outline as it gets written: one bar per Chapter, one cell per Section. */
+const BUSY: PSection["state"][] = ["checking", "repairing", "judging"];
+
 function Plan({ cid, p }: { cid: number; p: RunProgressTree }) {
   if (!p.sections_total) return null;
   const blocks = p.chapters.reduce((n, c) => n + c.sections.reduce((m, s) => m + s.blocks, 0), 0);
@@ -197,10 +201,11 @@ function Plan({ cid, p }: { cid: number; p: RunProgressTree }) {
               <ul className="mt-2 flex flex-wrap gap-1.5">
                 {c.sections.map((s, i) => (
                   <li key={i} title={`${s.title}: ${s.state}${s.blocks ? `, ${s.blocks} Blocks` : ""}`}
-                      className={cn("max-w-56 truncate rounded px-1.5 py-0.5 text-xs transition-colors duration-500",
-                        s.state === "done" ? (s.flagged ? "bg-destructive/15 text-destructive" : "bg-primary/15 text-foreground")
-                          : s.state === "writing" ? "animate-pulse bg-primary text-primary-foreground" : "bg-border/60 text-muted-foreground")}>
-                    {s.title}
+                      className={cn("max-w-64 truncate rounded px-1.5 py-0.5 text-xs transition-colors duration-500",
+                        s.state === "done" ? "bg-primary/15 text-foreground" : s.state === "flagged" ? "bg-destructive/15 text-destructive"
+                          : s.state === "writing" ? "animate-pulse bg-primary text-primary-foreground"
+                          : BUSY.includes(s.state) ? "animate-pulse bg-warn/25 text-foreground" : "bg-border/60 text-muted-foreground")}>
+                    {BUSY.includes(s.state) && <span className="font-medium">{s.state} · </span>}{s.title}
                   </li>
                 ))}
               </ul>
@@ -293,8 +298,13 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
                 {at >= 0 && <span>Step {at + 1} of {run.pipeline.length}</span>}
                 {run.pages_total > 0 && <span><span className="font-medium text-foreground">{Math.round(100 * (run.progress?.fraction ?? run.pages_read / run.pages_total))}%</span> overall</span>}
                 {run.pages_total > 0 && <span><span className="font-medium text-foreground">{run.pages_read}</span> of {run.pages_total} pages read</span>}
+                {!!run.progress?.folders?.length && (() => {
+                  const all = run.progress.folders.flatMap((f) => f.sources), done = all.filter((s) => s.read >= s.pages).length;
+                  return <span>Sources <span className="font-medium text-foreground">{done}</span>/{all.length}</span>;
+                })()}
                 {(run.progress?.sections_total ?? 0) > 0 && <span><span className="font-medium text-foreground">{run.progress?.sections_done}</span> of {run.progress?.sections_total} Sections written</span>}
                 {live && <span>{run.seconds_left != null ? `${duration(run.seconds_left)} to the next Approval Gate` : "Estimating time left…"}</span>}
+                {live && run.time_left?.map((s) => <span key={s.stage}>{s.stage}: {s.left} left{s.seconds != null && ` · ${duration(s.seconds)}`}</span>)}
                 {live && run.gpu && <span>GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</span>}
             </p>
           </div>

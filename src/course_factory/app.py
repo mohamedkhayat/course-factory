@@ -24,7 +24,7 @@ from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
-from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread
+from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import Backend, activity, record_owner_action
 
@@ -129,7 +129,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
                "activity": {k: v for k, v in a.items() if k not in ("started", "id")}
                            | {"elapsed": round(time.time() - a["started"])} if a else None}
         if s["status"] == "running":
-            out |= {"seconds_left": seconds_left(db, cid), "gpu": gpu()}
+            out |= {"seconds_left": seconds_left(db, cid), "time_left": time_left(db, cid), "gpu": gpu()}
         return out
 
     def claim(cid: int, gate: Gate | None):

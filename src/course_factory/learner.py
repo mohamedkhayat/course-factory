@@ -11,6 +11,7 @@ from fsrs import Card, Rating, Scheduler
 from pydantic import BaseModel, Field
 
 from .chapters import LANGUAGE_RULE, block_json
+from .checks import GAP
 from .pi_step import StepFailed, run_pi_step
 from .context import Ctx
 
@@ -120,9 +121,8 @@ def card_faces(block: dict) -> list[tuple[int, str, str]]:
         return [(0, d["task"], f"```{d['language']}\n{d['solution']}\n```")]
     if c == "fill_blanks":
         fence = (f"```{d['language']}\n", "\n```") if d["language"] else ("", "")
-        gap = re.compile(r"\[\[(\d+)\]\]")
-        return [(0, fence[0] + gap.sub("____", d["template"]) + fence[1],
-                 fence[0] + gap.sub(lambda m: d["blanks"][int(m[1]) - 1]["answers"][0], d["template"]) + fence[1])]
+        return [(0, fence[0] + GAP.sub("____", d["template"]) + fence[1],
+                 fence[0] + GAP.sub(lambda m: d["blanks"][int(m[1]) - 1]["answers"][0], d["template"]) + fence[1])]
     if c == "quiz":
         return [(i, q["prompt"], "\n".join(f"- {q['options'][k]}" for k in q["correct"]) + f"\n\n{q['explanation']}")
                 for i, q in enumerate(d["questions"])]
@@ -179,7 +179,8 @@ def card_json(ctx: Ctx, cid: int, row) -> dict:
     for label, rating in RATINGS.items():
         nxt, _ = SCHEDULER.review_card(card, rating, now())
         preview[label] = int((dt.datetime.fromisoformat(schedule(ctx, cid, nxt)) - now()).total_seconds())
-    return {"id": row["id"], "front": row["front"], "back": row["back"], "due": row["due"], "next_interval_seconds": preview}
+    return {"id": row["id"], "block_id": row["block_id"], "front": row["front"], "back": row["back"], "due": row["due"],
+            "next_interval_seconds": preview}
 
 
 # Focus Sessions and actions
@@ -330,6 +331,7 @@ def router(ctx: Ctx) -> APIRouter:
         try:
             grade = run_pi_step(db, ctx.backend, "grade_code", {
                 "task": d["task"], "code_language": d["language"], "solution": d["solution"], "code": body.code,
+                "rubric": d.get("rubric") or "none",
                 "language": LANGUAGE_RULE}, CodeGrade, ctx.course_dir(cid), course_id=cid, live=True)
         except StepFailed as e:
             raise HTTPException(502, f"grading failed: {e}")
@@ -343,6 +345,10 @@ def router(ctx: Ctx) -> APIRouter:
         if row["component"] != "exercise" or json.loads(row["data"]).get("mode") != "hand":
             raise HTTPException(422, "not a by-hand exercise Block")
         record(ctx, "self_mark", row["chapter_id"], body.mark == "got")
+        if body.mark != "got":  # it comes back in the next Review
+            for part, front, back in card_faces(block_json(row)):
+                add_card(ctx, cid, front, back, block_id=bid, part=part)
+            db.execute("UPDATE cards SET due=? WHERE block_id=?", (now().isoformat(), bid))
         return {"ok": True}
 
     @r.get("/api/courses/{cid}/mistakes")

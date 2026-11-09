@@ -112,12 +112,12 @@ def mean_ms(db: sqlite3.Connection, *steps: str) -> float | None:
     return row["total"] / row["n"] if row["n"] else None
 
 
-def seconds_left(db: sqlite3.Connection, cid: int) -> int | None:
-    """Time left until the Run's next stop, from past step timings; None until there is a timing to go on."""
+def time_left(db: sqlite3.Connection, cid: int) -> list[dict]:
+    """The work left in each stage until the Run's next stop, timed from past steps; seconds is None before any timing."""
     unread = db.execute("SELECT COUNT(*) FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND p.text IS NULL",
                         (cid,)).fetchone()[0]
     if unread:
-        work = [(unread, mean_ms(db, "read_page"))]
+        work = [("Pages", unread, mean_ms(db, "read_page"))]
     else:
         sections = db.execute("SELECT COUNT(*) FROM sections s JOIN chapters c ON c.id=s.chapter_id WHERE c.course_id=? "
                               "AND c.status IN ('planned', 'generating') AND c.priority!='skip' "
@@ -127,13 +127,17 @@ def seconds_left(db: sqlite3.Connection, cid: int) -> int | None:
         mocks = max(0, exams.MOCK_EXAMS - db.execute("SELECT COUNT(*) FROM exams WHERE course_id=? AND kind='mock'", (cid,)).fetchone()[0])
         lab_sources = db.execute("SELECT COUNT(*) FROM sources s WHERE s.course_id=? AND s.role='lab' AND s.excluded=0 "
                                  "AND NOT EXISTS (SELECT 1 FROM labs l WHERE l.source_id=s.id)", (cid,)).fetchone()[0]
-        work = [(sections, mean_ms(db, "write_section", "repair_block", "judge_grounding")),  # a Section with its repairs and judging
-                (past, mean_ms(db, "rebuild_past_paper")), (mocks, mean_ms(db, "write_mock_exam")),
-                (lab_sources, mean_ms(db, "build_lab", "repair_lab_step"))]
-    known = [(n, ms) for n, ms in work if n and ms is not None]
-    if not known and any(n for n, _ in work):
-        return None
-    return round(sum(n * ms for n, ms in known) / 1000)
+        work = [("Sections", sections, mean_ms(db, "write_section", "repair_block", "judge_grounding")),  # with repairs and judging
+                ("Past papers", past, mean_ms(db, "rebuild_past_paper")), ("Mock exams", mocks, mean_ms(db, "write_mock_exam")),
+                ("Labs", lab_sources, mean_ms(db, "build_lab", "repair_lab_step"))]
+    return [{"stage": stage, "left": n, "seconds": None if ms is None else round(n * ms / 1000)} for stage, n, ms in work if n]
+
+
+def seconds_left(db: sqlite3.Connection, cid: int) -> int | None:
+    """Time left until the Run's next stop; None until there is a timing to go on."""
+    stages = time_left(db, cid)
+    known = [s["seconds"] for s in stages if s["seconds"] is not None]
+    return sum(known) if known or not stages else None
 
 
 _gpu: tuple[float, dict | None] = (0.0, None)
@@ -153,7 +157,8 @@ def gpu() -> dict | None:
     return _gpu[1]
 
 
-SECTION_STATE = {"planned": "waiting", "generating": "writing", "complete": "done"}
+SECTION_STATE = {"planned": "waiting", "generating": "writing", "checking": "checking", "repairing": "repairing",
+                 "judging": "judging", "complete": "done"}
 
 
 def progress(db: sqlite3.Connection, cid: int) -> dict:
@@ -169,13 +174,14 @@ def progress(db: sqlite3.Connection, cid: int) -> dict:
     chapters = []
     for c in db.execute("SELECT id, title, priority FROM chapters WHERE course_id=? ORDER BY position", (cid,)).fetchall():
         sections = [{"title": s["title"], "blocks": s["blocks"], "flagged": s["flagged"],
-                     "state": "skipped" if c["priority"] == "skip" else SECTION_STATE.get(s["generation_status"], "waiting")}
+                     "state": "skipped" if c["priority"] == "skip" else "flagged" if s["generation_status"] == "complete" and s["flagged"]
+                     else SECTION_STATE.get(s["generation_status"], "waiting")}
                     for s in db.execute("SELECT s.title, s.generation_status, COUNT(b.id) blocks, COALESCE(SUM(b.status='flagged'),0) flagged "
                                         "FROM sections s LEFT JOIN blocks b ON b.section_id=s.id WHERE s.chapter_id=? "
                                         "GROUP BY s.id ORDER BY s.position", (c["id"],))]
         counted = [s for s in sections if s["state"] != "skipped"]
         chapters.append({"id": c["id"], "title": c["title"], "sections": sections,
-                         "done": sum(s["state"] == "done" for s in counted), "total": len(counted),
+                         "done": sum(s["state"] in ("done", "flagged") for s in counted), "total": len(counted),
                          "components": dict(db.execute(
                              "SELECT b.component, COUNT(*) FROM blocks b JOIN sections s ON s.id=b.section_id WHERE s.chapter_id=? "
                              "GROUP BY b.component ORDER BY COUNT(*) DESC", (c["id"],)).fetchall())})

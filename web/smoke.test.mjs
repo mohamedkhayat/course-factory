@@ -154,7 +154,7 @@ test("practice and visual Components work in the reader", async () => {
   const p = await page();
   await p.goto(`${BASE}/c/1/read`);
   const blank = p.getByLabel("Blank 1").first();
-  await blank.fill("python:3.12-slim");
+  await blank.fill("python:3.11");  // accepted by the blank's regex
   await p.getByLabel("Blank 2").first().fill("add");
   const blanks = p.locator("div").filter({ has: p.getByRole("heading", { name: "Dockerfile", exact: true }) }).last();
   await blanks.getByRole("button", { name: "Check", exact: true }).click();
@@ -164,6 +164,8 @@ test("practice and visual Components work in the reader", async () => {
   await p.getByText(/^k = 1/).first().waitFor();
   await p.getByRole("button", { name: "Next step" }).first().click();
   await p.getByText("The load balancer forwards it").first().waitFor();
+  await p.waitForFunction(() => [...document.querySelectorAll("path.flowchart-link, .edgePaths path")]
+    .some((e) => e instanceof SVGElement && e.style.stroke.includes("primary")), null, { timeout: 10_000 });
   await p.getByText("Successfully tagged app:latest").first().waitFor();
   await p.getByRole("button", { name: "Show step 1 of 2" }).first().click();
   await p.getByRole("button", { name: "Show step 2 of 2" }).first().click();
@@ -173,5 +175,13 @@ test("practice and visual Components work in the reader", async () => {
   const code = p.locator("figure, div").filter({ has: p.getByRole("heading", { name: "Containerise the app" }) }).last();
   await code.getByRole("button", { name: "Check", exact: true }).click();
   await code.getByRole("status").waitFor();
+  await code.getByRole("button", { name: "Hint" }).click();
+  await code.getByText("Start from a Python image.").waitFor();
+  await code.getByRole("button", { name: "Hint" }).click();
+  await code.getByText(/Look at what/).waitFor();
+  const compose = p.locator("div").filter({ has: p.getByRole("heading", { name: "Complete the Compose file" }) }).last();
+  await compose.getByLabel("Blank 1").fill("127.0.0.1:8000:8000");
+  await compose.getByRole("button", { name: "Check", exact: true }).click();
+  await compose.getByText("All correct").waitFor();
   assert.deepEqual(p.errors, []);
 });

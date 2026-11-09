@@ -171,3 +171,22 @@ def test_a_code_answer_is_graded_with_feedback_and_a_hint(client, material, mode
     assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/grade", json={"code": "x"}).status_code == 422
     assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"}).status_code == 200
     assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/self-mark", json={"mark": "got"}).status_code == 422
+
+
+def test_a_code_hint_comes_from_the_tutor_and_a_missed_hand_exercise_comes_back_as_a_card(client, material, model):
+    rubric = CODE_EXERCISE | {"data": CODE_EXERCISE["data"] | {"rubric": "Must run app.py."}}
+    cid = generate(client, material, model, blocks=[rubric, HAND])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    code, hand = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"]
+    client.post(f"/api/courses/{cid}/blocks/{code['id']}/grade", json={"code": "FROM python:3.12"})
+    assert "Must run app.py." in [p for s, p in model.prompts if s == "grade_code"][-1]
+    graded = len([s for s, _ in model.prompts if s == "grade_code"])
+    r = client.post(f"/api/courses/{cid}/tutor", json={"question": "Give me a hint.", "block_id": code["id"], "code": "FROM alpine"})
+    assert r.status_code == 200
+    prompt = [p for s, p in model.prompts if s == "lab_tutor"][-1]
+    assert "Containerise" in prompt and "FROM alpine" in prompt and "CMD [" not in prompt  # never sees the solution
+    assert len([s for s, _ in model.prompts if s == "grade_code"]) == graded  # a hint is not a graded answer
+    assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "block_id": hand["id"]}).status_code == 422
+    client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"})
+    assert hand["id"] in [c["block_id"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]

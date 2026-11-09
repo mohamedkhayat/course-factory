@@ -57,7 +57,7 @@ Claims = Annotated[list[SympyClaim], BeforeValidator(lambda v: [c for c in map(h
 
 
 class TheoremBox(BaseModel):
-    """A definition, theorem or property stated formally, with an optional proof."""
+    """Use when stating a definition, theorem or property formally, with an optional proof."""
 
     kind: Literal["definition", "theorem", "proposition", "lemma", "corollary", "property"]
     title: str = ""
@@ -66,7 +66,7 @@ class TheoremBox(BaseModel):
 
 
 class WorkedExample(BaseModel):
-    """A problem solved step by step."""
+    """Use when showing how to solve a typical problem, step by step."""
 
     title: str
     problem: Md
@@ -76,7 +76,7 @@ class WorkedExample(BaseModel):
 
 
 class Exercise(BaseModel):
-    """Practice with a hidden correction. mode "hand": work it on paper, then reveal `steps` one by one and self-mark."""
+    """Use when the learner should solve a problem; mode "hand" for paper calculations, with `steps` revealed one by one and a self-mark."""
 
     title: str
     statement: Md
@@ -97,13 +97,13 @@ class QuizQuestion(BaseModel):
 
 
 class Quiz(BaseModel):
-    """Multiple-choice questions with instant feedback."""
+    """Use when checking a definition, a distinction or a common mistake with multiple choice; explain each option."""
 
     questions: list[QuizQuestion] = Field(min_length=1)
 
 
 class KeyFormula(BaseModel):
-    """One formula to remember, named and explained."""
+    """Use when one formula must be remembered: name it and say what each part means."""
 
     name: str
     latex: str
@@ -112,14 +112,14 @@ class KeyFormula(BaseModel):
 
 
 class Callout(BaseModel):
-    """A short tip, warning, exam note or remark."""
+    """Use when a tip, pitfall, exam note or remark deserves to stand out."""
 
     tone: Literal["tip", "warning", "exam", "note"]
     text: Md
 
 
 class Algorithm(BaseModel):
-    """A procedure as numbered steps with inputs and output."""
+    """Use when presenting an algorithm or procedure as numbered steps with inputs and output."""
 
     name: str
     inputs: Md
@@ -128,7 +128,7 @@ class Algorithm(BaseModel):
 
 
 class IterationTable(BaseModel):
-    """The model states the problem; the app computes the rows."""
+    """Use when running an iterative method by hand on f; state the problem, the app computes the rows."""
 
     method: Literal["gradient", "newton"]
     f: str
@@ -152,7 +152,7 @@ class PlotFunction(BaseModel):
 
 
 class Plot(BaseModel):
-    """Curves of functions of one variable."""
+    """Use when a function of one variable should be seen: shape, minima, comparisons."""
 
     title: str = ""
     functions: list[PlotFunction] = Field(min_length=1)
@@ -167,7 +167,7 @@ class ExplorerParam(BaseModel):
 
 
 class Explorer(BaseModel):
-    """A function of x with sliders for its parameters."""
+    """Use when a parameter's effect on a function of x should be explored with sliders."""
 
     title: str
     expr: str
@@ -177,14 +177,14 @@ class Explorer(BaseModel):
 
 
 class Diagram(BaseModel):
-    """A Mermaid diagram: flows, architectures, relations."""
+    """Use when showing a flow, architecture, pipeline or relations as a Mermaid diagram."""
 
     mermaid: str
     caption: Md = ""
 
 
 class Figure(BaseModel):
-    """A figure shown from a page of the material."""
+    """Use when a figure on a page of the material says it best."""
 
     source: str
     page: int
@@ -192,7 +192,7 @@ class Figure(BaseModel):
 
 
 class Table(BaseModel):
-    """A comparison or summary table."""
+    """Use when comparing options or summarising facts side by side."""
 
     headers: list[str] = Field(min_length=1)
     rows: list[list[Md]]
@@ -200,7 +200,7 @@ class Table(BaseModel):
 
 
 class Code(BaseModel):
-    """A code or config listing."""
+    """Use when showing a code or config listing to read, not to complete."""
 
     language: str = "python"
     code: str
@@ -208,7 +208,7 @@ class Code(BaseModel):
 
 
 class Prose(BaseModel):
-    """Free Markdown, only when no other Component fits."""
+    """Use only when no other Component fits: free Markdown."""
 
     markdown: Md
 
@@ -218,11 +218,12 @@ Range = tuple[float, float]
 
 class Blank(BaseModel):
     answers: list[str] = Field(min_length=1)
+    regex: str = ""  # also accepted when the whole answer matches, case ignored
     hint: str = ""
 
 
 class FillBlanks(BaseModel):
-    """Recall drill: text (language "") or code with gaps [[1]], [[2]]... each with accepted answers. Gaps never inside $math$."""
+    """Use when the learner should recall key terms or syntax: text (language "") or code with gaps [[1]], [[2]]... each with accepted answers. Gaps never inside $math$."""
 
     title: str
     language: str = ""
@@ -232,14 +233,16 @@ class FillBlanks(BaseModel):
 
 
 class CodeExercise(BaseModel):
-    """Hands-on: the learner completes starter code or config (TODOs), gets hints, and the answer is graded."""
+    """Use when the learner should write or complete code or config: starter with TODOs (or [[n]] gaps with blanks), hints, graded answer."""
 
     title: str
     task: Md
     language: str
-    starter: str
+    starter: str  # with blanks: gaps [[1]], [[2]]... checked by match, no model
     solution: str
     hints: list[Md] = []
+    blanks: list[Blank] = []
+    rubric: str = ""  # what the model grader must look for
 
 
 class SurfacePoint(BaseModel):
@@ -249,7 +252,7 @@ class SurfacePoint(BaseModel):
 
 
 class SurfacePlot(BaseModel):
-    """A rotatable 3D surface and/or contour map of a function of x and y."""
+    """Use when a function of x and y should be seen: rotatable 3D surface and/or contour map."""
 
     title: str
     expr: str
@@ -261,7 +264,7 @@ class SurfacePlot(BaseModel):
 
 
 class OptimizerAnimation(BaseModel):
-    """An animated optimiser (gradient, momentum, newton) stepping on the contours of f(x, y), with a step-size slider."""
+    """Use when showing how an optimiser (gradient, momentum, newton) moves on f(x, y), animated, with a step-size slider."""
 
     title: str
     expr: str
@@ -277,11 +280,12 @@ class OptimizerAnimation(BaseModel):
 
 class DiagramStep(BaseModel):
     highlight: list[str] = Field(min_length=1)
+    edges: list[tuple[str, str]] = []  # [from, to] node ids of edges to light up
     caption: Md
 
 
 class StepDiagram(BaseModel):
-    """A process played step by step: a Mermaid diagram whose node ids light up in order, each step with a caption."""
+    """Use when walking through a process one stage at a time: a Mermaid diagram whose nodes and edges light up in order, with captions."""
 
     mermaid: str
     steps: list[DiagramStep] = Field(min_length=1)
@@ -295,7 +299,7 @@ class TerminalEntry(BaseModel):
 
 
 class Terminal(BaseModel):
-    """A shell session walked through one command at a time, each with its output and what it does."""
+    """Use when teaching commands: a shell session, one command at a time, with its output and what it does."""
 
     title: str = ""
     shell: str = "bash"

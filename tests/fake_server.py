@@ -35,7 +35,11 @@ def seed(client, model, root: Path) -> int:
     model.handlers["write_section"] = lambda prompt, files: {
         **write(prompt, files), "proposals": [PROPOSAL],
         "blocks": write(prompt, files)["blocks"] + [{"component": "saddle_point", "data": {"title": "Point selle"}, "origin": "model_added"}]
-        + [{"component": c, "data": d, "origin": "model_added"} for c, d in NEW_COMPONENTS.items()]}
+        + [{"component": c, "data": d, "origin": "model_added"} for c, d in NEW_COMPONENTS.items()]
+        + [{"component": "code_exercise", "origin": "model_added", "data": {
+            "title": "Complete the Compose file", "task": "Expose the app on port 8000.", "language": "yaml",
+            "starter": "services:\n  app:\n    ports: [\"[[1]]\"]", "solution": "services:\n  app:\n    ports: [\"8000:8000\"]",
+            "blanks": [{"answers": ["8000:8000"], "regex": "(127\\.0\\.0\\.1:)?8000:8000"}]}}]}
     model.handlers["build_component"] = lambda prompt, files: {"code": GOOD}
     cid = generate(client, folder, model)
     for ch in client.get(f"/api/courses/{cid}/outline").json()["chapters"]:

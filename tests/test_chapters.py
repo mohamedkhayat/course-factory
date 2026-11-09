@@ -260,6 +260,9 @@ def test_time_left_comes_from_past_step_timings(client, material, model, data_di
     db.execute("INSERT INTO traces (course_id, step, harness_version, inputs, duration_ms) VALUES (?,?,?,?,?)",
                (cid, "repair_block", "x", "{}", 1000))
     assert seconds_left(db, cid) == 3 * 4  # 3 Sections to write, 4 s each with repairs; no past papers or Labs here
+    from course_factory.generation import time_left
+    assert time_left(db, cid)[0] == {"stage": "Sections", "left": 3, "seconds": 12}
+    assert {s["stage"] for s in time_left(db, cid)} >= {"Sections", "Mock exams"}
 
 
 def test_run_shows_each_chapter_with_its_sections_written(client, material, model):
@@ -286,3 +289,20 @@ def test_a_practical_subject_is_written_as_tutorials(client, material, model):
 def test_the_subject_defaults_to_mixed_when_the_outline_does_not_say(client, material, model):
     generate(client, material, model)
     assert all("Subject: mixed" in p for step, p in model.prompts if step == "write_section")
+
+
+def test_run_shows_a_section_checking_repairing_judging_then_flagged(client, material, model):
+    cid, seen = None, []
+    states = lambda: [s["state"] for c in client.get(f"/api/courses/{cid}/run").json()["progress"]["chapters"] for s in c["sections"]]
+    repair, judge = model.handlers["repair_block"], model.handlers["judge_grounding"]
+    model.handlers["repair_block"] = lambda prompt, files: (seen.append(states()), repair(prompt, files))[1]
+    model.handlers["judge_grounding"] = lambda prompt, files: (seen.append(states()), judge(prompt, files))[1]
+    plan = model.handlers["propose_outline"]
+    model.handlers["propose_outline"] = lambda prompt, files: {"chapters": plan(prompt, files)["chapters"][:1]}
+    bad = one_block("key_formula", {"name": "f", "latex": "\\frac{1}{"}, "from_source", [{"source": "cours.pdf", "page": 1}])
+    model.handlers["write_section"] = lambda prompt, files: {"blocks": bad + one_block(
+        "callout", {"tone": "tip", "text": "ok"}, "from_source", [{"source": "cours.pdf", "page": 1}])}
+    cid = to_outline_gate(client, material, model)
+    client.post(f"/api/courses/{cid}/gates/outline")
+    assert ["repairing"] in seen and ["judging"] in seen
+    assert states() == ["flagged"]

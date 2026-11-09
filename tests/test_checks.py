@@ -101,16 +101,24 @@ def check_one(component, data):
 DOCKERFILE = "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install -r requirements.txt \\\n    && rm -rf /root/.cache\nCMD [\"python\", \"app.py\"]"
 GOOD = {
     "fill_blanks": {"title": "Dockerfile", "language": "dockerfile", "template": "FROM [[1]]\nWORKDIR /app\n[[2]] . .",
-                    "blanks": [{"answers": ["python:3.12-slim"]}, {"answers": ["COPY", "ADD"], "hint": "copies files in"}]},
+                    "blanks": [{"answers": ["python:3.12-slim"], "regex": "python:3\\.1[0-3](-slim)?"}, {"answers": ["COPY", "ADD"], "hint": "copies files in"}]},
     "code_exercise": {"title": "Containerise the app", "task": "Write a Dockerfile for `app.py`.", "language": "dockerfile",
                       "starter": "FROM python:3.12-slim\n# TODO", "solution": DOCKERFILE, "hints": ["Start from a Python image."]},
     "surface_plot": {"title": "Rosenbrock", "expr": "(1 - x)**2 + 100*(y - x**2)**2", "x_range": [-2, 2], "y_range": [-1, 3]},
     "optimizer_animation": {"title": "GD on a bowl", "expr": "x**2 + 10*y**2", "method": "gradient", "start": [2, 1], "step": 0.05},
     "step_diagram": {"mermaid": "flowchart LR\n  A[Client] --> B[LB] --> C[App]", "steps": [
-        {"highlight": ["A"], "caption": "The client sends a request"}, {"highlight": ["B", "C"], "caption": "The load balancer forwards it"}]},
+        {"highlight": ["A"], "caption": "The client sends a request"}, {"highlight": ["B", "C"], "edges": [["B", "C"]], "caption": "The load balancer forwards it"}]},
     "terminal": {"entries": [{"command": "docker build -t app .", "output": "Successfully tagged app:latest", "note": "Builds the image"}]},
     "exercise": {"title": "t", "statement": "s", "correction": "c", "mode": "hand", "steps": ["a", "b"]},
 }
+
+
+def test_a_blank_can_accept_a_pattern_and_a_code_exercise_can_have_blanks():
+    assert check_one("fill_blanks", GOOD["fill_blanks"] | {"blanks": [
+        {"answers": ["python:3.12-slim"], "regex": "python:3\\.1[0-3](-slim)?"}, {"answers": ["COPY"]}]})[1] == []
+    assert check_one("code_exercise", GOOD["code_exercise"] | {"starter": "FROM [[1]]\nCOPY . .", "rubric": "Uses a slim image.",
+                                                            "blanks": [{"answers": ["python:3.12-slim"]}]})[1] == []
+    assert check_one("step_diagram", GOOD["step_diagram"] | {"steps": [{"highlight": ["A", "B"], "edges": [["A", "B"]], "caption": "c"}]})[1] == []
 
 
 @pytest.mark.parametrize("component", GOOD)
@@ -127,10 +135,24 @@ def test_each_new_component_accepts_a_good_block(component):
     ("surface_plot", {"expr": "x**2 + z"}, "x and y"),
     ("optimizer_animation", {"expr": "x +* y"}, "parse"),
     ("step_diagram", {"steps": [{"highlight": ["Z"], "caption": "?"}]}, "Z"),
+    ("fill_blanks", {"blanks": [{"answers": [" "]}, {"answers": ["COPY"]}]}, "empty"),
+    ("fill_blanks", {"blanks": [{"answers": ["python"], "regex": "python:3\\.(1[0-3"}, {"answers": ["COPY"]}]}, "regex"),
+    ("code_exercise", {"starter": "FROM [[1]]\n# TODO", "blanks": [{"answers": ["python:3.12"]}, {"answers": ["x"]}]}, "blank"),
+    ("code_exercise", {"language": "python", "solution": "x = 1", "starter": "x = [[1]]", "blanks": [{"answers": ["(1"]}]}, "python"),
+    ("optimizer_animation", {"expr": "abs(x) + y**2"}, "differentiable"),
+    ("surface_plot", {"expr": "ln(x**2 + 1) + y"}, "ln"),
+    ("step_diagram", {"mermaid": "flowchart LR\n  L[Load A] --> B[LB]", "steps": [{"highlight": ["A"], "caption": "?"}]}, "A"),
+    ("step_diagram", {"steps": [{"highlight": ["A"], "edges": [["A", "C"]], "caption": "?"}]}, "edge"),
 ])
 def test_a_broken_new_block_is_flagged(component, change, error):
     errors = check_one(component, GOOD[component] | change)[1]
     assert errors and any(error in e for e in errors), errors
+
+
+def test_a_plot_only_uses_functions_the_browser_can_draw():
+    plot = {"title": "t", "functions": [{"expr": "ln(x) + 1", "label": "f"}], "x_range": [0.1, 3]}
+    assert any("ln" in e for e in check_one("plot", plot)[1])
+    assert check_one("plot", plot | {"functions": [{"expr": "log(x) + 1", "label": "f"}]})[1] == []
 
 
 def test_code_is_syntax_checked_and_never_rewritten_as_markdown():
@@ -142,3 +164,8 @@ def test_code_is_syntax_checked_and_never_rewritten_as_markdown():
 def test_quiz_option_explanations_match_the_options():
     q = {"prompt": "p", "options": ["a", "b"], "correct": [0], "explanation": "e", "explanations": ["yes", "no", "extra"]}
     assert any("explanations" in e for e in check_one("quiz", {"questions": [q]})[1])
+
+
+def test_every_component_tells_the_model_when_to_use_it():
+    from course_factory.catalogue import describe
+    assert all("(Use " in line for line in describe().splitlines())

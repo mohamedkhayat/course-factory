@@ -213,6 +213,9 @@ def iteration_rows(data: dict) -> list[dict]:
 
 
 def expr_errors(component: str, data: dict) -> list[str]:
+    exprs = [fn["expr"] for fn in data["functions"]] if component == "plot" else [data["expr"]] if component == "explorer" else []
+    if unknown := {name for e in exprs for name in re.findall(r"([A-Za-z_]\w*)\s*\(", e)} - DRAWABLE:
+        return [f"the plotter cannot draw {sorted(unknown)}; use only {', '.join(sorted(DRAWABLE))}"]
     try:
         if component == "plot":
             for fn in data["functions"]:
@@ -252,11 +255,50 @@ def syntax_errors(language: str, src: str) -> list[str]:
     return []
 
 
+DRAWABLE = {"exp", "log", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "abs", "pi", "E"}
+KINKS = (sp.Abs, sp.sign, sp.Heaviside, sp.Piecewise, sp.floor, sp.ceiling, sp.Max, sp.Min, sp.DiracDelta)
+
+
+def drawable(expr: str, names: list[str]) -> sp.Expr:
+    """Parses expr with sympy and refuses names the browser's plotter (mathjs) does not know the same way."""
+    if unknown := set(re.findall(r"[A-Za-z_]\w*", expr)) - DRAWABLE - set(names):
+        raise ValueError(f"expr must be a function of {' and '.join(names)} only, using {', '.join(sorted(DRAWABLE))}; "
+                         f"it uses {sorted(unknown)}")
+    return parse(expr, names)
+
+
 def two_variable(expr: str) -> sp.Expr:
-    f = parse(expr, ["x", "y"])
-    if {str(s) for s in f.free_symbols} - {"x", "y"}:
-        raise ValueError("expr must be a function of x and y only")
-    return f
+    return drawable(expr, ["x", "y"])
+
+
+def blank_errors(blanks: list[dict], template: str, language: str) -> list[str]:
+    """Gaps numbered [[1]]..[[n]] one per blank, each blank answerable, and the template with first answers still parses."""
+    gaps = {int(n) for n in GAP.findall(template)}
+    if gaps != set(range(1, len(blanks) + 1)):
+        return [f"the template has gaps {sorted(gaps)} but there are {len(blanks)} blanks; number gaps [[1]]..[[n]], one per blank"]
+    errors = [f"blank {i}: an accepted answer is empty" for i, b in enumerate(blanks, 1) if not all(a.strip() for a in b["answers"])]
+    for i, b in enumerate(blanks, 1):
+        try:
+            re.compile(b.get("regex") or "")
+        except re.error as e:
+            errors.append(f"blank {i}: regex does not compile: {e}")
+    return errors or syntax_errors(language, GAP.sub(lambda m: blanks[int(m[1]) - 1]["answers"][0], template))
+
+
+def mermaid_ids(src: str) -> str:
+    """The Mermaid source with labels removed, so only node ids and edges are left."""
+    return re.sub(r'"[^"]*"|\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|', " ", src)
+
+
+def step_errors(data: dict) -> list[str]:
+    ids, errors = mermaid_ids(data["mermaid"]), []
+    for n, st in enumerate(data["steps"], 1):
+        errors += [f"step {n}: node {node} is not in the diagram" for node in st["highlight"]
+                   if not re.search(rf"(?<![\w-]){re.escape(node)}(?![\w-])", ids)]
+        errors += [f"step {n}: there is no edge {a} --> {b} in the diagram" for a, b in st.get("edges", [])
+                   if not re.search(rf"(?<![\w-]){re.escape(a)}\s*[-=.ox<]+>?\s*(?:\|[^|]*\|\s*)?{re.escape(b)}(?![\w-])",
+                                    re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", "", data["mermaid"]))]
+    return errors
 
 
 def component_errors(component: str, data: dict) -> list[str]:
@@ -264,23 +306,23 @@ def component_errors(component: str, data: dict) -> list[str]:
     if component == "code":
         return syntax_errors(data["language"], data["code"])
     if component == "code_exercise":
-        return syntax_errors(data["language"], data["solution"])
+        return syntax_errors(data["language"], data["solution"]) or (
+            blank_errors(data["blanks"], data["starter"], data["language"]) if data.get("blanks") else [])
     if component == "fill_blanks":
-        gaps = {int(n) for n in GAP.findall(data["template"])}
-        if gaps != set(range(1, len(data["blanks"]) + 1)):
-            return [f"the template has gaps {sorted(gaps)} but there are {len(data['blanks'])} blanks; number gaps [[1]]..[[n]], one per blank"]
-        filled = GAP.sub(lambda m: data["blanks"][int(m[1]) - 1]["answers"][0], data["template"])
-        return syntax_errors(data["language"], filled)
+        return blank_errors(data["blanks"], data["template"], data["language"])
     if component in ("surface_plot", "optimizer_animation"):
         try:
-            two_variable(data["expr"])
+            f = two_variable(data["expr"])
         except ValueError as e:
             return [str(e)]
         except Exception as e:
             return [f"expression does not parse: {e}"]
+        if component == "optimizer_animation":
+            derived = [f] + [sp.diff(f, v) for v in sp.symbols("x y", real=True)]
+            if any(d.has(*KINKS) for d in derived):
+                return ["expr is not differentiable everywhere (abs, sign, max...); the optimizer needs a smooth function"]
     if component == "step_diagram":
-        return [f"step {n}: node {node} is not in the diagram" for n, st in enumerate(data["steps"], 1) for node in st["highlight"]
-                if not re.search(rf"(?<![\w-]){re.escape(node)}(?![\w-])", data["mermaid"])]
+        return step_errors(data)
     return []
 
 
