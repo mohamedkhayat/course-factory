@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import re
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException
@@ -9,7 +10,8 @@ from fastapi.responses import FileResponse
 from fsrs import Card, Rating, Scheduler
 from pydantic import BaseModel, Field
 
-from .chapters import block_json
+from .chapters import LANGUAGE_RULE, block_json
+from .pi_step import StepFailed, run_pi_step
 from .context import Ctx
 
 SCHEDULER = Scheduler(enable_fuzzing=False)
@@ -65,6 +67,20 @@ class FlagIn(BaseModel):
     note: str = ""
 
 
+class CodeAnswer(BaseModel):
+    code: str = Field(max_length=20000)
+
+
+class CodeGrade(BaseModel):
+    correct: bool
+    feedback: str
+    hint: str = ""
+
+
+class SelfMark(BaseModel):
+    mark: Literal["got", "partly", "missed"]
+
+
 class QuizAnswer(BaseModel):
     question: int = Field(ge=0)
     chosen: list[int] = Field(min_length=1)
@@ -100,6 +116,13 @@ def card_faces(block: dict) -> list[tuple[int, str, str]]:
         return [(0, d["problem"], "\n\n".join(d["steps"]) + f"\n\n**{d['answer']}**")]
     if c == "exercise":
         return [(0, d["statement"], d["correction"])]
+    if c == "code_exercise":
+        return [(0, d["task"], f"```{d['language']}\n{d['solution']}\n```")]
+    if c == "fill_blanks":
+        fence = (f"```{d['language']}\n", "\n```") if d["language"] else ("", "")
+        gap = re.compile(r"\[\[(\d+)\]\]")
+        return [(0, fence[0] + gap.sub("____", d["template"]) + fence[1],
+                 fence[0] + gap.sub(lambda m: d["blanks"][int(m[1]) - 1]["answers"][0], d["template"]) + fence[1])]
     if c == "quiz":
         return [(i, q["prompt"], "\n".join(f"- {q['options'][k]}" for k in q["correct"]) + f"\n\n{q['explanation']}")
                 for i, q in enumerate(d["questions"])]
@@ -296,6 +319,31 @@ def router(ctx: Ctx) -> APIRouter:
                    (bid, body.question, json.dumps(body.chosen), int(correct), now().isoformat()))
         record(ctx, "quiz_answer", row["chapter_id"], correct)
         return {"correct": correct, "correct_options": q["correct"], "explanation": q["explanation"]}
+
+    @r.post("/api/courses/{cid}/blocks/{bid}/grade")
+    def grade_code(cid: int, bid: int, body: CodeAnswer):
+        """Grades a code_exercise answer against its task, with the reference solution as one correct answer."""
+        row = published_block(cid, bid)
+        if row["component"] != "code_exercise":
+            raise HTTPException(422, "not a code exercise Block")
+        d = json.loads(row["data"])
+        try:
+            grade = run_pi_step(db, ctx.backend, "grade_code", {
+                "task": d["task"], "code_language": d["language"], "solution": d["solution"], "code": body.code,
+                "language": LANGUAGE_RULE}, CodeGrade, ctx.course_dir(cid), course_id=cid, live=True)
+        except StepFailed as e:
+            raise HTTPException(502, f"grading failed: {e}")
+        record(ctx, "code_answer", row["chapter_id"], grade.correct)
+        return grade.model_dump()
+
+    @r.post("/api/courses/{cid}/blocks/{bid}/self-mark")
+    def self_mark(cid: int, bid: int, body: SelfMark):
+        """The learner marks their own by-hand work after comparing it with the correction."""
+        row = published_block(cid, bid)
+        if row["component"] != "exercise" or json.loads(row["data"]).get("mode") != "hand":
+            raise HTTPException(422, "not a by-hand exercise Block")
+        record(ctx, "self_mark", row["chapter_id"], body.mark == "got")
+        return {"ok": True}
 
     @r.get("/api/courses/{cid}/mistakes")
     def mistakes(cid: int):

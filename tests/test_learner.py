@@ -149,3 +149,25 @@ def test_streak_forgives_one_missed_day_per_week():
     assert learner.streak({day(0), day(2), day(4)}, d) == 2  # two misses in one week
     assert learner.streak({day(0), day(2), day(3), day(4), day(5), day(7), day(8)}, d) == 7  # one per week, two weeks
     assert learner.streak(set(), d) == 0
+
+
+CODE_EXERCISE = {"component": "code_exercise", "origin": "model_added", "citations": [], "data": {
+    "title": "Dockerfile", "task": "Containerise `app.py`.", "language": "dockerfile", "starter": "FROM python:3.12\n# TODO",
+    "solution": "FROM python:3.12\nCOPY . .\nCMD [\"python\", \"app.py\"]", "hints": ["Copy the code in."]}}
+HAND = {"component": "exercise", "origin": "model_added", "citations": [], "data": {
+    "title": "Pas optimal", "statement": "Calculer $\\rho^*$.", "correction": "$\\rho^* = 1/2$", "mode": "hand", "steps": ["Poser", "Dériver"]}}
+
+
+def test_a_code_answer_is_graded_with_feedback_and_a_hint(client, material, model):
+    model.handlers["grade_code"] = lambda prompt, files: {"correct": False, "feedback": "No CMD.", "hint": "What runs the app?"}
+    cid = generate(client, material, model, blocks=[CODE_EXERCISE, HAND])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    code, hand = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"]
+    r = client.post(f"/api/courses/{cid}/blocks/{code['id']}/grade", json={"code": "FROM python:3.12\nCOPY . ."})
+    assert r.json() == {"correct": False, "feedback": "No CMD.", "hint": "What runs the app?"}
+    prompt = [p for s, p in model.prompts if s == "grade_code"][-1]
+    assert "COPY . ." in prompt and "CMD [" in prompt  # the learner's code and the reference solution
+    assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/grade", json={"code": "x"}).status_code == 422
+    assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"}).status_code == 200
+    assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/self-mark", json={"mark": "got"}).status_code == 422

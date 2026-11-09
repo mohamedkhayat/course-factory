@@ -87,3 +87,58 @@ def test_a_block_the_model_wrapped_in_another_object_is_unwrapped():
     inner = example({"op": "equal", "expr": "2 + 1", "vars": [], "expected": "3"})
     (fixed,), (errors,) = check_blocks([{"block": inner, "data": {}}], {})
     assert errors == [] and fixed["component"] == "worked_example"
+
+
+def block(component, data):
+    return {"component": component, "origin": "model_added", "citations": [], "data": data}
+
+
+def check_one(component, data):
+    (fixed,), (errors,) = check_blocks([block(component, data)], {})
+    return fixed["data"], errors
+
+
+DOCKERFILE = "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install -r requirements.txt \\\n    && rm -rf /root/.cache\nCMD [\"python\", \"app.py\"]"
+GOOD = {
+    "fill_blanks": {"title": "Dockerfile", "language": "dockerfile", "template": "FROM [[1]]\nWORKDIR /app\n[[2]] . .",
+                    "blanks": [{"answers": ["python:3.12-slim"]}, {"answers": ["COPY", "ADD"], "hint": "copies files in"}]},
+    "code_exercise": {"title": "Containerise the app", "task": "Write a Dockerfile for `app.py`.", "language": "dockerfile",
+                      "starter": "FROM python:3.12-slim\n# TODO", "solution": DOCKERFILE, "hints": ["Start from a Python image."]},
+    "surface_plot": {"title": "Rosenbrock", "expr": "(1 - x)**2 + 100*(y - x**2)**2", "x_range": [-2, 2], "y_range": [-1, 3]},
+    "optimizer_animation": {"title": "GD on a bowl", "expr": "x**2 + 10*y**2", "method": "gradient", "start": [2, 1], "step": 0.05},
+    "step_diagram": {"mermaid": "flowchart LR\n  A[Client] --> B[LB] --> C[App]", "steps": [
+        {"highlight": ["A"], "caption": "The client sends a request"}, {"highlight": ["B", "C"], "caption": "The load balancer forwards it"}]},
+    "terminal": {"entries": [{"command": "docker build -t app .", "output": "Successfully tagged app:latest", "note": "Builds the image"}]},
+    "exercise": {"title": "t", "statement": "s", "correction": "c", "mode": "hand", "steps": ["a", "b"]},
+}
+
+
+@pytest.mark.parametrize("component", GOOD)
+def test_each_new_component_accepts_a_good_block(component):
+    assert check_one(component, GOOD[component])[1] == []
+
+
+@pytest.mark.parametrize("component, change, error", [
+    ("fill_blanks", {"template": "FROM [[1]]"}, "blank"),  # 2 blanks, 1 gap
+    ("fill_blanks", {"blanks": [{"answers": []}, {"answers": ["COPY"]}]}, "answers"),
+    ("code_exercise", {"solution": "FROM python\nCOPPY . ."}, "dockerfile"),
+    ("code_exercise", {"language": "yaml", "solution": "a: [1, 2"}, "yaml"),
+    ("code_exercise", {"language": "python", "solution": "def f(:\n  pass"}, "python"),
+    ("surface_plot", {"expr": "x**2 + z"}, "x and y"),
+    ("optimizer_animation", {"expr": "x +* y"}, "parse"),
+    ("step_diagram", {"steps": [{"highlight": ["Z"], "caption": "?"}]}, "Z"),
+])
+def test_a_broken_new_block_is_flagged(component, change, error):
+    errors = check_one(component, GOOD[component] | change)[1]
+    assert errors and any(error in e for e in errors), errors
+
+
+def test_code_is_syntax_checked_and_never_rewritten_as_markdown():
+    data, errors = check_one("code", {"language": "python", "code": "print('a\\nb')\nx = 1"})
+    assert errors == [] and data["code"] == "print('a\\nb')\nx = 1"
+    assert any("python" in e for e in check_one("code", {"language": "python", "code": "def ("})[1])
+
+
+def test_quiz_option_explanations_match_the_options():
+    q = {"prompt": "p", "options": ["a", "b"], "correct": [0], "explanation": "e", "explanations": ["yes", "no", "extra"]}
+    assert any("explanations" in e for e in check_one("quiz", {"questions": [q]})[1])

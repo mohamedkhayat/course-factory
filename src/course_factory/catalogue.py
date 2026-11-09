@@ -57,6 +57,8 @@ Claims = Annotated[list[SympyClaim], BeforeValidator(lambda v: [c for c in map(h
 
 
 class TheoremBox(BaseModel):
+    """A definition, theorem or property stated formally, with an optional proof."""
+
     kind: Literal["definition", "theorem", "proposition", "lemma", "corollary", "property"]
     title: str = ""
     statement: Md
@@ -64,6 +66,8 @@ class TheoremBox(BaseModel):
 
 
 class WorkedExample(BaseModel):
+    """A problem solved step by step."""
+
     title: str
     problem: Md
     steps: list[Md] = Field(min_length=1)
@@ -72,10 +76,14 @@ class WorkedExample(BaseModel):
 
 
 class Exercise(BaseModel):
+    """Practice with a hidden correction. mode "hand": work it on paper, then reveal `steps` one by one and self-mark."""
+
     title: str
     statement: Md
     hints: list[Md] = []
     correction: Md
+    mode: Literal["written", "hand"] = "written"
+    steps: list[Md] = []
     claims: Claims = []
 
 
@@ -84,14 +92,19 @@ class QuizQuestion(BaseModel):
     options: list[Md] = Field(min_length=2)
     correct: list[int] = Field(min_length=1)
     explanation: Md
+    explanations: list[Md] = []  # optional: why each option is right or wrong, in option order
     multiple: bool = False
 
 
 class Quiz(BaseModel):
+    """Multiple-choice questions with instant feedback."""
+
     questions: list[QuizQuestion] = Field(min_length=1)
 
 
 class KeyFormula(BaseModel):
+    """One formula to remember, named and explained."""
+
     name: str
     latex: str
     meaning: Md
@@ -99,11 +112,15 @@ class KeyFormula(BaseModel):
 
 
 class Callout(BaseModel):
+    """A short tip, warning, exam note or remark."""
+
     tone: Literal["tip", "warning", "exam", "note"]
     text: Md
 
 
 class Algorithm(BaseModel):
+    """A procedure as numbered steps with inputs and output."""
+
     name: str
     inputs: Md
     steps: list[Md] = Field(min_length=1)
@@ -135,6 +152,8 @@ class PlotFunction(BaseModel):
 
 
 class Plot(BaseModel):
+    """Curves of functions of one variable."""
+
     title: str = ""
     functions: list[PlotFunction] = Field(min_length=1)
     x_range: tuple[float, float] = (-5.0, 5.0)
@@ -148,6 +167,8 @@ class ExplorerParam(BaseModel):
 
 
 class Explorer(BaseModel):
+    """A function of x with sliders for its parameters."""
+
     title: str
     expr: str
     params: list[ExplorerParam] = Field(min_length=1)
@@ -156,37 +177,137 @@ class Explorer(BaseModel):
 
 
 class Diagram(BaseModel):
+    """A Mermaid diagram: flows, architectures, relations."""
+
     mermaid: str
     caption: Md = ""
 
 
 class Figure(BaseModel):
+    """A figure shown from a page of the material."""
+
     source: str
     page: int
     caption: Md = ""
 
 
 class Table(BaseModel):
+    """A comparison or summary table."""
+
     headers: list[str] = Field(min_length=1)
     rows: list[list[Md]]
     caption: Md = ""
 
 
 class Code(BaseModel):
+    """A code or config listing."""
+
     language: str = "python"
     code: str
     caption: Md = ""
 
 
 class Prose(BaseModel):
+    """Free Markdown, only when no other Component fits."""
+
     markdown: Md
+
+
+Range = tuple[float, float]
+
+
+class Blank(BaseModel):
+    answers: list[str] = Field(min_length=1)
+    hint: str = ""
+
+
+class FillBlanks(BaseModel):
+    """Recall drill: text (language "") or code with gaps [[1]], [[2]]... each with accepted answers. Gaps never inside $math$."""
+
+    title: str
+    language: str = ""
+    template: str
+    blanks: list[Blank] = Field(min_length=1)
+    explanation: Md = ""
+
+
+class CodeExercise(BaseModel):
+    """Hands-on: the learner completes starter code or config (TODOs), gets hints, and the answer is graded."""
+
+    title: str
+    task: Md
+    language: str
+    starter: str
+    solution: str
+    hints: list[Md] = []
+
+
+class SurfacePoint(BaseModel):
+    x: float
+    y: float
+    label: str = ""
+
+
+class SurfacePlot(BaseModel):
+    """A rotatable 3D surface and/or contour map of a function of x and y."""
+
+    title: str
+    expr: str
+    x_range: Range = (-3.0, 3.0)
+    y_range: Range = (-3.0, 3.0)
+    view: Literal["surface", "contour", "both"] = "both"
+    points: list[SurfacePoint] = []
+    caption: Md = ""
+
+
+class OptimizerAnimation(BaseModel):
+    """An animated optimiser (gradient, momentum, newton) stepping on the contours of f(x, y), with a step-size slider."""
+
+    title: str
+    expr: str
+    method: Literal["gradient", "momentum", "newton"] = "gradient"
+    start: tuple[float, float]
+    step: float = Field(0.1, gt=0)
+    momentum: float = Field(0.9, ge=0, lt=1)
+    iterations: int = Field(30, ge=1, le=200)
+    x_range: Range = (-3.0, 3.0)
+    y_range: Range = (-3.0, 3.0)
+    caption: Md = ""
+
+
+class DiagramStep(BaseModel):
+    highlight: list[str] = Field(min_length=1)
+    caption: Md
+
+
+class StepDiagram(BaseModel):
+    """A process played step by step: a Mermaid diagram whose node ids light up in order, each step with a caption."""
+
+    mermaid: str
+    steps: list[DiagramStep] = Field(min_length=1)
+    caption: Md = ""
+
+
+class TerminalEntry(BaseModel):
+    command: str
+    output: str = ""
+    note: Md = ""
+
+
+class Terminal(BaseModel):
+    """A shell session walked through one command at a time, each with its output and what it does."""
+
+    title: str = ""
+    shell: str = "bash"
+    entries: list[TerminalEntry] = Field(min_length=1)
 
 
 CATALOGUE: dict[str, type[BaseModel]] = {
     "theorem_box": TheoremBox, "worked_example": WorkedExample, "exercise": Exercise, "quiz": Quiz,
     "key_formula": KeyFormula, "callout": Callout, "algorithm": Algorithm, "iteration_table": IterationTable,
     "plot": Plot, "explorer": Explorer, "diagram": Diagram, "figure": Figure, "table": Table, "code": Code,
-    "prose": Prose,
+    "prose": Prose, "fill_blanks": FillBlanks, "code_exercise": CodeExercise, "surface_plot": SurfacePlot,
+    "optimizer_animation": OptimizerAnimation, "step_diagram": StepDiagram, "terminal": Terminal,
 }
 
 

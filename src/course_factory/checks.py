@@ -1,6 +1,7 @@
 """Checks every generated Block must pass (#13): structure, citations, math and diagram rendering, quiz sanity,
 sympy-verified claims. Also computes the numbers the app owns (Iteration Table rows)."""
 
+import ast
 import json
 import jsonschema
 import re
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import sympy as sp
+import yaml
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application, convert_xor
 
 from .catalogue import CATALOGUE, BlockDraft, validate_data
@@ -16,7 +18,8 @@ from .pi_step import LATEX_WORDS
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 MATH_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.S)
-NOT_MARKDOWN = {"mermaid", "code", "expr", "f", "latex", "language", "source"}
+NOT_MARKDOWN = {"mermaid", "code", "expr", "f", "latex", "language", "source", "template", "starter", "solution", "command",
+                "output", "answers", "highlight", "shell"}
 TRANSFORMS = standard_transformations + (implicit_multiplication_application, convert_xor)
 
 
@@ -45,7 +48,7 @@ def math_in(data, path: str = "") -> list[tuple[str, bool]]:
 def render_errors(blocks: list[dict]) -> dict[int, list[str]]:
     """KaTeX and Mermaid parse every Block's math and diagrams in one node call."""
     math = [{"id": i, "tex": t, "display": d} for i, b in enumerate(blocks) for t, d in math_in(b["data"])]
-    diagrams = [{"id": i, "src": b["data"]["mermaid"]} for i, b in enumerate(blocks) if b["component"] == "diagram"]
+    diagrams = [{"id": i, "src": b["data"]["mermaid"]} for i, b in enumerate(blocks) if b["component"] in ("diagram", "step_diagram")]
     if not math and not diagrams:
         return {}
     out = subprocess.run(["node", str(WEB_DIR / "scripts" / "check-render.mjs")], input=json.dumps({"math": math, "mermaid": diagrams}),
@@ -66,6 +69,8 @@ def quiz_errors(data: dict) -> list[str]:
             errs.append(f"question {n}: options are not distinct")
         if any(not 0 <= c < len(opts) for c in q["correct"]):
             errs.append(f"question {n}: a correct index is out of range")
+        if q.get("explanations") and len(q["explanations"]) != len(opts):
+            errs.append(f"question {n}: explanations must give one per option, in option order")
         if not q["multiple"] and len(set(q["correct"])) != 1:
             errs.append(f"question {n}: single-choice must have exactly one correct option")
         if not q["explanation"].strip():
@@ -222,6 +227,63 @@ def expr_errors(component: str, data: dict) -> list[str]:
     return []
 
 
+DOCKER_INSTRUCTIONS = {"FROM", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV", "ADD", "COPY", "ENTRYPOINT", "VOLUME", "USER",
+                       "WORKDIR", "ARG", "ONBUILD", "STOPSIGNAL", "HEALTHCHECK", "SHELL"}
+GAP = re.compile(r"\[\[(\d+)\]\]")
+
+
+def syntax_errors(language: str, src: str) -> list[str]:
+    """Parses code in the languages with a cheap parser; others pass."""
+    lang = language.strip().lower()
+    try:
+        if lang in ("python", "py"):
+            ast.parse(src)
+        elif lang in ("yaml", "yml"):
+            list(yaml.safe_load_all(src))
+        elif lang == "json":
+            json.loads(src)
+        elif lang == "dockerfile":
+            for line in re.sub(r"\\\n", " ", src).splitlines():  # continuation lines join their instruction
+                word = line.split(maxsplit=1)[0] if line.strip() and not line.lstrip().startswith("#") else None
+                if word and word.upper() not in DOCKER_INSTRUCTIONS:
+                    raise ValueError(f"unknown instruction {word!r}")
+    except Exception as e:
+        return [f"{lang} does not parse: {str(e)[:300]}"]
+    return []
+
+
+def two_variable(expr: str) -> sp.Expr:
+    f = parse(expr, ["x", "y"])
+    if {str(s) for s in f.free_symbols} - {"x", "y"}:
+        raise ValueError("expr must be a function of x and y only")
+    return f
+
+
+def component_errors(component: str, data: dict) -> list[str]:
+    """Checks for the Components whose content must work as code, a function of x and y, or a solvable drill."""
+    if component == "code":
+        return syntax_errors(data["language"], data["code"])
+    if component == "code_exercise":
+        return syntax_errors(data["language"], data["solution"])
+    if component == "fill_blanks":
+        gaps = {int(n) for n in GAP.findall(data["template"])}
+        if gaps != set(range(1, len(data["blanks"]) + 1)):
+            return [f"the template has gaps {sorted(gaps)} but there are {len(data['blanks'])} blanks; number gaps [[1]]..[[n]], one per blank"]
+        filled = GAP.sub(lambda m: data["blanks"][int(m[1]) - 1]["answers"][0], data["template"])
+        return syntax_errors(data["language"], filled)
+    if component in ("surface_plot", "optimizer_animation"):
+        try:
+            two_variable(data["expr"])
+        except ValueError as e:
+            return [str(e)]
+        except Exception as e:
+            return [f"expression does not parse: {e}"]
+    if component == "step_diagram":
+        return [f"step {n}: node {node} is not in the diagram" for n, st in enumerate(data["steps"], 1) for node in st["highlight"]
+                if not re.search(rf"(?<![\w-]){re.escape(node)}(?![\w-])", data["mermaid"])]
+    return []
+
+
 def schema_errors(schema: dict, data: dict) -> list[str]:
     try:
         jsonschema.validate(data, schema)
@@ -262,6 +324,7 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
                 errs += quiz_errors(data)
             errs += claim_errors(data.get("claims", []))
             errs += expr_errors(draft.component, data)
+            errs += component_errors(draft.component, data)
             if draft.component == "iteration_table":
                 try:
                     data["rows"] = iteration_rows(data)

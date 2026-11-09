@@ -28,6 +28,7 @@
     "mathjs": "^14.5.2",
     "mermaid": "^11.6.0",
     "playwright": "^1.63.0",
+    "plotly.js-dist-min": "^2.35.2",
     "radix-ui": "^1.8.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -45,5 +46,8 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "smoke": "node --test --test-concurrency=1 math.test.mjs smoke.test.mjs"
+  },
+  "devDependencies": {
+    "@types/plotly.js-dist-min": "^2.3.4"
   }
 }

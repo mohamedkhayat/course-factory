@@ -23,7 +23,7 @@ const colors = HighlightStyle.define([ // theme tokens, so both themes keep thei
 ]);
 
 /** A Python editor (CodeMirror 6). Shift+Enter runs the cell, like Jupyter. */
-export function CodeEditor({ value, onChange, onRun, label }: { value: string; onChange: (v: string) => void; onRun: () => void; label: string }) {
+export function CodeEditor({ value, onChange, onRun, label, language = "python" }: { value: string; onChange: (v: string) => void; onRun: () => void; label: string; language?: string }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const cb = useRef({ onChange, onRun });
@@ -34,7 +34,7 @@ export function CodeEditor({ value, onChange, onRun, label }: { value: string; o
       doc: value,
       extensions: [
         Prec.highest(keymap.of([{ key: "Shift-Enter", run: () => { cb.current.onRun(); return true; } }])),
-        basicSetup, python(), theme, syntaxHighlighting(colors),
+        basicSetup, ...(language === "python" ? [python()] : []), theme, syntaxHighlighting(colors),
         EditorView.contentAttributes.of({ "aria-label": label }),
         EditorView.updateListener.of((u) => { if (u.docChanged) cb.current.onChange(u.state.doc.toString()); }),
       ],

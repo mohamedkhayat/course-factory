@@ -58,6 +58,7 @@ class FakeModel:
             "build_component": lambda prompt, files: {"code": (Path(__file__).parent / "components" / "good.tsx").read_text()},
             "repair_lab_step": lambda prompt, files: {"step": {**json.loads(prompt.split("STEP:", 1)[1]),
                                                                "check": "assert y == 3, 'y should be 3'"}},
+            "grade_code": lambda prompt, files: {"correct": True, "feedback": "Works.", "hint": ""},
             "judge_grounding": lambda prompt, files: {"grounded": True, "reason": ""},
             "rebuild_past_paper": lambda prompt, files: {
                 "title": "Examen 2024", "duration_min": 120, "chapters": ["Convexité", "Inconnu"], "questions": [

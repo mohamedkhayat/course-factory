@@ -20,6 +20,7 @@ from course_factory.app import create_app  # noqa: E402
 from course_factory.kernels import LocalLauncher  # noqa: E402
 from course_factory.pi_step import report  # noqa: E402
 from test_chapters import generate  # noqa: E402
+from test_checks import GOOD as NEW_COMPONENTS  # noqa: E402
 from test_components import GOOD, PROPOSAL  # noqa: E402
 
 
@@ -33,7 +34,8 @@ def seed(client, model, root: Path) -> int:
     write = model.handlers["write_section"]
     model.handlers["write_section"] = lambda prompt, files: {
         **write(prompt, files), "proposals": [PROPOSAL],
-        "blocks": write(prompt, files)["blocks"] + [{"component": "saddle_point", "data": {"title": "Point selle"}, "origin": "model_added"}]}
+        "blocks": write(prompt, files)["blocks"] + [{"component": "saddle_point", "data": {"title": "Point selle"}, "origin": "model_added"}]
+        + [{"component": c, "data": d, "origin": "model_added"} for c, d in NEW_COMPONENTS.items()]}
     model.handlers["build_component"] = lambda prompt, files: {"code": GOOD}
     cid = generate(client, folder, model)
     for ch in client.get(f"/api/courses/{cid}/outline").json()["chapters"]:

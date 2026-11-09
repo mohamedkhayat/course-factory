@@ -7,6 +7,8 @@ import { get, pageUrl, send, type Block, type Citation } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Md, MdLine, Tex } from "./md";
 import { Explorer, Plot } from "./plot";
+import { CodeExercise, FillBlanks, HandCorrection, Terminal } from "./practice";
+import { OptimizerAnimation, SurfacePlot } from "./surface";
 
 type P<T = any> = { data: T; cid: number; block: Block };
 
@@ -44,7 +46,7 @@ function WorkedExample({ data }: P) {
   );
 }
 
-function Exercise({ data }: P) {
+function Exercise({ data, cid, block }: P) {
   const [shown, setShown] = useState(0);
   return (
     <div>
@@ -56,7 +58,8 @@ function Exercise({ data }: P) {
       <div className="mt-3 flex gap-2">
         {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}
       </div>
-      <Reveal label="Correction"><Md>{data.correction}</Md></Reveal>
+      {data.mode === "hand" ? <HandCorrection steps={data.steps ?? []} correction={data.correction} cid={cid} block={block} />
+        : <Reveal label="Correction"><Md>{data.correction}</Md></Reveal>}
     </div>
   );
 }
@@ -93,7 +96,10 @@ function Quiz({ data, cid, block }: P) {
               <span className={cn("grid size-4 shrink-0 place-items-center border border-current", q.multiple ? "rounded-sm" : "rounded-full")}>
                 {picked && <span className={cn("size-2 bg-current", q.multiple ? "rounded-[1px]" : "rounded-full")} />}
               </span>
-              <Md className="[&_p]:my-0">{o}</Md>
+              <span className="min-w-0">
+                <Md className="[&_p]:my-0">{o}</Md>
+                {result && (picked || right) && q.explanations?.[k] && <span className="mt-1 block text-sm text-muted-foreground"><MdLine>{q.explanations[k]}</MdLine></span>}
+              </span>
             </button>
           );
         })}
@@ -177,7 +183,8 @@ function IterationTable({ data }: P) {
   );
 }
 
-function Diagram({ data }: P) {
+/** Mermaid's SVG for a diagram source: null while rendering, "" when it does not render. */
+function useMermaid(src: string) {
   const id = "m" + useId().replace(/[^a-zA-Z0-9]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const dark = document.documentElement.dataset.theme === "instrument";
@@ -185,13 +192,50 @@ function Diagram({ data }: P) {
     import("mermaid").then(({ default: mermaid }) => {
       mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
       // mermaid renders math only between $$; the model writes single $
-      return mermaid.render(id, data.mermaid.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, "$$$$$1$$$$"));
+      return mermaid.render(id, src.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, "$$$$$1$$$$"));
     }).then((r) => setSvg(r.svg)).catch(() => setSvg(""));
-  }, [data.mermaid, id, dark]);
+  }, [src, id, dark]);
+  return svg;
+}
+
+function DiagramSvg({ src, svg, box }: { src: string; svg: string | null; box?: React.Ref<HTMLDivElement> }) {
+  return svg === "" ? <pre className="overflow-x-auto font-mono text-sm">{src}</pre>
+    : <div ref={box} className="flex justify-center overflow-x-auto [&_svg]:max-w-full" dangerouslySetInnerHTML={{ __html: svg ?? "" }} />;
+}
+
+function Diagram({ data }: P) {
+  const svg = useMermaid(data.mermaid);
   return (
     <figure>
-      {svg === "" ? <pre className="overflow-x-auto font-mono text-sm">{data.mermaid}</pre>
-        : <div className="flex justify-center overflow-x-auto [&_svg]:max-w-full" dangerouslySetInnerHTML={{ __html: svg ?? "" }} />}
+      <DiagramSvg src={data.mermaid} svg={svg} />
+      {data.caption && <figcaption className="mt-2 text-sm text-muted-foreground"><Md>{data.caption}</Md></figcaption>}
+    </figure>
+  );
+}
+
+/** A diagram played step by step: the step's nodes light up, the others fade. */
+function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]; caption: string }[]; caption: string }>) {
+  const svg = useMermaid(data.mermaid);
+  const box = useRef<HTMLDivElement>(null);
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    const nodes = box.current?.querySelectorAll<SVGGElement>("g.node, g.cluster");
+    const lit = new Set(data.steps[n].highlight);
+    nodes?.forEach((g) => {
+      const name = g.dataset.id ?? g.id.replace(/^flowchart-/, "").replace(/-\d+$/, "");
+      g.style.transition = "opacity 300ms";
+      g.style.opacity = lit.has(name) ? "1" : "0.25";
+      g.querySelectorAll<SVGElement>("rect, circle, polygon, path").forEach((sh) => { sh.style.stroke = lit.has(name) ? "var(--primary)" : ""; sh.style.strokeWidth = lit.has(name) ? "2.5px" : ""; });
+    });
+  }, [svg, n, data.steps]);
+  return (
+    <figure>
+      <DiagramSvg src={data.mermaid} svg={svg} box={box} />
+      <div className="mt-3 flex items-start gap-3">
+        <Button size="sm" variant="outline" onClick={() => setN(Math.max(0, n - 1))} disabled={n === 0} aria-label="Previous step">‹</Button>
+        <div className="min-w-0 flex-1 text-sm" aria-live="polite"><span className="tabular text-muted-foreground">Step {n + 1} of {data.steps.length} · </span><MdLine>{data.steps[n].caption}</MdLine></div>
+        <Button size="sm" variant="outline" onClick={() => setN(Math.min(data.steps.length - 1, n + 1))} disabled={n === data.steps.length - 1} aria-label="Next step">›</Button>
+      </div>
       {data.caption && <figcaption className="mt-2 text-sm text-muted-foreground"><Md>{data.caption}</Md></figcaption>}
     </figure>
   );
@@ -243,7 +287,9 @@ const RENDER: Record<string, (p: P) => React.ReactNode> = {
   callout: Callout, algorithm: Algorithm, iteration_table: IterationTable, plot: ({ data }) => <Plot data={data} />,
   explorer: ({ data }) => <Explorer data={data} />, diagram: Diagram, figure: Figure,
   table: ({ data }) => <Table headers={data.headers} rows={data.rows} caption={data.caption} />, code: Code,
-  prose: ({ data }) => <Md>{data.markdown}</Md>,
+  prose: ({ data }) => <Md>{data.markdown}</Md>, fill_blanks: FillBlanks, code_exercise: CodeExercise, terminal: Terminal,
+  surface_plot: ({ data }) => <SurfacePlot data={data} />, optimizer_animation: ({ data }) => <OptimizerAnimation data={data} />,
+  step_diagram: StepDiagram,
 };
 
 export function useComponents() {
