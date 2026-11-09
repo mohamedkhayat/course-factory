@@ -80,6 +80,12 @@ def test_latex_backslashes_the_model_forgot_to_escape_survive(conn, tmp_path):
     assert r.text == "$\\frac{a}{b} + \\sum x_i + \\nabla f \\cdot \\theta \\alpha$\nNext\tcol é"
 
 
+def test_unescaped_latex_symbols_survive_too(conn, tmp_path):
+    raw = r'{"text": "$\|Xw - y\|^2$, $\{1, 3\}$, a\,b \"q\" \/", "readable": true}'
+    r = run_pi_step(conn, answers(raw), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert r.text == '$\\|Xw - y\\|^2$, $\\{1, 3\\}$, a\\,b "q" /'
+
+
 def test_pi_backend_streams_thinking_and_output_and_returns_the_answer(tmp_path, monkeypatch):
     from course_factory import pi_step
     from course_factory.pi_step import PiBackend

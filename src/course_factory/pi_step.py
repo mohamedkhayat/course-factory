@@ -115,7 +115,11 @@ def escape_latex(text: str) -> str:
         pairs, word = m.group(1), m.group(2)
         latex = word[0] not in "bfnrtu" or word in LATEX_WORDS
         return f"{pairs}\\\\{word}" if latex else m.group(0)
-    return LATEX_RE.sub(fix, text)
+    return BAD_ESCAPE_RE.sub(r"\1\\\\", LATEX_RE.sub(fix, text))
+
+
+# a lone backslash before anything JSON cannot escape (\| \{ \, in LaTeX) is always a forgotten double backslash
+BAD_ESCAPE_RE = re.compile(r'(?<!\\)((?:\\\\)*)\\(?=[^"\\/bfnrtu])')
 
 
 def parse_json(text: str) -> object:
