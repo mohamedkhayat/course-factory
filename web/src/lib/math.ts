@@ -5,7 +5,7 @@ const CONSTANTS = new Set(["e", "i", "Infinity", "NaN", "pi", "true", "false"]);
 /** The Plot Block has one independent variable but does not name it in its schema. */
 export function plotVariable(expr: string): string {
   try {
-    const names = new Set(parse(expr).filter(isSymbolNode)
+    const names = new Set(parse(expr.replaceAll("**", "^")).filter(isSymbolNode)
       .map((node) => isSymbolNode(node) ? node.name : "")
       .filter((name) => !CONSTANTS.has(name)));
     return names.size === 1 ? [...names][0] : "x";

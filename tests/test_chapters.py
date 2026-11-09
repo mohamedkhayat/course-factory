@@ -260,3 +260,15 @@ def test_time_left_comes_from_past_step_timings(client, material, model, data_di
     db.execute("INSERT INTO traces (course_id, step, harness_version, inputs, duration_ms) VALUES (?,?,?,?,?)",
                (cid, "repair_block", "x", "{}", 1000))
     assert seconds_left(db, cid) == 3 * 4  # 3 Sections to write, 4 s each with repairs; no past papers or Labs here
+
+
+def test_run_shows_each_chapter_with_its_sections_written(client, material, model):
+    cid = to_outline_gate(client, material, model)
+    before = client.get(f"/api/courses/{cid}/run").json()["progress"]
+    assert (before["sections_done"], before["sections_total"]) == (0, 3)
+    assert [s["state"] for c in before["chapters"] for s in c["sections"]] == ["waiting"] * 3
+    client.post(f"/api/courses/{cid}/gates/outline")
+    after = client.get(f"/api/courses/{cid}/run").json()["progress"]
+    assert (after["sections_done"], after["sections_total"], after["fraction"]) == (3, 3, 1)
+    ch = {c["title"]: c for c in after["chapters"]}["Méthodes de descente"]
+    assert (ch["done"], ch["total"]) == (2, 2) and ch["sections"][0]["blocks"] > 0 and ch["sections"][0]["state"] == "done"

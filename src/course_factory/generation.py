@@ -151,3 +151,36 @@ def gpu() -> dict | None:
         except (OSError, subprocess.SubprocessError, ValueError, IndexError):
             _gpu = (time.monotonic(), None)
     return _gpu[1]
+
+
+SECTION_STATE = {"planned": "waiting", "generating": "writing", "complete": "done"}
+
+
+def progress(db: sqlite3.Connection, cid: int) -> dict:
+    """The Run's work as a tree: folders -> Sources with pages read, then Chapters -> Sections with their state.
+    `fraction` covers reading and writing, each page and Section weighted by its measured mean time."""
+    folders: dict[str, dict] = {}
+    for s in db.execute("SELECT s.name, s.pages, (SELECT COUNT(*) FROM pages p WHERE p.source_id=s.id AND p.text IS NOT NULL) read "
+                        "FROM sources s WHERE s.course_id=? ORDER BY s.name", (cid,)):
+        f = folders.setdefault(s["name"].rpartition("/")[0], {"sources": [], "pages": 0, "read": 0})
+        f["sources"].append(dict(s))
+        f["pages"] += s["pages"]
+        f["read"] += s["read"]
+    chapters = []
+    for c in db.execute("SELECT id, title, priority FROM chapters WHERE course_id=? ORDER BY position", (cid,)).fetchall():
+        sections = [{"title": s["title"], "blocks": s["blocks"], "flagged": s["flagged"],
+                     "state": "skipped" if c["priority"] == "skip" else SECTION_STATE.get(s["generation_status"], "waiting")}
+                    for s in db.execute("SELECT s.title, s.generation_status, COUNT(b.id) blocks, COALESCE(SUM(b.status='flagged'),0) flagged "
+                                        "FROM sections s LEFT JOIN blocks b ON b.section_id=s.id WHERE s.chapter_id=? "
+                                        "GROUP BY s.id ORDER BY s.position", (c["id"],))]
+        counted = [s for s in sections if s["state"] != "skipped"]
+        chapters.append({"id": c["id"], "title": c["title"], "sections": sections,
+                         "done": sum(s["state"] == "done" for s in counted), "total": len(counted)})
+    pages, read = sum(f["pages"] for f in folders.values()), sum(f["read"] for f in folders.values())
+    done, total = sum(c["done"] for c in chapters), sum(c["total"] for c in chapters)
+    page_ms = mean_ms(db, "read_page") or 1.0
+    section_ms = mean_ms(db, "write_section", "repair_block", "judge_grounding") or 10 * page_ms  # before any timing: a guess
+    work = pages * page_ms + total * section_ms
+    return {"folders": [{"name": n} | f for n, f in sorted(folders.items())], "chapters": chapters,
+            "pages": pages, "read": read, "sections_done": done, "sections_total": total,
+            "fraction": round((read * page_ms + done * section_ms) / work, 3) if work else 0}

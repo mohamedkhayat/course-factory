@@ -82,7 +82,7 @@ export function Review() {
       {data.map((ch) => {
         const flagged = ch.blocks.filter((b) => b.status === "flagged").length;
         return (
-          <section key={ch.id} className="mb-12">
+          <section key={ch.id} id={`chapter-${ch.id}`} className="mb-12 scroll-mt-6">
             <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-foreground/30 pb-2">
               <h2 className="font-display text-xl font-semibold">{ch.title}</h2>
               <span className="flex items-center gap-3 text-sm">

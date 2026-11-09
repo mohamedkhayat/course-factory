@@ -14,7 +14,10 @@ import { errText, Page } from "./home";
 type Step = { name: string; label: string; gate: boolean; state: "done" | "current" | "waiting" };
 type Activity = { step: string; attempt: number; elapsed: number; thinking: string; output: string; inputs: Record<string, string> };
 type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number;
-  seconds_left?: number | null; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null };
+  seconds_left?: number | null; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null; progress?: RunProgressTree };
+type PSection = { title: string; state: "waiting" | "writing" | "done" | "skipped"; blocks: number; flagged: number };
+type PChapter = { id: number; title: string; sections: PSection[]; done: number; total: number };
+type RunProgressTree = { chapters: PChapter[]; pages: number; read: number; sections_done: number; sections_total: number; fraction: number };
 type Trace = { id: number; step: string; inputs: string; output: string | null; error: string | null; owner_action: string | null;
   duration_ms: number | null; checks: string | null; created_at: string };
 
@@ -168,6 +171,47 @@ function CourseMap({ cid, now, live }: { cid: number; now: { source: string; pag
   );
 }
 
+/** The approved outline as it gets written: one bar per Chapter, one cell per Section. */
+function Plan({ cid, p }: { cid: number; p: RunProgressTree }) {
+  if (!p.sections_total) return null;
+  const blocks = p.chapters.reduce((n, c) => n + c.sections.reduce((m, s) => m + s.blocks, 0), 0);
+  return (
+    <section aria-label="Course plan">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-2">
+        <h2 className="text-lg">The plan</h2>
+        <p className="tabular text-sm text-muted-foreground">{p.chapters.length} Chapters · {p.sections_done} of {p.sections_total} Sections written · {blocks} Blocks</p>
+      </div>
+      <ul className="divide-y divide-border">
+        {p.chapters.map((c) => {
+          const pct = c.total ? Math.round((100 * c.done) / c.total) : 0, flagged = c.sections.reduce((n, s) => n + s.flagged, 0);
+          return (
+            <li key={c.id} className="py-3">
+              <p className="mb-1.5 flex items-baseline gap-2 text-sm">
+                <Layers className="size-3.5 shrink-0 self-center text-muted-foreground" aria-hidden />
+                {c.done ? <Link to="/c/$cid/review" params={{ cid: String(cid) }} hash={`chapter-${c.id}`} className="font-medium hover:underline">{c.title}</Link>
+                        : <span className={cn("font-medium", !c.total && "text-muted-foreground line-through")}>{c.title}</span>}
+                <span className="tabular ml-auto text-xs text-muted-foreground">{c.total ? `${c.done}/${c.total} · ${pct}%` : "skipped"}
+                  {flagged > 0 && <span className="text-destructive"> · {flagged} flagged</span>}</span>
+              </p>
+              <Progress value={pct} aria-label={`${c.title}: ${pct}%`} className="h-1" />
+              <ul className="mt-2 flex flex-wrap gap-1.5">
+                {c.sections.map((s, i) => (
+                  <li key={i} title={`${s.title}: ${s.state}${s.blocks ? `, ${s.blocks} Blocks` : ""}`}
+                      className={cn("max-w-56 truncate rounded px-1.5 py-0.5 text-xs transition-colors duration-500",
+                        s.state === "done" ? (s.flagged ? "bg-destructive/15 text-destructive" : "bg-primary/15 text-foreground")
+                          : s.state === "writing" ? "animate-pulse bg-primary text-primary-foreground" : "bg-border/60 text-muted-foreground")}>
+                    {s.title}
+                  </li>
+                ))}
+              </ul>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 const kinds = (files: MapFile[]) => [...new Set(files.map((f) => f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".")) : "no extension"))].slice(0, 5).join(", ");
 
 function Feed({ cid, running }: { cid: number; running: boolean }) {
@@ -239,10 +283,12 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
         <header className="space-y-3">
           <h2 className="text-2xl">{at >= 0 ? run.pipeline[at].label : "Starting"}</h2>
           <div className="space-y-2">
-            {run.pages_total > 0 && <Progress value={(100 * run.pages_read) / run.pages_total} aria-label="Pages read" />}
+            {run.pages_total > 0 && <Progress value={100 * (run.progress?.fraction ?? run.pages_read / run.pages_total)} aria-label="Overall progress" />}
             <p className="tabular flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
                 {at >= 0 && <span>Step {at + 1} of {run.pipeline.length}</span>}
+                {run.pages_total > 0 && <span><span className="font-medium text-foreground">{Math.round(100 * (run.progress?.fraction ?? run.pages_read / run.pages_total))}%</span> overall</span>}
                 {run.pages_total > 0 && <span><span className="font-medium text-foreground">{run.pages_read}</span> of {run.pages_total} pages read</span>}
+                {(run.progress?.sections_total ?? 0) > 0 && <span><span className="font-medium text-foreground">{run.progress?.sections_done}</span> of {run.progress?.sections_total} Sections written</span>}
                 {live && <span>{run.seconds_left != null ? `${duration(run.seconds_left)} to the next Approval Gate` : "Estimating time left…"}</span>}
                 {live && run.gpu && <span>GPU {run.gpu.util}% · {(run.gpu.mem_used_mb / 1024).toFixed(1)} of {(run.gpu.mem_total_mb / 1024).toFixed(0)} GB</span>}
             </p>
@@ -266,6 +312,7 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
         {a ? <Now cid={cid} a={a} /> : live && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" aria-hidden />Working without the model (copying, indexing)…</p>
         )}
+        {run.progress && <Plan cid={cid} p={run.progress} />}
         <CourseMap cid={cid} now={now} live={live} />
         <Feed cid={cid} running={run.status === "running"} />
       </div>

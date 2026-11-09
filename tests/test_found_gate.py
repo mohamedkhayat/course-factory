@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from conftest import FakeSearch
+from conftest import FakeSearch, make_pdf
 from course_factory.app import create_app
 
 
@@ -220,3 +220,13 @@ def test_the_course_map_lists_every_file_with_its_pages_read(client, material):
     assert files["cours.pdf"] == {"name": "cours.pdf", "pages": 2, "read": 2, "unreadable": 0, "role": files["cours.pdf"]["role"]}
     assert files["data.csv"]["pages"] == 0 and files["data.csv"]["role"] == "data"
     assert client.get("/api/courses/999/map").status_code == 404
+
+
+def test_run_shows_each_folder_with_its_sources_and_pages_read(client, material):
+    (material / "tp").mkdir()
+    make_pdf(material / "tp" / "TP1.pdf", 3)
+    cid = start(client, material)
+    folders = {f["name"]: f for f in client.get(f"/api/courses/{cid}/run").json()["progress"]["folders"]}
+    assert set(folders) == {"", "tp"}
+    assert folders["tp"]["sources"] == [{"name": "tp/TP1.pdf", "pages": 3, "read": 3}]
+    assert (folders[""]["pages"], folders[""]["read"], len(folders[""]["sources"])) == (4, 4, 4)

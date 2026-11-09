@@ -44,6 +44,6 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "smoke": "node --test --test-concurrency=1 smoke.test.mjs"
+    "smoke": "node --test --test-concurrency=1 math.test.mjs smoke.test.mjs"
   }
 }
