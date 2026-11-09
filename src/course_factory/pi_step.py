@@ -20,6 +20,7 @@ from pydantic import BaseModel, ValidationError
 
 HARNESS_DIR = Path(os.environ.get("CF_HARNESS", Path(__file__).resolve().parents[2] / "harness"))
 ATTEMPTS = 3
+DEFAULT_MODEL = "llama-swap/ninfer-qwen3.8-27b:medium"
 MODEL_LANES = max(1, int(os.environ.get("CF_MODEL_CONCURRENCY", "2")))
 
 
@@ -90,6 +91,18 @@ def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], wo
         except QueueTimeout:
             continue
     raise StepFailed(f"{step}: no lane after {QUEUE_RETRIES} waits")
+
+
+def model_for(step: str, attempt: int = 1) -> str:
+    """The model a step runs on: CF_MODEL_<STEP>, else CF_MODEL; the last attempt goes to CF_FALLBACK_MODEL when it is set."""
+    if attempt == ATTEMPTS and os.environ.get("CF_FALLBACK_MODEL"):
+        return os.environ["CF_FALLBACK_MODEL"]
+    return os.environ.get(f"CF_MODEL_{step.upper()}") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
+
+
+def current_model() -> str | None:
+    """The model run_pi_step picked for this thread's running attempt."""
+    return getattr(_now, "model", None)
 
 
 def harness_version() -> str:
@@ -263,6 +276,7 @@ def run_pi_step[T: BaseModel](
     try:
         for attempt in range(1, ATTEMPTS + 1):
             raw, start = None, time.monotonic()
+            _now.model = model_for(step, attempt)
             if watched is not None:
                 with _activity_lock:
                     ACTIVITY.setdefault(watched, {})[activity_id] = {
@@ -297,6 +311,7 @@ def run_pi_step[T: BaseModel](
                     ACTIVITY.pop(watched, None)
             _now.course_id = None
             _now.activity_id = None
+        _now.model = None
 
 
 ACTIVITY: dict[int, dict[str, dict]] = {}  # course id -> concurrent background model steps
@@ -368,21 +383,21 @@ def attach_checks(db: sqlite3.Connection, trace_id: int | None, checks) -> None:
 
 def _trace(db, course_id, step, version, inputs, files, output, error, start):
     _last.id = db.execute(
-        "INSERT INTO traces (course_id, step, harness_version, inputs, output, error, duration_ms) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO traces (course_id, step, harness_version, inputs, output, error, duration_ms, model) VALUES (?,?,?,?,?,?,?,?)",
         (course_id, step, version, json.dumps({**inputs, "files": [str(f) for f in files]}, ensure_ascii=False), output, error,
-         int((time.monotonic() - start) * 1000)),
+         int((time.monotonic() - start) * 1000), current_model()),
     ).lastrowid
 
 
 class PiBackend:
-    """Runs one `pi -p --mode json` subprocess per step against Qwen on llama-swap."""
+    """Runs one `pi -p --mode json` subprocess per step on llama-swap, on the model run_pi_step picked (model_for)."""
 
-    def __init__(self, model: str = os.environ.get("CF_MODEL", "llama-swap/ninfer-qwen3.8-27b:medium"), timeout: int = 900):
-        self.model, self.timeout = model, timeout
+    def __init__(self, timeout: int = 900):
+        self.timeout = timeout
 
-    def _cmd(self, prompt, files, extension: Path | None = None):
+    def _cmd(self, model, files, extension: Path | None = None):
         cmd = ["pi", "-p", "--mode", "json", "--no-session", "--no-skills", "--no-context-files",
-               "--model", self.model]
+               "--model", model]
         if extension:
             cmd += ["--no-extensions", "--no-builtin-tools", "--no-mcp", "--extension", str(extension),
                     "--tools", "cf_return_result"]
@@ -392,7 +407,7 @@ class PiBackend:
 
     def __call__(self, step, prompt, files, workdir):
         lines = []
-        for line, d in self._events(prompt, files, workdir):  # streamed, so the Run screen can watch the model think
+        for line, d in self._events(step, prompt, files, workdir):  # streamed, so the Run screen can watch the model think
             lines.append(line)
             if d.get("type") in ("thinking_delta", "text_delta"):
                 report("thinking" if d["type"] == "thinking_delta" else "output", d.get("delta", ""))
@@ -400,20 +415,21 @@ class PiBackend:
 
     def structured(self, step, prompt, files, workdir, schema):
         lines = []
-        for line, event in self._events(prompt, files, workdir, schema):
+        for line, event in self._events(step, prompt, files, workdir, schema):
             lines.append(line)
             if event.get("type") in ("thinking_delta", "text_delta"):
                 report("thinking" if event["type"] == "thinking_delta" else "output", event.get("delta", ""))
         return assistant_text("".join(lines))
 
     def stream(self, step, prompt, files, workdir) -> Iterator[str]:
-        for _, d in self._events(prompt, files, workdir):
+        for _, d in self._events(step, prompt, files, workdir):
             if d.get("type") == "text_delta":
                 yield d.get("delta", "")
 
-    def _events(self, prompt, files, workdir, output_schema: dict | None = None) -> Iterator[tuple[str, dict]]:
+    def _events(self, step, prompt, files, workdir, output_schema: dict | None = None) -> Iterator[tuple[str, dict]]:
         """pi's JSON event lines, each with its assistant message event ({} for other events). Killed after the timeout."""
         workdir.mkdir(parents=True, exist_ok=True)
+        model = current_model() or model_for(step)  # live streams (tutor) don't go through run_pi_step
         temp = tempfile.TemporaryDirectory(prefix="course-factory-pi-") if output_schema else None
         try:
             env = os.environ.copy()
@@ -422,7 +438,7 @@ class PiBackend:
                 root = Path(temp.name)
                 agent_dir = root / "agent"
                 agent_dir.mkdir()
-                self._strict_model_config(agent_dir)
+                self._strict_model_config(model, agent_dir)
                 schema_path = root / "schema.json"
                 schema_path.write_text(json.dumps(output_schema, ensure_ascii=False))
                 extension = root / "structured-output.mjs"
@@ -432,7 +448,7 @@ class PiBackend:
             stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
             stdin.write(prompt)
             stdin.seek(0)
-            with stdin, subprocess.Popen(self._cmd(prompt, files, extension), cwd=workdir, stdin=stdin,
+            with stdin, subprocess.Popen(self._cmd(model, files, extension), cwd=workdir, stdin=stdin,
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
                 timer = threading.Timer(self.timeout, proc.kill)
                 timer.start()
@@ -453,23 +469,20 @@ class PiBackend:
             if temp:
                 temp.cleanup()
 
-    def _qwen_strict_model(self) -> bool:
-        return "qwen3.8-27b" in self.model.lower()
-
-    def _strict_model_config(self, agent_dir: Path) -> None:
+    def _strict_model_config(self, model: str, agent_dir: Path) -> None:
         """Give the confirmed Qwen endpoint's strict tool support to this Pi subprocess only."""
         source_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
         source = source_dir / "models.json"
         config = json.loads(source.read_text()) if source.exists() else {"providers": {}}
-        if self._qwen_strict_model():
-            provider_id, model_id = self.model.split("/", 1)
+        if "qwen3.8-27b" in model.lower():
+            provider_id, model_id = model.split("/", 1)
             model_id = model_id.split(":", 1)[0]
             provider = config.get("providers", {}).get(provider_id)
             if provider:
                 provider.setdefault("compat", {})["supportsStrictMode"] = True
-                for model in provider.get("models", []):
-                    if model.get("id") == model_id:
-                        model.setdefault("compat", {})["supportsStrictMode"] = True
+                for entry in provider.get("models", []):
+                    if entry.get("id") == model_id:
+                        entry.setdefault("compat", {})["supportsStrictMode"] = True
         (agent_dir / "models.json").write_text(json.dumps(config, ensure_ascii=False))
 
 

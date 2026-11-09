@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from course_factory import db as dbm
-from course_factory.pi_step import StepFailed, assistant_text, run_pi_step
+from course_factory.pi_step import StepFailed, assistant_text, current_model, run_pi_step
 
 
 class Reading(BaseModel):
@@ -137,3 +137,22 @@ def test_pi_backend_is_killed_after_its_timeout(tmp_path, monkeypatch):
 def test_model_json_is_healed_without_a_retry(raw, want):
     from course_factory.pi_step import parse_json
     assert parse_json(raw) == want
+
+
+def test_each_step_runs_on_its_configured_model_and_the_trace_records_it(conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("CF_MODEL_READ_PAGE", "llama-swap/nemotron3.5-bolt")
+    seen = []
+
+    def backend(step, prompt, files, workdir):
+        seen.append(current_model())
+        return '{"text": "x", "readable": true}'
+    run_pi_step(conn, backend, "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert seen == ["llama-swap/nemotron3.5-bolt"]
+    assert conn.execute("SELECT model FROM traces").fetchone()[0] == "llama-swap/nemotron3.5-bolt"
+
+
+def test_the_last_attempt_runs_on_the_fallback_model(conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("CF_MODEL_READ_PAGE", "fast")
+    monkeypatch.setenv("CF_FALLBACK_MODEL", "strong")
+    run_pi_step(conn, answers("{}", "{}", '{"text": "x", "readable": true}'), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert [r[0] for r in conn.execute("SELECT model FROM traces ORDER BY id")] == ["fast", "fast", "strong"]
