@@ -1,16 +1,17 @@
 import datetime as dt
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import pypdfium2 as pdfium
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
@@ -23,9 +24,9 @@ from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
-from .generation import build_graph, gpu, run_status, seconds_left, thread
+from .generation import build_graph, gpu, pipeline, run_status, seconds_left, thread
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
-from .pi_step import Backend, record_owner_action
+from .pi_step import ACTIVITY, Backend, record_owner_action
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
@@ -122,7 +123,10 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         s = run_status(graph, cid, course_or_404(cid)["run_error"])
         p = db.execute("SELECT COALESCE(SUM(s.pages),0) total, (SELECT COUNT(*) FROM pages p JOIN sources s2 ON s2.id=p.source_id "
                        "WHERE s2.course_id=? AND p.text IS NOT NULL) done FROM sources s WHERE s.course_id=?", (cid, cid)).fetchone()
-        out = {"error": None, **s, "pages_read": p["done"], "pages_total": p["total"]}
+        a = ACTIVITY.get(cid)
+        out = {"error": None, **s, "pages_read": p["done"], "pages_total": p["total"], "pipeline": pipeline(graph, cid),
+               "active": cid in advancing,  # "running" but not active: the app stopped mid-step, and Retry resumes it
+               "activity": {k: v for k, v in a.items() if k != "started"} | {"elapsed": round(time.time() - a["started"])} if a else None}
         if s["status"] == "running":
             out |= {"seconds_left": seconds_left(db, cid), "gpu": gpu()}
         return out
@@ -159,9 +163,36 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         tasks.add_task(advance, cid, {"course_id": cid})
         return {"id": cid}
 
+    @app.post("/api/courses/upload", status_code=201)
+    def create_course_from_upload(tasks: BackgroundTasks, name: str = Form(..., min_length=1), files: list[UploadFile] = File(...)):
+        """A Course from a folder picked in the browser: each file's name is its path inside the picked folder."""
+        rels = [PurePosixPath(f.filename or "") for f in files]
+        if any(r.is_absolute() or ".." in r.parts or not r.name for r in rels):
+            raise HTTPException(422, "file paths must stay inside the picked folder")
+        tops = {r.parts[0] for r in rels}
+        if len(tops) == 1 and all(len(r.parts) > 1 for r in rels):  # the picked folder's own name
+            rels = [PurePosixPath(*r.parts[1:]) for r in rels]
+        folder = data_dir / "uploads" / uuid.uuid4().hex[:12]
+        for f, rel in zip(files, rels):
+            (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+            with open(folder / rel, "wb") as out:
+                shutil.copyfileobj(f.file, out)
+        return create_course(NewCourse(name=name, folder=str(folder)), tasks)
+
     @app.get("/api/courses")
     def list_courses():
-        return [dict(r) for r in db.execute("SELECT * FROM courses ORDER BY id DESC")]
+        """Every Course with what the home hub shows: its Run, Chapters, Cards due and exam countdown."""
+        out, today, stamp = [], dt.date.today(), dt.datetime.now(dt.UTC).isoformat()
+        for r in db.execute("SELECT * FROM courses ORDER BY id DESC").fetchall():
+            s = status(r["id"])
+            ch = db.execute("SELECT COUNT(*) total, COALESCE(SUM(status='published'),0) published FROM chapters "
+                            "WHERE course_id=? AND priority!='skip'", (r["id"],)).fetchone()
+            out.append(dict(r) | {
+                "run": {k: s.get(k) for k in ("status", "gate", "error", "active", "pages_read", "pages_total", "seconds_left")},
+                "chapters_total": ch["total"], "chapters_published": ch["published"],
+                "cards_due": db.execute("SELECT COUNT(*) FROM cards WHERE course_id=? AND due<=?", (r["id"], stamp)).fetchone()[0],
+                "exam_countdown_days": (dt.date.fromisoformat(r["exam_date"]) - today).days if r["exam_date"] else None})
+        return out
 
     @app.get("/api/courses/{cid}")
     def get_course(cid: int):
@@ -292,9 +323,12 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         return searchm.search(db, models, cid, q, k)
 
     @app.get("/api/courses/{cid}/traces")
-    def get_traces(cid: int):
+    def get_traces(cid: int, limit: int | None = Query(None, ge=1, le=200)):
+        """Every Trace, oldest first; with a limit, the newest ones first (the Run screen's feed)."""
         course_or_404(cid)
-        return [dict(r) for r in db.execute("SELECT * FROM traces WHERE course_id=? ORDER BY id", (cid,))]
+        if limit is None:
+            return [dict(r) for r in db.execute("SELECT * FROM traces WHERE course_id=? ORDER BY id", (cid,))]
+        return [dict(r) for r in db.execute("SELECT * FROM traces WHERE course_id=? ORDER BY id DESC LIMIT ?", (cid, limit))]
 
     def chapter_or_404(cid: int, chid: int) -> sqlite3.Row:
         row = db.execute("SELECT * FROM chapters WHERE id=? AND course_id=?", (chid, cid)).fetchone()

@@ -134,18 +134,41 @@ def run_pi_step[T: BaseModel](
 ) -> T:
     version, prompt = harness_version(), render_prompt(step, inputs)
     error = "no attempt"
-    for _ in range(ATTEMPTS):
-        raw, start = None, time.monotonic()
-        try:
-            raw = call_backend(backend, step, prompt, list(files), workdir, live)
-            result = schema.model_validate(parse_json(raw))
-        except (ValidationError, json.JSONDecodeError, StepFailed, subprocess.TimeoutExpired, OSError) as e:
-            error = str(e)[:2000]
-            _trace(db, course_id, step, version, inputs, files, raw, error, start)
-            continue
-        _trace(db, course_id, step, version, inputs, files, result.model_dump_json(), None, start)
-        return result
-    raise StepFailed(f"{step}: {error}")
+    watched = None if live else course_id  # background generation shows on the Run screen
+    try:
+        for attempt in range(1, ATTEMPTS + 1):
+            raw, start = None, time.monotonic()
+            if watched is not None:
+                ACTIVITY[watched] = {"step": step, "attempt": attempt, "started": time.time(), "thinking": "", "output": "",
+                                       "inputs": {k: v for k, v in inputs.items() if isinstance(v, str) and len(v) <= 200}}
+                _now.course_id = watched
+            try:
+                raw = call_backend(backend, step, prompt, list(files), workdir, live)
+                result = schema.model_validate(parse_json(raw))
+            except (ValidationError, json.JSONDecodeError, StepFailed, subprocess.TimeoutExpired, OSError) as e:
+                error = str(e)[:2000]
+                _trace(db, course_id, step, version, inputs, files, raw, error, start)
+                continue
+            _trace(db, course_id, step, version, inputs, files, result.model_dump_json(), None, start)
+            return result
+        raise StepFailed(f"{step}: {error}")
+    finally:
+        if watched is not None:
+            ACTIVITY.pop(watched, None)
+            _now.course_id = None
+
+
+ACTIVITY: dict[int, dict] = {}  # course id -> the background model step running now, with the tail of its thinking and output
+ACTIVITY_TAIL = 6000
+_now = threading.local()
+
+
+def report(kind: str, delta: str) -> None:
+    """A backend streams what the model is thinking ("thinking") or writing ("output") into this thread's step."""
+    cid = getattr(_now, "course_id", None)
+    a = ACTIVITY.get(cid) if cid is not None else None
+    if a is not None:
+        a[kind] = (a[kind] + delta)[-ACTIVITY_TAIL:]
 
 
 def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, workdir: Path,
@@ -210,25 +233,37 @@ class PiBackend:
                 "--no-context-files", "--no-tools", "--model", self.model, "--", *[f"@{f}" for f in files], prompt]
 
     def __call__(self, step, prompt, files, workdir):
-        out = subprocess.run(self._cmd(prompt, files), cwd=workdir, capture_output=True, text=True, timeout=self.timeout)
-        if out.returncode != 0:
-            raise StepFailed(f"pi exited {out.returncode}: {out.stderr[-500:]}")
-        return assistant_text(out.stdout)
+        lines = []
+        for line, d in self._events(prompt, files, workdir):  # streamed, so the Run screen can watch the model think
+            lines.append(line)
+            if d.get("type") in ("thinking_delta", "text_delta"):
+                report("thinking" if d["type"] == "thinking_delta" else "output", d.get("delta", ""))
+        return assistant_text("".join(lines))
 
     def stream(self, step, prompt, files, workdir) -> Iterator[str]:
+        for _, d in self._events(prompt, files, workdir):
+            if d.get("type") == "text_delta":
+                yield d.get("delta", "")
+
+    def _events(self, prompt, files, workdir) -> Iterator[tuple[str, dict]]:
+        """pi's JSON event lines, each with its assistant message event ({} for other events). Killed after the timeout."""
         workdir.mkdir(parents=True, exist_ok=True)
         with subprocess.Popen(self._cmd(prompt, files), cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as proc:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                d = ev.get("assistantMessageEvent") or {}
-                if ev.get("type") == "message_update" and d.get("type") == "text_delta":
-                    yield d.get("delta", "")
-            if proc.wait(timeout=self.timeout) != 0:
-                raise StepFailed(f"pi exited {proc.returncode}: {proc.stderr.read()[-500:] if proc.stderr else ''}")
+            timer = threading.Timer(self.timeout, proc.kill)
+            timer.start()
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    try:
+                        ev = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    yield line, (ev.get("assistantMessageEvent") or {}) if ev.get("type") == "message_update" else {}
+                code = proc.wait()
+            finally:
+                timer.cancel()
+            if code != 0:
+                raise StepFailed(f"pi exited {code}: {proc.stderr.read()[-500:] if proc.stderr else ''}")
 
 
 def assistant_text(jsonl: str) -> str:

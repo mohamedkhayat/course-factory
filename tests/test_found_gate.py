@@ -136,3 +136,64 @@ def test_null_role_or_exclusion_is_rejected_but_unpairing_works(client, material
     assert client.patch(f"/api/courses/{cid}/sources/{td['id']}", json={"excluded": None}).status_code == 422
     assert client.patch(f"/api/courses/{cid}/sources/{td['id']}", json={"role": None}).status_code == 422
     assert client.patch(f"/api/courses/{cid}/sources/{td['id']}", json={"paired_with": None}).json()["paired_with"] is None
+
+
+def test_status_shows_the_pipeline_with_the_current_step(client, material):
+    cid = start(client, material)
+    pipe = client.get(f"/api/courses/{cid}/run").json()["pipeline"]
+    states = {p["name"]: p["state"] for p in pipe}
+    assert [p["name"] for p in pipe][:4] == ["import_sources", "read_pages", "propose_roles", "found_gate"]
+    assert states["read_pages"] == "done" and states["found_gate"] == "current" and states["build_labs"] == "waiting"
+    assert all(p["label"] for p in pipe) and [p["gate"] for p in pipe].count(True) == 3
+
+
+def test_newest_traces_feed_the_run_screen(client, material):
+    cid = start(client, material)
+    feed = client.get(f"/api/courses/{cid}/traces?limit=2").json()
+    assert [t["step"] for t in feed] == ["propose_roles", "read_page"]  # newest first
+
+
+def test_a_running_model_step_is_visible_while_it_thinks(client, material, model):
+    from course_factory.pi_step import report
+    seen = []
+
+    def reading(prompt, files):
+        report("thinking", "Je lis la page")
+        report("output", '{"text": "')
+        seen.append(client.get("/api/courses/1/run").json()["activity"])
+        return {"text": "ok", "readable": True}
+
+    model.handlers["read_page"] = reading
+    cid = start(client, material)
+    a = seen[0]
+    assert a["step"] == "read_page" and a["inputs"]["page"] == "1" and a["inputs"]["source"]
+    assert a["thinking"] == "Je lis la page" and a["output"] == '{"text": "' and a["elapsed"] >= 0
+    assert client.get(f"/api/courses/{cid}/run").json()["activity"] is None  # nothing runs at the gate
+
+
+def picked(material, top="optimisation"):
+    """What a folder picker sends: each file with its path relative to the picked folder's parent."""
+    return [("files", (f"{top}/{p.relative_to(material).as_posix()}", p.read_bytes(), "application/pdf"))
+            for p in sorted(material.rglob("*")) if p.is_file()]
+
+
+def test_a_picked_folder_is_uploaded_and_imported(client, material):
+    r = client.post("/api/courses/upload", data={"name": "Optimisation"}, files=picked(material))
+    assert r.status_code == 201, r.text
+    cid = r.json()["id"]
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
+    names = sorted(s["name"] for s in client.get(f"/api/courses/{cid}/found").json()["sources"])
+    assert names == sorted(p.relative_to(material).as_posix() for p in material.rglob("*") if p.is_file())
+
+
+def test_uploaded_paths_cannot_escape_the_course(client, material):
+    bad = [("files", ("optimisation/../../evil.pdf", b"%PDF", "application/pdf"))]
+    assert client.post("/api/courses/upload", data={"name": "x"}, files=bad).status_code == 422
+    assert client.post("/api/courses/upload", data={"name": "x"}, files=[]).status_code == 422
+
+
+def test_the_course_list_summarises_each_course_for_the_home_hub(client, material):
+    cid = start(client, material)
+    c = next(c for c in client.get("/api/courses").json() if c["id"] == cid)
+    assert c["run"]["gate"] == "found" and c["run"]["pages_read"] == c["run"]["pages_total"] == 4
+    assert c["chapters_published"] == c["chapters_total"] == 0 and c["cards_due"] == 0 and c["exam_countdown_days"] is None

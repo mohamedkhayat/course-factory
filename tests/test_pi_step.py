@@ -78,3 +78,31 @@ def test_latex_backslashes_the_model_forgot_to_escape_survive(conn, tmp_path):
     raw = r'{"text": "$\frac{a}{b} + \sum x_i + \nabla f \cdot \theta \\alpha$\nNext\tcol \u00e9", "readable": true}'
     r = run_pi_step(conn, answers(raw), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
     assert r.text == "$\\frac{a}{b} + \\sum x_i + \\nabla f \\cdot \\theta \\alpha$\nNext\tcol é"
+
+
+def test_pi_backend_streams_thinking_and_output_and_returns_the_answer(tmp_path, monkeypatch):
+    from course_factory import pi_step
+    from course_factory.pi_step import PiBackend
+    events = [{"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "delta": "hmm"}},
+              {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "{\"a\""}},
+              {"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "{\"a\": 1}"}]}}]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "pi").write_text("#!/bin/sh\ncat <<'X'\n" + "\n".join(json.dumps(e) for e in events) + "\nX\n")
+    (bin_dir / "pi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    seen = []
+    monkeypatch.setattr(pi_step, "report", lambda kind, delta: seen.append((kind, delta)))
+    assert PiBackend()("read_page", "p", [], tmp_path) == '{"a": 1}'
+    assert seen == [("thinking", "hmm"), ("output", '{"a"')]
+
+
+def test_pi_backend_is_killed_after_its_timeout(tmp_path, monkeypatch):
+    from course_factory.pi_step import PiBackend
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "pi").write_text("#!/bin/sh\nexec sleep 30\n")
+    (bin_dir / "pi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    with pytest.raises(StepFailed):
+        PiBackend(timeout=1)("read_page", "p", [], tmp_path)

@@ -43,20 +43,14 @@ def build_graph(ctx: Ctx, langgraph_db: sqlite3.Connection):
             interrupt({"gate": "chapter_review"})
         return {}
 
-    steps = [
-        ("import_sources", node(ingest.import_sources)),
-        ("read_pages", node(ingest.read_pages)),
-        ("propose_roles", node(ingest.propose_roles)),
-        ("found_gate", found_gate),
-        ("index_passages", node(lambda c, cid: search.index_course(c.db, c.search, cid))),
-        ("propose_outline", node(outline.propose_outline)),
-        ("outline_gate", outline_gate),
-        ("rebuild_past_papers", node(exams.rebuild_past_papers)),  # first: Exam Weight orders Cram generation
-        ("generate_chapters", node(chapters.generate_chapters)),
-        ("build_mock_exams", node(exams.build_mock_exams)),
-        ("build_labs", node(labs.build_labs)),
-        ("chapter_review_gate", chapter_review_gate),  # last, so the GPU keeps working while the owner reviews
-    ]
+    fns = {"import_sources": node(ingest.import_sources), "read_pages": node(ingest.read_pages),
+           "propose_roles": node(ingest.propose_roles), "found_gate": found_gate,
+           "index_passages": node(lambda c, cid: search.index_course(c.db, c.search, cid)),
+           "propose_outline": node(outline.propose_outline), "outline_gate": outline_gate,
+           "rebuild_past_papers": node(exams.rebuild_past_papers), "generate_chapters": node(chapters.generate_chapters),
+           "build_mock_exams": node(exams.build_mock_exams), "build_labs": node(labs.build_labs),
+           "chapter_review_gate": chapter_review_gate}
+    steps = [(name, fns[name]) for name, _ in PIPELINE]
     g = StateGraph(RunState)
     for name, fn in steps:
         g.add_node(name, fn)
@@ -65,6 +59,34 @@ def build_graph(ctx: Ctx, langgraph_db: sqlite3.Connection):
         g.add_edge(a, b)
     g.add_edge(steps[-1][0], END)
     return g.compile(checkpointer=SqliteSaver(langgraph_db))
+
+
+PIPELINE = [  # the Run's steps in order, with what the Run screen calls them
+    ("import_sources", "Copy the files"),
+    ("read_pages", "Read every page"),
+    ("propose_roles", "Propose Roles and Pairings"),
+    ("found_gate", "Check what was found"),
+    ("index_passages", "Index for search"),
+    ("propose_outline", "Propose the outline"),
+    ("outline_gate", "Fix the outline"),
+    ("rebuild_past_papers", "Rebuild past papers"),  # before Chapters: Exam Weight orders Cram generation
+    ("generate_chapters", "Write the Chapters"),
+    ("build_mock_exams", "Write Mock exams"),
+    ("build_labs", "Build Labs"),
+    ("chapter_review_gate", "Review the Chapters"),  # last, so the GPU keeps working while the owner reviews
+]
+
+
+def pipeline(graph, course_id: int) -> list[dict]:
+    """Each step of the Run with its state: done, current or waiting."""
+    snap = graph.get_state(thread(course_id))
+    names = [n for n, _ in PIPELINE]
+    if snap.next:
+        at = names.index(snap.next[0])
+    else:
+        at = len(names) if snap.values else -1  # finished, or not started
+    return [{"name": n, "label": label, "gate": n.endswith("_gate"),
+             "state": "done" if i < at else "current" if i == at else "waiting"} for i, (n, label) in enumerate(PIPELINE)]
 
 
 def thread(course_id: int) -> RunnableConfig:
