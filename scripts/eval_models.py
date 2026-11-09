@@ -39,7 +39,8 @@ def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
         try:
             draft = run_pi_step(db, ctx.backend, "write_section", {
                 "goal": goal, "priority": sec["priority"], "chapter": sec["chapter"], "section": sec["title"],
-                "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE}, SectionDraft, work, course_id=cid)
+                "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE,
+                "subject": db.execute("SELECT subject FROM courses WHERE id=?", (cid,)).fetchone()["subject"]}, SectionDraft, work, course_id=cid)
         except StepFailed:
             row["sections failed"] += 1
             continue

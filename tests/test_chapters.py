@@ -272,3 +272,16 @@ def test_run_shows_each_chapter_with_its_sections_written(client, material, mode
     assert (after["sections_done"], after["sections_total"], after["fraction"]) == (3, 3, 1)
     ch = {c["title"]: c for c in after["chapters"]}["Méthodes de descente"]
     assert (ch["done"], ch["total"]) == (2, 2) and ch["sections"][0]["blocks"] > 0 and ch["sections"][0]["state"] == "done"
+
+
+def test_a_practical_subject_is_written_as_tutorials(client, material, model):
+    plan = model.handlers["propose_outline"]
+    model.handlers["propose_outline"] = lambda prompt, files: {**plan(prompt, files), "kind": "practical"}
+    generate(client, material, model)
+    prompts = [p for step, p in model.prompts if step == "write_section"]
+    assert prompts and all("Subject: practical" in p for p in prompts)
+
+
+def test_the_subject_defaults_to_mixed_when_the_outline_does_not_say(client, material, model):
+    generate(client, material, model)
+    assert all("Subject: mixed" in p for step, p in model.prompts if step == "write_section")

@@ -2,6 +2,8 @@
 
 import json
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from .context import Ctx, Priority
@@ -26,6 +28,7 @@ class ChapterPlan(BaseModel):
 
 
 class OutlinePlan(BaseModel):
+    kind: Literal["theoretical", "practical", "mixed"] = "mixed"
     chapters: list[ChapterPlan] = Field(min_length=1)
 
 
@@ -39,6 +42,7 @@ def propose_outline(ctx: Ctx, cid: int) -> None:
         sources.append({"name": s["name"], "role": s["role"], "pages": heads})
     plan = run_pi_step(db, ctx.backend, "propose_outline", {"goal": goal, "sources": sources}, OutlinePlan,
                        ctx.course_dir(cid), course_id=cid)
+    db.execute("UPDATE courses SET subject=? WHERE id=?", (plan.kind, cid))
     save_outline(ctx, cid, plan)
 
 

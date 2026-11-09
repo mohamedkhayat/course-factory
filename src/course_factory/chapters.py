@@ -90,7 +90,7 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
     db = ctx.db
     db.execute("UPDATE chapters SET status='generating' WHERE id=?", (chid,))
     chapter = db.execute("SELECT * FROM chapters WHERE id=?", (chid,)).fetchone()
-    goal = db.execute("SELECT goal FROM courses WHERE id=?", (cid,)).fetchone()["goal"]
+    goal, subject = db.execute("SELECT goal, subject FROM courses WHERE id=?", (cid,)).fetchone()
     sections = db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)).fetchall()
     pending_sections = []
     for sec in sections:
@@ -108,7 +108,7 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         draft = run_pi_step(db, ctx.backend, "write_section", {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-            "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE},
+            "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE, "subject": subject},
             SectionDraft, ctx.course_dir(cid), course_id=cid)
         return sec, pages, draft, last_trace_id()
 

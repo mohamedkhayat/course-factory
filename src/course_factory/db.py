@@ -53,6 +53,7 @@ def connect(path: Path) -> sqlite3.Connection:
     db.executescript(OUTLINE_SCHEMA)
     for table, column in [("questions", "chapter_id INTEGER"), ("traces", "duration_ms INTEGER"),
                           ("traces", "checks TEXT"), ("traces", "model TEXT"),
+                          ("courses", "subject TEXT NOT NULL DEFAULT 'mixed'"),
                           ("sections", "generation_status TEXT NOT NULL DEFAULT 'planned'")]:
         try:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
