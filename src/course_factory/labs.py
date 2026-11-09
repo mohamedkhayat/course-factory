@@ -79,25 +79,25 @@ def lab_dirs(ctx: Ctx, cid: int, lab_id: int | str) -> tuple[Path, Path]:
 
 
 def build_labs(ctx: Ctx, cid: int) -> None:
-    """One Lab per TP Source, built once. Steps whose Check can't be proven after REPAIRS are left out and noted."""
+    """One Lab per Source with Role 'lab', built once. Steps whose Check can't be proven after REPAIRS are left out and noted."""
     db = ctx.db
-    tps = db.execute("SELECT * FROM sources WHERE course_id=? AND role='lab' AND excluded=0 ORDER BY name", (cid,)).fetchall()
-    if not tps:
+    lab_sources = db.execute("SELECT * FROM sources WHERE course_id=? AND role='lab' AND excluded=0 ORDER BY name", (cid,)).fetchall()
+    if not lab_sources:
         return
     launcher = ctx.labs_launcher(cid)
     data_files = [r["name"] for r in db.execute("SELECT name FROM sources WHERE course_id=? AND role='data' AND excluded=0", (cid,))]
     titles = [r["title"] for r in db.execute("SELECT title FROM chapters WHERE course_id=? ORDER BY position", (cid,))]
-    for tp in tps:
-        if db.execute("SELECT 1 FROM labs WHERE source_id=?", (tp["id"],)).fetchone():
+    for src in lab_sources:
+        if db.execute("SELECT 1 FROM labs WHERE source_id=?", (src["id"],)).fetchone():
             continue
-        pages = page_texts(ctx, cid, [{"source": tp["name"], "page": n} for n in range(1, tp["pages"] + 1)])
-        if tp["path"].endswith(".ipynb"):  # a notebook TP: its cells are the text
-            nb = nbformat.read(tp["path"], as_version=4)
-            pages = [{"source": tp["name"], "page": 0, "text": "\n\n".join(f"[{c.cell_type}]\n{c.source}" for c in nb.cells)}]
-        plan = run_pi_step(db, ctx.backend, "build_lab", {"tp": pages, "data_files": data_files, "chapters": titles,
+        pages = page_texts(ctx, cid, [{"source": src["name"], "page": n} for n in range(1, src["pages"] + 1)])
+        if src["path"].endswith(".ipynb"):  # a notebook: its cells are the text
+            nb = nbformat.read(src["path"], as_version=4)
+            pages = [{"source": src["name"], "page": 0, "text": "\n\n".join(f"[{c.cell_type}]\n{c.source}" for c in nb.cells)}]
+        plan = run_pi_step(db, ctx.backend, "build_lab", {"lab_source": pages, "data_files": data_files, "chapters": titles,
                                                           "language": LANGUAGE_RULE}, LabPlan, ctx.course_dir(cid), course_id=cid)
-        workdir, data_dir = lab_dirs(ctx, cid, f"proof-{tp['id']}")
-        key = f"proof-{cid}-{tp['id']}"
+        workdir, data_dir = lab_dirs(ctx, cid, f"proof-{src['id']}")
+        key = f"proof-{cid}-{src['id']}"
         kernel = ctx.kernels.get(key, launcher, workdir, data_dir)
         try:
             steps, flags, setup = [], [], []
@@ -117,12 +117,12 @@ def build_labs(ctx: Ctx, cid: int) -> None:
                     flags.append({"step": n, "statement": step.statement, "errors": errors})
                 else:
                     steps.append(step)
-                setup.append(step.solution)  # later Steps build on this one's reference state
+                    setup.append(step.solution)  # later Steps build on this one's reference state; a dropped Step's never runs
         finally:
             ctx.kernels.stop(key)
         ids = {r["title"]: r["id"] for r in db.execute("SELECT id, title FROM chapters WHERE course_id=?", (cid,))}
         lab_id = db.execute("INSERT INTO labs (course_id, source_id, title, intro, chapters, flags) VALUES (?,?,?,?,?,?)",
-                            (cid, tp["id"], plan.title, plan.intro, json.dumps([ids[t] for t in plan.chapters if t in ids]),
+                            (cid, src["id"], plan.title, plan.intro, json.dumps([ids[t] for t in plan.chapters if t in ids]),
                              json.dumps(flags, ensure_ascii=False))).lastrowid
         for i, s in enumerate(steps):
             db.execute("INSERT INTO lab_steps (lab_id, position, statement, starter, check_code, hints, solution) VALUES (?,?,?,?,?,?,?)",

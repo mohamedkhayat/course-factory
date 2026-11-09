@@ -31,7 +31,7 @@ def run(client, cid, lab_id, code):
 
 def test_checks_are_proven_repaired_or_left_out(lab, model):
     cid, l = lab
-    assert l["title"].startswith("TP1") and [s["statement"][:8] for s in l["steps"]] == ["Définir ", "Lire dat"]
+    assert l["title"].startswith("TP1") and [s["statement"][:8] for s in l["steps"]] == ["Définir ", "Lire dat", "Doubler "]
     assert all(s["solution"] is None and s["hints"] == [] for s in l["steps"])  # locked until passed or given up
     [flag] = l["flags"]  # the Step whose Solution fails its own Check is dropped and noted
     assert flag["step"] == 3 and any("fails the Solution" in e for e in flag["errors"])
@@ -41,7 +41,7 @@ def test_checks_are_proven_repaired_or_left_out(lab, model):
 
 def test_hints_give_up_and_check_in_learner_kernel(client, lab):
     cid, l = lab
-    first, second = l["steps"]
+    first, second, _ = l["steps"]
     base = f"/api/courses/{cid}/labs/{l['id']}/steps"
     assert client.post(f"{base}/{first['id']}/hint").json()["hints"] == ["Use **."]
     assert client.post(f"{base}/{first['id']}/hint").json()["hints_left"] == 0
@@ -82,6 +82,6 @@ def test_notebook_tp_is_read_from_its_cells(client, material, model):
     nbformat.write(nb, material / "TP2.ipynb")
     cid = generate(client, material, model)
     assert client.get(f"/api/courses/{cid}/run").json()["status"] == "done"
-    tp = next(p for step, p in model.prompts if step == "build_lab").split("TP:", 1)[1]
-    assert "gradient à pas fixe" in tp and "x0 = 1.0" in tp
+    lab_source = next(p for step, p in model.prompts if step == "build_lab").split("LAB SOURCE:", 1)[1]
+    assert "gradient à pas fixe" in lab_source and "x0 = 1.0" in lab_source
     assert len(client.get(f"/api/courses/{cid}/labs").json()) == 1

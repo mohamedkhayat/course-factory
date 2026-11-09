@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS pairing_codes (
   id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL,
   claimed_at REAL, revoked INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS paired_clients (
+CREATE TABLE IF NOT EXISTS paired_devices (
   id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at REAL NOT NULL,
   last_seen_at REAL NOT NULL, revoked_at REAL
 );
@@ -97,10 +97,10 @@ def token_of(headers: dict) -> str | None:
 def authenticate(db, token: str | None) -> dict | None:
     if not token:
         return None
-    row = db.execute("SELECT id, label FROM paired_clients WHERE token_hash=? AND revoked_at IS NULL", (_hash(token),)).fetchone()
+    row = db.execute("SELECT id, label FROM paired_devices WHERE token_hash=? AND revoked_at IS NULL", (_hash(token),)).fetchone()
     if row is None:
         return None
-    db.execute("UPDATE paired_clients SET last_seen_at=? WHERE id=?", (time.time(), row["id"]))
+    db.execute("UPDATE paired_devices SET last_seen_at=? WHERE id=?", (time.time(), row["id"]))
     return {"id": row["id"], "label": row["label"]}
 
 
@@ -134,28 +134,28 @@ def router(db) -> APIRouter:
             db.execute("UPDATE pairing_codes SET revoked=1 WHERE claimed_at IS NULL AND failed>=?", (MAX_FAILED_CLAIMS,))
             raise HTTPException(400, "the code is wrong or expired")
         token = secrets.token_urlsafe(32)
-        client_id = uuid.uuid4().hex
+        device_id = uuid.uuid4().hex
         label = body.label.strip()[:100] or "Tablet"
         db.execute("UPDATE pairing_codes SET claimed_at=? WHERE id=?", (now, row["id"]))
-        db.execute("INSERT INTO paired_clients (id, label, token_hash, created_at, last_seen_at) VALUES (?,?,?,?,?)",
-                   (client_id, label, _hash(token), now, now))
+        db.execute("INSERT INTO paired_devices (id, label, token_hash, created_at, last_seen_at) VALUES (?,?,?,?,?)",
+                   (device_id, label, _hash(token), now, now))
         response.set_cookie(COOKIE, token, httponly=True, samesite="strict", max_age=10 * 365 * 86400)
-        return {"client_id": client_id, "label": label}
+        return {"device_id": device_id, "label": label}
 
     @r.get("/api/pairing/me")
     def me(request: Request):
         return request.state.device
 
-    @r.get("/api/pairing/clients")
-    def clients(request: Request):
+    @r.get("/api/pairing/devices")
+    def devices(request: Request):
         host_only(request)
-        return [dict(x) for x in db.execute("SELECT id, label, created_at, last_seen_at, revoked_at FROM paired_clients ORDER BY created_at DESC")]
+        return [dict(x) for x in db.execute("SELECT id, label, created_at, last_seen_at, revoked_at FROM paired_devices ORDER BY created_at DESC")]
 
-    @r.post("/api/pairing/clients/{client_id}/revoke")
-    def revoke(client_id: str, request: Request):
-        if request.state.device["id"] not in ("host", client_id):
+    @r.post("/api/pairing/devices/{device_id}/revoke")
+    def revoke(device_id: str, request: Request):
+        if request.state.device["id"] not in ("host", device_id):
             raise HTTPException(403, "only the host can revoke another device")
-        if not db.execute("UPDATE paired_clients SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (time.time(), client_id)).rowcount:
+        if not db.execute("UPDATE paired_devices SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (time.time(), device_id)).rowcount:
             raise HTTPException(404, "no such paired device")
         return {"ok": True}
 

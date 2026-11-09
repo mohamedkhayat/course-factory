@@ -232,7 +232,7 @@ export function CustomComponent({ block, comp, height = 160 }: { block: { data: 
   const style = getComputedStyle(document.documentElement);
   const doc = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
 <style>:root{color-scheme:${style.colorScheme || "light"}}body{margin:0;font:16px ${style.getPropertyValue("--font-read")};color:${style.getPropertyValue("--foreground")};background:transparent}</style><div id=r></div>
-<script>${code.replaceAll("</script", "<\\/script")}</script><script>CF.render(document.getElementById("r"),${JSON.stringify(block.data).replaceAll("<", "\\u003c")},function(){});
+<script>${code.replace(/<\/script/gi, "<\\/script")}</script><script>CF.render(document.getElementById("r"),${JSON.stringify(block.data).replaceAll("<", "\\u003c")},function(){});
 new ResizeObserver(function(){parent.postMessage({height:document.body.scrollHeight},"*")}).observe(document.body);</script>`;
   return <iframe ref={ref} title={block.component} sandbox="allow-scripts" srcDoc={doc} className="w-full border-0" style={{ height: h }} />;
 }

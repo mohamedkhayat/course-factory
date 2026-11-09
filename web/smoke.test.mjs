@@ -66,6 +66,15 @@ test("reader opens a Citation's source page", async () => {
   assert.deepEqual(p.errors, []);
 });
 
+test("search finds a page of the material", async () => {
+  const p = await page();
+  await p.goto(`${BASE}/c/1`);
+  await p.getByLabel("Search the course material").fill("convexe");
+  await p.getByRole("button", { name: "Search", exact: true }).click();
+  await p.getByRole("search").locator("xpath=..").getByText(/\.pdf, p\. \d/).first().waitFor();
+  assert.deepEqual(p.errors, []);
+});
+
 test("quiz stepper checks one question at a time", async () => {
   const p = await page();
   await p.goto(`${BASE}/c/1/read`);

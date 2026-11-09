@@ -24,7 +24,9 @@ LAB = {"title": "TP1 : descente de gradient", "intro": "On implémente la descen
             "solution": "import csv\ny = sum(int(r['x']) for r in csv.DictReader(open('data/data.csv'))) + 2",
             "check": "assert True", "hints": [], "wrong": ["y = 2"]},  # too weak: repaired
            {"statement": "Impossible.", "starter": "z = None", "solution": "z = 1/0", "check": "assert z == 1", "hints": [],
-            "wrong": ["z = 2"]}]}  # the Solution itself fails: left out
+            "wrong": ["z = 2"]},  # the Solution itself fails: left out
+           {"statement": "Doubler y.", "starter": "w = None", "solution": "w = 2 * y", "check": "assert w == 2 * y",
+            "hints": [], "wrong": ["w = y"]}]}  # proven after the dropped Step: its broken Solution must not run first
 
 
 class FakeModel:

@@ -269,11 +269,14 @@ def router(ctx: Ctx) -> APIRouter:
             bad = [e for s in json.loads(c["samples"]) for e in schema_errors(body.schema_, s)]
             if bad:
                 raise HTTPException(422, {"gates": [], "errors": bad})
-            db.execute("UPDATE components SET schema=? WHERE id=?", (json.dumps(body.schema_, ensure_ascii=False), comp_id))
+        result = None
         if body.code is not None:
             result = gate(body.code, json.loads(c["samples"]), comp_dir(ctx, c["name"]) / "candidate")
             if not result["ok"]:
                 raise HTTPException(422, {"gates": result["gates"]})
+        if body.schema_ is not None:  # written only once the code (if any) has passed
+            db.execute("UPDATE components SET schema=? WHERE id=?", (json.dumps(body.schema_, ensure_ascii=False), comp_id))
+        if body.code is not None and result is not None:
             for f in ("component.js", "screenshot.png"):
                 (comp_dir(ctx, c["name"]) / "candidate" / f).replace(comp_dir(ctx, c["name"]) / f)
             db.execute("UPDATE components SET code=?, gates=? WHERE id=?", (body.code, json.dumps(result["gates"]), comp_id))

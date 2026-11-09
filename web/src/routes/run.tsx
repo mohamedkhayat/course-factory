@@ -5,7 +5,8 @@ import { ArrowDown, ArrowUp, BookOpen, ClipboardList, FlaskConical, Layers, Time
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { get, readEvents, send, type Course } from "@/lib/api";
+import { PageViewer } from "@/components/blocks";
+import { get, readEvents, send, type Citation, type Course } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
 
@@ -134,7 +135,7 @@ function OutlineGate({ cid }: { cid: number }) {
             <div className="flex flex-wrap items-center gap-2">
               <span className="tabular w-6 text-sm text-muted-foreground">{i + 1}</span>
               <Input value={c.title} onChange={(e) => set(i, { title: e.target.value })} className="h-8 min-w-48 flex-1 font-medium" aria-label={`Chapter ${i + 1} title`} />
-              <span className="tabular text-xs text-muted-foreground" title="Questions in past exams">{c.exam_hits} exam hits</span>
+              <span className="tabular text-xs text-muted-foreground" title="How often past exams test this Chapter">{c.exam_hits} exam hits · weight {Math.round(c.exam_weight * 100)}%</span>
               <div className="flex rounded-md border border-border" role="radiogroup" aria-label="Priority">
                 {PRIORITIES.map((p) => (
                   <button key={p} type="button" role="radio" aria-checked={c.priority === p} onClick={() => set(i, { priority: p })}
@@ -164,6 +165,60 @@ const STUDY = [
   ["cards", "Cards", Layers, "Spaced review of what you got wrong"], ["labs", "Labs", FlaskConical, "Notebook steps with Checks"],
   ["focus", "Focus", Timer, "Timer, streak and daily goal"],
 ] as const;
+
+/** Search the Course's material; a hit opens its page. */
+function Search({ cid }: { cid: number }) {
+  const [q, setQ] = useState(""), [query, setQuery] = useState("");
+  const [cite, setCite] = useState<Citation | null>(null);
+  const { data: hits, isFetching } = useQuery({ queryKey: ["search", cid, query], enabled: !!query,
+    queryFn: () => get<{ source: string; page: number; text: string }[]>(`/api/courses/${cid}/search?q=${encodeURIComponent(query)}`) });
+  return (
+    <section className="mt-10">
+      <form role="search" onSubmit={(e) => { e.preventDefault(); setQuery(q.trim()); }} className="flex gap-2">
+        <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the course material, e.g. condition d'Armijo" aria-label="Search the course material" />
+        <Button type="submit" variant="outline" disabled={!q.trim()}>Search</Button>
+      </form>
+      {isFetching && <p className="mt-2 text-sm text-muted-foreground">Searching…</p>}
+      {hits && !hits.length && <p className="mt-2 text-sm text-muted-foreground">Nothing found.</p>}
+      <ul className="mt-3 space-y-3">
+        {hits?.map((h, i) => (
+          <li key={i}><button type="button" onClick={() => setCite(h)} className="block text-left hover:text-primary">
+            <span className="text-xs text-muted-foreground">{h.source}, p. {h.page}</span>
+            <span className="line-clamp-2 block text-sm">{h.text}</span></button></li>
+        ))}
+      </ul>
+      <PageViewer cid={cid} cite={cite} onClose={() => setCite(null)} />
+    </section>
+  );
+}
+
+/** Switch the Goal later, and add a PDF of your own notes as a Source. */
+function Settings({ cid, course }: { cid: number; course: Course }) {
+  const qc = useQueryClient();
+  const [date, setDate] = useState(course.exam_date ?? "");
+  const goal = useMutation({
+    mutationFn: (g: "cram" | "deep") => send(`/api/courses/${cid}`, { goal: g, exam_date: date || null }, "PATCH"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["course", String(cid)] }),
+  });
+  const upload = useMutation({ mutationFn: (f: File) => { const d = new FormData(); d.append("file", f); return send(`/api/courses/${cid}/sources`, d); } });
+  return (
+    <section className="mt-10 space-y-4 border-t border-border pt-6 text-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <span>Goal: <span className="font-medium">{course.goal === "cram" ? "cram for an exam" : "understand deeply"}</span></span>
+        <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-8 w-40" aria-label="Exam date" />
+        <Button size="sm" variant="outline" disabled={goal.isPending || (course.goal === "deep" && !date)}
+                onClick={() => goal.mutate(course.goal === "cram" ? "deep" : "cram")}>{course.goal === "cram" ? "Switch to deep" : "Switch to cram"}</Button>
+      </div>
+      {goal.error && <p className="text-destructive">{errText(goal.error)}</p>}
+      <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input px-3 py-1.5 hover:bg-accent">
+        Add my notes (PDF)
+        <input type="file" accept="application/pdf" className="sr-only" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }} />
+      </label>
+      {upload.isSuccess && <span className="ml-3 text-ok">Added. It's being read and indexed.</span>}
+      {upload.error && <p className="text-destructive">{errText(upload.error)}</p>}
+    </section>
+  );
+}
 
 export function Run() {
   const cid = useCid();
@@ -200,6 +255,8 @@ export function Run() {
           ))}
         </ul>
       )}
+      {run.status === "done" && <Search cid={cid} />}
+      {run.status === "done" && course && <Settings cid={cid} course={course} />}
     </Page>
   );
 }

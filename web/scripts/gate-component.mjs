@@ -73,7 +73,7 @@ try {
 // 4. render each sample in a sandboxed iframe whose CSP allows no network at all
 const samples = JSON.parse(fs.readFileSync(samplesFile, "utf8"));
 const csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:";
-const code = fs.readFileSync(bundle, "utf8").replaceAll("</script", "<\\/script");
+const code = fs.readFileSync(bundle, "utf8").replace(/<\/script/gi, "<\\/script");
 const doc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}">
 <style>body{font:15px system-ui;margin:12px}.cf-sample{border-bottom:1px dashed #ccc;padding:8px 0}</style></head><body>
 <script>const errs=[];addEventListener("error",e=>errs.push("crash: "+e.message));

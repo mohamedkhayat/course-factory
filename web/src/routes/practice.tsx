@@ -12,6 +12,28 @@ type Card = { id: number; front: string; back: string; due: string; next_interva
 const RATINGS = ["À revoir", "Difficile", "Bien", "Facile"];
 const span = (s: number) => (s < 3600 ? `${Math.max(1, Math.round(s / 60))} min` : s < 86400 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} j`);
 
+type Mistake = { block_id: number; question: number; prompt: string; options: string[]; chosen: number[]; correct: number[]; explanation: string };
+
+function Mistakes({ cid }: { cid: number }) {
+  const { data = [] } = useQuery({ queryKey: ["mistakes", cid], queryFn: () => get<Mistake[]>(`/api/courses/${cid}/mistakes`) });
+  if (!data.length) return null;
+  return (
+    <section className="mt-12">
+      <h2 className="mb-3 font-medium">Questions you got wrong</h2>
+      <ul className="divide-y divide-border border-y border-border">
+        {data.map((m) => (
+          <li key={`${m.block_id}-${m.question}`} className="py-4">
+            <Md>{m.prompt}</Md>
+            <p className="mt-1 text-sm"><span className="text-destructive">You chose: {m.chosen.map((i) => m.options[i]).join(", ")}</span>
+              <span className="mx-2 text-muted-foreground">·</span><span className="text-ok">Answer: {m.correct.map((i) => m.options[i]).join(", ")}</span></p>
+            <div className="mt-1 text-sm text-muted-foreground"><Md>{m.explanation}</Md></div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function Cards() {
   const cid = useCid();
   const qc = useQueryClient();
@@ -46,6 +68,7 @@ export function Cards() {
           </div>
         </div>
       )}
+      <Mistakes cid={cid} />
     </Page>
   );
 }
@@ -70,13 +93,15 @@ export function Focus() {
   const [work, setWork] = useState(25), [brk, setBrk] = useState(5);
   const [session, setSession] = useState<{ id: number; endsAt: number; phase: "work" | "break" } | null>(null);
   const [now, setNow] = useState(Date.now());
-  const active = useRef(0);
+  const active = useRef(0), reported = useRef(0);
+  const report = () => { const d = active.current - reported.current; reported.current = active.current;
+    return send(`/api/focus/${session!.id}/tick`, { active_seconds: d }).catch(() => {}); }; // the server adds deltas
   useEffect(() => {
     if (!session) return;
     const t = setInterval(() => {
       setNow(Date.now());
       if (session.phase === "work" && document.visibilityState === "visible") active.current += 1;
-      if (active.current % 30 === 0) send(`/api/focus/${session.id}/tick`, { active_seconds: active.current }).catch(() => {});
+      if (active.current - reported.current >= 30) report();
       if (Date.now() >= session.endsAt) {
         if (session.phase === "work") setSession({ ...session, phase: "break", endsAt: Date.now() + brk * 60_000 });
         else stop();
@@ -86,12 +111,12 @@ export function Focus() {
   }); // re-armed each render so it sees the latest session
   const start = async () => {
     const s = await send<{ id: number }>("/api/focus", { course_id: cid, work_min: work, break_min: brk });
-    active.current = 0;
+    active.current = 0; reported.current = 0;
     setSession({ id: s.id, phase: "work", endsAt: Date.now() + work * 60_000 });
   };
   const stop = async () => {
     if (!session) return;
-    await send(`/api/focus/${session.id}/tick`, { active_seconds: active.current }).catch(() => {});
+    await report();
     await send(`/api/focus/${session.id}/end`).catch(() => {});
     setSession(null);
     qc.invalidateQueries({ queryKey: ["stats", cid] });

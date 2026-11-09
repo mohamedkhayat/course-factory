@@ -17,4 +17,4 @@ Course Chapters: {{chapters}}
 Data files: {{data_files}}
 
 The TP:
-TP:{{tp}}
+LAB SOURCE:{{lab_source}}

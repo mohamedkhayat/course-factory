@@ -29,9 +29,9 @@ def test_tablet_needs_pairing_with_a_one_time_code(client, tablet):
     device = tablet.post("/api/pairing/claim", json={"code": code, "label": "Galaxy Tab"}).json()
     assert tablet.get("/api/components").status_code == 200 and tablet.get("/api/pairing/me").json()["label"] == "Galaxy Tab"
     assert tablet.post("/api/pairing/claim", json={"code": code}).status_code == 400  # one-time
-    assert tablet.get("/api/pairing/clients").status_code == 403
-    assert [c["label"] for c in client.get("/api/pairing/clients").json()] == ["Galaxy Tab"]
-    client.post(f"/api/pairing/clients/{device['client_id']}/revoke")
+    assert tablet.get("/api/pairing/devices").status_code == 403
+    assert [c["label"] for c in client.get("/api/pairing/devices").json()] == ["Galaxy Tab"]
+    client.post(f"/api/pairing/devices/{device['device_id']}/revoke")
     assert tablet.get("/api/components").status_code == 401
 
 
