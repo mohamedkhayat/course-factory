@@ -238,6 +238,8 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
     blocks, errors = [], []
     for item in raw:
         errs: list[str] = []
+        while isinstance(item, dict) and "component" not in item and isinstance(item.get("block"), dict):
+            item = item["block"]  # the model sometimes wraps the Block in {"block": ...}
         try:
             draft = BlockDraft.model_validate(item | {"data": heal_text(item.get("data") or {})} if isinstance(item, dict) else item)
         except Exception as e:

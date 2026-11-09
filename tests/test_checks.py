@@ -81,3 +81,9 @@ def test_diagram_labels_starting_like_a_markdown_list_are_escaped():
     src = 'flowchart TD\n  A["1. start"] -->|"+ J convexe"| B["- end"]'
     assert heal("diagram", {"mermaid": src, "caption": "c"})["mermaid"] == \
         'flowchart TD\n  A["1#46; start"] -->|"#43; J convexe"| B["#45; end"]'
+
+
+def test_a_block_the_model_wrapped_in_another_object_is_unwrapped():
+    inner = example({"op": "equal", "expr": "2 + 1", "vars": [], "expected": "3"})
+    (fixed,), (errors,) = check_blocks([{"block": inner, "data": {}}], {})
+    assert errors == [] and fixed["component"] == "worked_example"
