@@ -13,6 +13,7 @@ PAGES:{{pages}}
 The errors to fix:
 ERRORS:{{errors}}
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object: {"block": {"component": "...", "data": {...}, "citations": [...], "origin": "..."}}
 
 The Block:

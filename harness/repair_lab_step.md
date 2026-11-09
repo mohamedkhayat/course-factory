@@ -6,6 +6,7 @@ SETUP:{{setup}}
 What went wrong:
 ERRORS:{{errors}}
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object: {"step": {"statement": "...", "starter": "...", "solution": "...", "check": "...", "hints": ["..."], "wrong": ["..."]}}
 
 The Step:

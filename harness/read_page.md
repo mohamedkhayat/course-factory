@@ -4,6 +4,7 @@ Read the attached page image and transcribe it faithfully in its original langua
 
 If the page is blank, unreadable, or too damaged to transcribe, set "readable" to false.
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
 {"text": "<transcription>", "readable": true}
 

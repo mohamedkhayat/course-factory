@@ -19,6 +19,7 @@ Rules:
   {"name": "snake_case", "description": "what it shows", "why": "why no Component fits", "schema": {JSON Schema of its data},
    "samples": [1-3 example data objects]}, and use its name as the Block's component. Never propose one the Catalogue already covers.
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
 {"blocks": [{"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1, "quote": "..."}], "origin": "from_source"}], "proposals": []}
 

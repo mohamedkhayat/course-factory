@@ -10,6 +10,7 @@ Split the TP into small ordered Steps. Each Step has:
 - hints: 1 to 3 hints, from gentle to specific, in English;
 - wrong: 1 to 3 plausible wrong versions of the solution (typical student mistakes). The check must reject each of them, and the starter too.
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
 {"title": "...", "intro": "...", "chapters": ["<chapter title>"], "steps": [{"statement": "...", "starter": "...", "solution": "...", "check": "...", "hints": ["..."], "wrong": ["..."]}]}
 

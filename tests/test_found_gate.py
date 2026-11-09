@@ -79,16 +79,32 @@ def test_run_resumes_after_restart(data_dir, model, material):
         assert c.get(f"/api/courses/{cid}").json()["goal"] == "deep"
 
 
-def test_failed_run_reports_failure_and_retry_resumes_without_rereading(client, material, model):
+def test_a_page_that_keeps_failing_is_marked_unreadable_and_the_run_goes_on(client, material, model):
     from course_factory.pi_step import StepFailed
 
     def flaky(prompt, files):
-        if "TD1_corrige.pdf" in prompt and model.broken:
+        if "TD1.pdf" in prompt:
             raise StepFailed("pi exited 1")
         return {"text": "ok", "readable": True}
 
-    model.broken = True
     model.handlers["read_page"] = flaky
+    cid = start(client, material)
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
+    assert client.get(f"/api/courses/{cid}/found").json()["unreadable_pages"] == [{"source": "TD1.pdf", "page": 1}]
+
+
+def test_failed_run_reports_failure_and_retry_resumes_without_rereading(client, material, model):
+    from course_factory.pi_step import StepFailed
+
+    roles = model.handlers["propose_roles"]
+
+    def flaky(prompt, files):
+        if model.broken:
+            raise StepFailed("pi exited 1")
+        return roles(prompt, files)
+
+    model.broken = True
+    model.handlers["propose_roles"] = flaky
     cid = start(client, material)
     run = client.get(f"/api/courses/{cid}/run").json()
     assert run["status"] == "failed" and "pi exited 1" in run["error"]
@@ -98,7 +114,7 @@ def test_failed_run_reports_failure_and_retry_resumes_without_rereading(client, 
     assert client.post(f"/api/courses/{cid}/run/retry").status_code == 200
     run = client.get(f"/api/courses/{cid}/run").json()
     assert run["gate"] == "found" and run["error"] is None
-    assert sum(1 for s, _ in model.calls if s == "read_page") - reads_before == 3  # failed page + cours.pdf x2; TD1.pdf, read before the failure, is not reread
+    assert sum(1 for s, _ in model.calls if s == "read_page") == reads_before  # pages read before the failure are not reread
     assert len(client.get(f"/api/courses/{cid}/found").json()["sources"]) == 4  # import not duplicated
 
 

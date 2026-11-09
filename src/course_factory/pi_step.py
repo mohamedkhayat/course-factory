@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import os
 import sqlite3
 import subprocess
@@ -99,7 +100,25 @@ def render_prompt(step: str, inputs: dict) -> str:
     return prompt
 
 
+# LaTeX commands starting with a JSON escape letter (b f n r t u): an unescaped \frac would silently read as form feed + "rac"
+LATEX_WORDS = set("""backslash bar begin beta big bigcap bigcup bigg bigl bigr binom bmatrix boldsymbol bot bullet
+    forall frac frown nabla ne neg neq newline ngeq nleq nmid nolimits not notin nu
+    rangle rbrace rceil rfloor rho right rightarrow rm rvert tan tanh tau text textbf textit textrm tfrac theta therefore
+    tilde times to top triangle underbrace underline uparrow upsilon""".split())
+LATEX_RE = re.compile(r"(?<!\\)((?:\\\\)*)\\(?!u[0-9a-fA-F]{4})([A-Za-z]+)")
+
+
+def escape_latex(text: str) -> str:
+    """Doubles the backslash of LaTeX commands the model left unescaped inside JSON strings; real escapes stay."""
+    def fix(m: re.Match) -> str:
+        pairs, word = m.group(1), m.group(2)
+        latex = word[0] not in "bfnrtu" or word in LATEX_WORDS
+        return f"{pairs}\\\\{word}" if latex else m.group(0)
+    return LATEX_RE.sub(fix, text)
+
+
 def parse_json(text: str) -> object:
+    text = escape_latex(text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -183,7 +202,7 @@ def _trace(db, course_id, step, version, inputs, files, output, error, start):
 class PiBackend:
     """Runs one `pi -p --mode json` subprocess per step against Qwen on llama-swap."""
 
-    def __init__(self, model: str = "llama-swap/ninfer-qwen3.8-27b:low", timeout: int = 900):
+    def __init__(self, model: str = os.environ.get("CF_MODEL", "llama-swap/ninfer-qwen3.8-27b:medium"), timeout: int = 900):
         self.model, self.timeout = model, timeout
 
     def _cmd(self, prompt, files):

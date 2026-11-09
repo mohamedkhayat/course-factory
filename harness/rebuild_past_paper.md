@@ -9,6 +9,7 @@ For every question, take the model answer from the corrigé. If there is no corr
 
 Give every question the course Chapter it tests, by its exact title ("chapter"; null if none fits), and list the Chapters the paper covers.
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
 {"title": "...", "duration_min": 90, "chapters": ["<chapter title>"], "questions": [{"statement": "...", "points": 4, "model_answer": "...", "chapter": "<chapter title>", "scheme": [{"step": "...", "points": 2}]}]}
 

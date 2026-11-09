@@ -5,6 +5,7 @@ For every source below, choose its role from exactly this list:
 
 If a source is the correction (corrigé) of another source, set "paired_with" on the ORIGINAL source to the correction's name. Otherwise "paired_with" is null.
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
 {"sources": [{"name": "<name>", "role": "<role>", "paired_with": "<name or null>"}]}
 

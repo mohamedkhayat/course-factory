@@ -3,6 +3,7 @@ You check whether a course Block is supported by the pages it cites. It is groun
 The cited pages:
 PAGES:{{pages}}
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object: {"grounded": true, "reason": "<what is unsupported, empty if grounded>"}
 
 The Block:

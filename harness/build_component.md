@@ -2,6 +2,7 @@ You are building one React Component for an interactive course, in TypeScript (T
 
 Component name: {{name}}
 What it shows: {{description}}
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 The Block data's JSON Schema: {{schema}}
 Sample Block data (it must render all of them): {{samples}}
 

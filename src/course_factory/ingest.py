@@ -7,7 +7,7 @@ import pypdfium2 as pdfium
 from pydantic import BaseModel
 
 from .context import Ctx, Role
-from .pi_step import run_pi_step
+from .pi_step import StepFailed, run_pi_step
 
 DATA_SUFFIXES = {".csv", ".txt", ".json", ".xlsx", ".npy", ".mat", ".dat"}
 
@@ -54,8 +54,11 @@ def read_pages(ctx: Ctx, cid: int) -> None:
                 continue
             img = img_dir / f"{src['id']}-{n}.png"
             pdf[n - 1].render(scale=2).to_pil().save(img)
-            reading = run_pi_step(db, backend, "read_page", {"source": src["name"], "page": str(n)}, PageReading,
-                                  img_dir, (img,), course_id=cid)
+            try:
+                reading = run_pi_step(db, backend, "read_page", {"source": src["name"], "page": str(n)}, PageReading,
+                                      img_dir, (img,), course_id=cid)
+            except StepFailed:  # one bad page must not stop the Run: the found gate lists it as unreadable
+                reading = PageReading(text="", readable=False)
             db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable) VALUES (?,?,?,?,?)",
                        (src["id"], n, str(img), reading.text, int(reading.readable)))
 

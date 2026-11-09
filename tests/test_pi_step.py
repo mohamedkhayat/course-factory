@@ -72,3 +72,9 @@ def test_backend_failure_is_traced_and_retried(conn, tmp_path):
 
     run_pi_step(conn, backend, "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
     assert [t["error"] for t in traces(conn)][0] == "pi exited 1"
+
+
+def test_latex_backslashes_the_model_forgot_to_escape_survive(conn, tmp_path):
+    raw = r'{"text": "$\frac{a}{b} + \sum x_i + \nabla f \cdot \theta \\alpha$\nNext\tcol \u00e9", "readable": true}'
+    r = run_pi_step(conn, answers(raw), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
+    assert r.text == "$\\frac{a}{b} + \\sum x_i + \\nabla f \\cdot \\theta \\alpha$\nNext\tcol é"

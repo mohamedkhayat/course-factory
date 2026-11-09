@@ -6,6 +6,7 @@ Goal: {{goal}}
 
 Propose the course outline: Chapters in the professor's order, each with Sections. Every Section lists the source pages it is built from (course notes first, then the exercise sheets and labs that practise it). Use the course's own chapter structure when the notes have one. Write titles in the material's language.
 
+Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
 {"chapters": [{"title": "...", "sections": [{"title": "...", "pages": [{"source": "<source name>", "page": 1}]}]}]}
 
