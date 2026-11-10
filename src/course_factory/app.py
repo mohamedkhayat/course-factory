@@ -101,6 +101,10 @@ class BlockEdit(BaseModel):
     data: dict
 
 
+class MergeInto(BaseModel):
+    into: int
+
+
 class RegenerateNote(BaseModel):
     note: str
 
@@ -500,6 +504,16 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         chapter_or_404(cid, chid)
         return chm.load_chapter(ctx, chid)
 
+    @app.post("/api/courses/{cid}/sections/{sid}/merge")
+    def merge_section(cid: int, sid: int, body: MergeInto):
+        """Merges an overlapping Section into another of its Chapter; returns that Chapter."""
+        try:
+            chm.merge_sections(db, cid, sid, body.into)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        record_owner_action(db, cid, "chapter_review", {"section": sid, "into": body.into}, "merged")
+        return chm.load_chapter(ctx, db.execute("SELECT chapter_id FROM sections WHERE id=?", (body.into,)).fetchone()["chapter_id"])
+
     @app.get("/api/courses/{cid}/review")
     def review_list(cid: int):
         """Chapters waiting for review, flagged Blocks first."""
@@ -508,7 +522,10 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         for ch in db.execute("SELECT id FROM chapters WHERE course_id=? AND status='in_review' ORDER BY position", (cid,)):
             chapter = chm.load_chapter(ctx, ch["id"])
             blocks = [b | {"section": s["title"]} for s in chapter["sections"] for b in s["blocks"]]
-            out.append({"id": chapter["id"], "title": chapter["title"],
+            order = [s["id"] for s in chapter["sections"]]
+            overlaps = [{"section": s["id"], "title": s["title"], "into": o["id"], "into_title": o["title"], "shared": o["shared"]}
+                        for s in chapter["sections"] for o in s["overlaps"] if order.index(o["id"]) < order.index(s["id"])]
+            out.append({"id": chapter["id"], "title": chapter["title"], "overlaps": overlaps,
                         "blocks": sorted(blocks, key=lambda b: (b["status"] != "flagged", not b["flags"]))})
         return out
 

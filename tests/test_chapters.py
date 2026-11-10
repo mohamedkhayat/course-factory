@@ -334,3 +334,20 @@ def test_the_course_language_chosen_before_generation_reaches_every_prompt(clien
     assert prompts and all(rule in p for p in prompts)
     assert client.patch(f"/api/courses/{cid}", json={"goal": "deep", "language": "fr"}).json()["language"] == "fr"
     assert client.patch(f"/api/courses/{cid}", json={"goal": "deep"}).json()["language"] == "fr"  # a goal change keeps it
+
+
+CRUD = [{"component": "terminal", "origin": "model_added", "data": {"title": "CRUD", "shell": "http", "entries": [
+            {"command": f"{m} /boutique/_doc/1", "output": "{}", "note": ""} for m in ("PUT", "GET", "DELETE")]}},
+        {"component": "quiz", "origin": "model_added", "data": {"questions": [
+            {"prompt": "Quel verbe supprime ?", "options": ["DELETE", "GET"], "correct": [0], "explanation": "DELETE supprime."}]}}]
+
+
+def test_merging_a_section_keeps_each_distinct_block_once(client, material, model):
+    cid = generate(client, material, model, blocks=CRUD)
+    ch = chapters(client, cid)["Méthodes de descente"]
+    first, second = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"]
+    assert second["overlaps"][0]["id"] == first["id"]  # the fake writes the same Blocks in both
+    kept = client.post(f"/api/courses/{cid}/sections/{second['id']}/merge", json={"into": first["id"]}).json()
+    [merged] = kept["sections"]
+    assert merged["id"] == first["id"] and len(merged["blocks"]) == len(first["blocks"]) and not merged["overlaps"]
+    assert client.post(f"/api/courses/{cid}/sections/{first['id']}/merge", json={"into": first["id"]}).status_code == 422

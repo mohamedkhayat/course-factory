@@ -12,7 +12,7 @@ from .checks import block_warnings, check_blocks
 from .context import Ctx
 from .outline import profile_of
 from .failures import failure_class
-from .progression import flag_progression
+from .progression import flag_progression, section_overlaps
 from .lesson_plan import plan_chapter, plan_gaps
 from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, record_owner_action, run_pi_step
 
@@ -372,6 +372,36 @@ def load_chapter(ctx: Ctx, chid: int) -> dict:
     for s in ctx.db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)):
         blocks = [block_json(b) for b in ctx.db.execute("SELECT * FROM blocks WHERE section_id=? ORDER BY position", (s["id"],))]
         sections.append({"id": s["id"], "title": s["title"], "pages": json.loads(s["pages"]), "teaches": json.loads(s["teaches"]),
-                         "objectives": [o["text"] for o in plan.get(s["title"], {}).get("objectives", [])], "blocks": blocks})
+                         "objectives": [o["text"] for o in plan.get(s["title"], {}).get("objectives", [])], "blocks": blocks,
+                         "overlaps": []})
+    for a, b, shared in section_overlaps(sections):
+        for s, other in ((a, b), (b, a)):
+            s["overlaps"].append({"id": other["id"], "title": other["title"], "shared": shared,
+                                  "warning": f"section overlap: teaches what \"{other['title']}\" teaches ({', '.join(shared[:6])}); merge them"})
     return {"id": ch["id"], "title": ch["title"], "priority": ch["priority"], "exam_weight": ch["exam_weight"],
             "status": ch["status"], "sections": sections}
+
+
+def merge_sections(db, cid: int, sid: int, into: int) -> None:
+    """Moves Section `sid`'s Blocks to the end of `into` (same Chapter), drops the ones `into` already has (same Component
+    and data), carries its pages, Concepts, reading place and tutor messages over, deletes it and re-checks progression."""
+    rows = {r["id"]: r for r in db.execute("SELECT s.* FROM sections s JOIN chapters c ON c.id=s.chapter_id WHERE c.course_id=? AND s.id IN (?,?)",
+                                           (cid, sid, into))}
+    if sid == into or len(rows) != 2 or rows[sid]["chapter_id"] != rows[into]["chapter_id"]:
+        raise ValueError("merge two different Sections of one Chapter")
+    key = lambda b: (b["component"], json.dumps(json.loads(b["data"]), sort_keys=True))
+    have = {key(b) for b in db.execute("SELECT component, data FROM blocks WHERE section_id=?", (into,))}
+    end = db.execute("SELECT COALESCE(MAX(position), -1) FROM blocks WHERE section_id=?", (into,)).fetchone()[0]
+    for b in db.execute("SELECT id, component, data FROM blocks WHERE section_id=? ORDER BY position", (sid,)).fetchall():
+        if key(b) in have:
+            continue  # its Cards go with it (ON DELETE CASCADE when the Section is deleted)
+        have.add(key(b))
+        end += 1
+        db.execute("UPDATE blocks SET section_id=?, position=? WHERE id=?", (into, end, b["id"]))
+    union = lambda col: json.dumps(list({json.dumps(x, sort_keys=True): x for x in json.loads(rows[into][col]) + json.loads(rows[sid][col])}.values()),
+                                   ensure_ascii=False)
+    db.execute("UPDATE sections SET pages=?, teaches=? WHERE id=?", (union("pages"), union("teaches"), into))
+    for table in ("places", "tutor_messages"):
+        db.execute(f"UPDATE {table} SET section_id=? WHERE section_id=?", (into, sid))
+    db.execute("DELETE FROM sections WHERE id=?", (sid,))
+    flag_progression(db, cid)

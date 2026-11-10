@@ -10,7 +10,9 @@ from conftest import make_pdf
 from course_factory.checks import check_blocks
 from course_factory.exams import cohort_of, default_scope
 from course_factory.failures import failure_class
-from course_factory.progression import MARK, ledger_errors, progression_errors, repeat_errors
+from pathlib import Path
+
+from course_factory.progression import MARK, ledger_errors, progression_errors, repeat_errors, section_overlaps
 from test_chapters import CONVEXES, GRADIENT, chapters, generate
 
 OUTLINE = {"chapters": [
@@ -222,3 +224,12 @@ def test_a_name_the_quiz_prompt_gives_is_not_tested():
     join = {"prompt": "`a` contient `(\"L1\", 5)`. Que renvoie `a.join(b).collect()` ?", "options": ["[(\"L1\", (5, \"Centre\"))]", "[]"], "correct": [0]}
     taught["data"]["rows"].append(["join", "collect", "centre"])
     assert progression_errors([taught, {"id": 2, "chapter": 1, "section": "S", "component": "quiz", "data": {"questions": [join]}}]) == {}
+
+
+def test_two_sections_teaching_the_same_commands_overlap():
+    """The real course-5 ElasticSearch Chapter: "REST API: Request Types" and "CRUD Operations" drill the same document calls;
+    PUT index or POST _update, which most of its Sections use, are the Chapter's ground, not an overlap."""
+    sections = json.loads((Path(__file__).parent / "es_chapter.json").read_text())
+    [(a, b, shared)] = section_overlaps(sections)
+    assert (a["title"], b["title"]) == ("REST API: Request Types", "CRUD Operations: PUT, GET, DELETE")
+    assert shared == ["DELETE _doc", "GET _doc", "PUT _doc"]

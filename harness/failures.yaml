@@ -119,3 +119,9 @@ definition-cram:
   what: a definition theorem_box with three or more bold "Term:" leads is a warning on the Block; the write prompt asks for one theorem_box per term
   hardened: 2026-11-10
   test: tests/test_lesson_plan.py
+
+section-overlap:
+  handler: check
+  what: two Sections of a Chapter drilling the same commands (method + endpoint, or calls not the Chapter's boilerplate) or Concepts get a warning naming each other; the Review page merges one into the other
+  hardened: 2026-11-11
+  test: tests/test_progression.py

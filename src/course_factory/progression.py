@@ -1,6 +1,7 @@
 """Progression (#22): a practice Block tests only what the Course has taught before it, in reading order, and gives the facts
 it needs. Plain code, no model: it reads the Blocks' own text, so it also catches a model that under-declares what it tests."""
 
+import itertools
 import json
 import re
 
@@ -147,15 +148,17 @@ def answer_terms(component: str, data: dict) -> list[tuple[str, set[str]]]:
     """What a practice Block makes the learner produce, as (label, terms): its filled-in code, or each quiz question's prompt."""
     if component == "quiz":
         return [(f"question {n}", words(q["prompt"]) - STOP) for n, q in enumerate(data["questions"], 1)]
-    if component == "exercise":
-        text = spans(data["correction"])
-    elif data.get("blanks"):
-        text = data.get("template") or data.get("starter", "")
-        for i, b in enumerate(data["blanks"], 1):
-            text = text.replace(f"[[{i}]]", (b.get("answers") or [""])[0])
-    else:
-        text = data.get("solution", "")
-    return [("", words(text) - STOP)]
+    return [("", words(spans(data["correction"]) if component == "exercise" else answer_text(data)) - STOP)]
+
+
+def answer_text(data: dict) -> str:
+    """The code a fill_blanks or code_exercise expects: its template with the blanks filled, or its solution."""
+    if not data.get("blanks"):
+        return data.get("solution", "")
+    text = data.get("template") or data.get("starter", "")
+    for i, b in enumerate(data["blanks"], 1):
+        text = text.replace(f"[[{i}]]", (b.get("answers") or [""])[0])
+    return text
 
 
 def repeat_errors(blocks: list[dict]) -> dict[int, list[str]]:
@@ -237,3 +240,37 @@ def flag_progression(db, cid: int) -> dict[int, list[str]]:
         status = "flagged" if errors.get(b["id"]) else ("ok" if row["status"] == "flagged" and not kept else row["status"])
         db.execute("UPDATE blocks SET flags=?, status=? WHERE id=?", (json.dumps(new, ensure_ascii=False), status, b["id"]))
     return errors
+
+
+REST = re.compile(r"\b(GET|PUT|POST|DELETE|HEAD)\s+'?(\S*/\S*)")
+METHOD_CALL = re.compile(r"\.(\w+)\s*\(")
+OVERLAP = 0.6  # share of the smaller Section's operations the other also teaches
+
+
+def operations(component: str, data: dict) -> set[str]:
+    """The commands a Block shows or drills: a REST call as its method and endpoint (PUT _doc), code as the methods it calls."""
+    if component == "terminal":
+        texts = [e.get("command", "") for e in data.get("entries", [])]
+    elif component in ("fill_blanks", "code_exercise", "code"):
+        texts = [answer_text(data) if component != "code" else data.get("code", "")]
+    else:
+        texts = [spans(s) for s in strings(data)]
+    out: set[str] = set()
+    for t in texts:
+        t = re.sub(r"-X\s*([A-Z]+)\s+'?", r"\1 ", t)  # curl -X PUT 'host:9200/i/_doc/1' reads as PUT host:9200/i/_doc/1
+        t = re.sub(r"\bcurl\s+'", "GET ", t)  # curl with no method is a GET
+        out |= {f"{m} {(re.search(r'/(_\w+)', path) or [None, 'index'])[1]}" for m, path in REST.findall(t)}
+        out |= {c.lower() for c in METHOD_CALL.findall(t)}
+    return out
+
+
+def section_overlaps(sections: list[dict]) -> list[tuple[dict, dict, list[str]]]:
+    """Pairs of a Chapter's Sections ({id, title, teaches, blocks}) that teach the same operations or Concepts, with what
+    they share: two Sections on the same commands (CRUD vs REST request types) should be one."""
+    ops = {s["id"]: set().union(*(operations(b["component"], b["data"]) for b in s["blocks"]), {f"concept {c}" for c in s["teaches"]})
+           for s in sections}
+    if len(sections) >= 4:  # what most Sections use is the Chapter's boilerplate (getOrCreate, pprint), not its topic
+        common = {o for o in set().union(*ops.values()) if sum(o in v for v in ops.values()) > len(sections) / 2}
+        ops = {k: v - common for k, v in ops.items()}
+    return [(a, b, sorted(shared)) for a, b in itertools.combinations(sections, 2)
+            if len(shared := ops[a["id"]] & ops[b["id"]]) >= 3 and len(shared) >= OVERLAP * min(len(ops[a["id"]]), len(ops[b["id"]]))]

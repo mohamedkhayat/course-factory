@@ -11,6 +11,7 @@ import { errText, Page } from "./home";
 import { useCid } from "./run";
 
 type RBlock = Block & { section: string };
+type Overlap = { section: number; title: string; into: number; into_title: string; shared: string[] };
 
 /** Mounts its children once they come near the viewport: Review lists hundreds of Blocks full of math and diagrams. */
 function Lazy({ children }: { children: ReactNode }) {
@@ -86,7 +87,9 @@ function ReviewBlock({ cid, b }: { cid: number; b: RBlock }) {
 export function Review() {
   const cid = useCid();
   const qc = useQueryClient();
-  const { data = [] } = useQuery({ queryKey: ["review", cid], queryFn: () => get<{ id: number; title: string; blocks: RBlock[] }[]>(`/api/courses/${cid}/review`) });
+  const { data = [] } = useQuery({ queryKey: ["review", cid], queryFn: () => get<{ id: number; title: string; blocks: RBlock[]; overlaps: Overlap[] }[]>(`/api/courses/${cid}/review`) });
+  const merge = useMutation({ mutationFn: (o: Overlap) => send(`/api/courses/${cid}/sections/${o.section}/merge`, { into: o.into }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["review", cid] }) });
   const resolve = useMutation({ mutationFn: (chid: number) => send<{ resolved: number[]; queued: number[] }>(`/api/courses/${cid}/chapters/${chid}/auto-resolve`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["review", cid] }) });
   const publish = useMutation({ mutationFn: (chid: number) => send(`/api/courses/${cid}/chapters/${chid}/publish`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["review", cid] }); qc.invalidateQueries({ queryKey: ["run", cid] }); } });
@@ -112,6 +115,14 @@ export function Review() {
             {resolve.data && resolve.variables === ch.id && <p className="mt-2 text-sm text-muted-foreground">
               Resolved {resolve.data.resolved.length}; {resolve.data.queued.length ? `${resolve.data.queued.length} left for the Review Queue (run /review-blocks in Claude Code)` : "nothing left"}.</p>}
             {resolve.error && resolve.variables === ch.id && <p className="mt-2 text-sm text-destructive">{errText(resolve.error)}</p>}
+            {ch.overlaps.map((o) => (
+              <div key={o.section} className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-sm">
+                <p>“{o.title}” teaches what “{o.into_title}” already teaches: <span className="font-mono text-xs">{o.shared.slice(0, 6).join(", ")}</span></p>
+                <Button size="sm" variant="outline" disabled={merge.isPending} onClick={() => merge.mutate(o)}
+                        title="Moves its Blocks into the other Section, drops exact duplicates, and deletes it">Merge into “{o.into_title}”</Button>
+              </div>
+            ))}
+            {merge.error && <p className="mt-2 text-sm text-destructive">{errText(merge.error)}</p>}
             <ul className="divide-y divide-border">{ch.blocks.map((b) => <ReviewBlock key={b.id} cid={cid} b={b} />)}</ul>
           </section>
         );
