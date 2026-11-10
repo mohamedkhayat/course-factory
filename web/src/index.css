@@ -122,6 +122,12 @@
 .prose-cf code { font-family: var(--font-code); font-size: 0.88em; background: var(--muted); padding: 0.1em 0.3em; border-radius: 3px; }
 .prose-cf strong { font-weight: 650; }
 .prose-cf .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25em 0; }
+/* Markdown tables (a callout's checklist, a comparison): ruled rows, padded cells, scroll when wider than the column */
+.prose-cf table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.8em 0; font-size: 0.94em; line-height: 1.45; }
+.prose-cf th, .prose-cf td { padding: 0.4em 0.75em; text-align: left; vertical-align: top; border-bottom: 1px solid color-mix(in oklab, currentColor 15%, transparent); }
+.prose-cf th { font-weight: 650; border-bottom-color: color-mix(in oklab, currentColor 35%, transparent); }
+.prose-cf th:first-child, .prose-cf td:first-child { padding-left: 0; }
+.prose-cf td code { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-theme="instrument"] .prose-cf { font-size: 1rem; }
 
 /* A Course's own colour, from its id: notebook covers on the desk */
