@@ -129,6 +129,8 @@
 .prose-cf th:first-child, .prose-cf td:first-child { padding-left: 0; }
 .prose-cf td code { white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-theme="instrument"] .prose-cf { font-size: 1rem; }
+.prose-cf.tutor-answer { font-size: 0.9375rem; line-height: 1.55; }
+.tutor-answer pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* A Course's own colour, from its id: notebook covers on the desk */
 @utility cover { background: oklch(var(--cover-l) var(--cover-c) var(--hue, 250)); color: var(--cover-fg); }
