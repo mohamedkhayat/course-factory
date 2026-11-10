@@ -412,6 +412,7 @@ class BlockDraft(BaseModel):
     citations: list[Citation] = []
     origin: Literal["from_source", "model_added"]
     exam_types: list[str] = []  # Cram: the Question Types this Block prepares for
+    tests: list[str] = []  # practice: the Concepts it tests, which must be taught by then (#22)
 
     @model_validator(mode="before")
     @classmethod

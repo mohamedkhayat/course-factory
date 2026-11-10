@@ -58,7 +58,9 @@ def connect(path: Path) -> sqlite3.Connection:
                           ("questions", "question_type_id INTEGER"), ("chapters", "profile TEXT"),
                           ("blocks", "exam_types TEXT NOT NULL DEFAULT '[]'"), ("blocks", "previous TEXT"),
                           ("blocks", "review_queue INTEGER NOT NULL DEFAULT 0"),
-                          ("courses", "hours_per_day REAL NOT NULL DEFAULT 2"), ("courses", "auto_resolve INTEGER NOT NULL DEFAULT 0"), ("sources", "sha256 TEXT")]:
+                          ("courses", "hours_per_day REAL NOT NULL DEFAULT 2"), ("courses", "auto_resolve INTEGER NOT NULL DEFAULT 0"), ("sources", "sha256 TEXT"),
+                          ("exams", "cohort TEXT"), ("exams", "in_scope INTEGER NOT NULL DEFAULT 1"),
+                          ("sections", "teaches TEXT NOT NULL DEFAULT '[]'"), ("blocks", "tests TEXT NOT NULL DEFAULT '[]'")]:
         try:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
         except sqlite3.OperationalError:

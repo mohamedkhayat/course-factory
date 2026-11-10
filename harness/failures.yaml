@@ -77,3 +77,15 @@ tool-arg:stringified-json:
   what: "an array/object argument of cf_return_result sent as a JSON string (blocks = \"[...]\") is parsed before validation"
   hardened: "2026-11-10 14:05"
   test: tests/test_pi_step.py::test_an_array_sent_as_a_json_string_is_parsed_before_validation
+
+progression:
+  handler: check
+  what: practice that tests a Concept taught later (the Concept ledger), an answer nothing taught or gave, or a drill previewing a later Section's command is flagged course-wide and repaired
+  hardened: 2026-11-10
+  test: tests/test_progression.py::test_practice_expecting_an_answer_nothing_taught_or_gave_is_flagged_and_an_edit_clears_it
+
+diagram-chain:
+  handler: check
+  what: a diagram drawn as one chain whose words say it fans out (replication, workers, broadcast) is flagged to branch
+  hardened: 2026-11-10
+  test: tests/test_progression.py::test_a_chain_diagram_whose_caption_describes_a_fan_out_is_flagged

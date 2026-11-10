@@ -7,6 +7,10 @@ Subject: {{subject}} ("theoretical": definitions, theorems, proofs; "practical":
 
 Owner notes from an earlier version of this Section (their hand edits; keep what they fixed): {{owner_notes}}
 
+Progression: the learner has been taught these Concepts before this Section: {{taught_before}}
+This Section teaches: {{teaches}}
+Practice only what is taught: a quiz, fill_blanks, code_exercise or exercise may test only the Concepts taught before this Section and the ones this Section has already taught above it. List them in the Block's "tests" (exact names from the two lists). Never drill a command, function or idea a later Section teaches, even one a terminal session here shows in passing. Every fact a practice Block expects but does not test (an index or file name, a number, an id) is stated in its title, task or statement. When a past Question needs Concepts from a later Section, its exercise goes after them; when it also asks for steps that are not this Section's skill, give those as setup ("the index `ventes` already exists with 6 primary shards") and ask only for this Section's skill.
+
 Cram brief: {{cram}}
 When the Cram brief has a profile, the student sits the exam soon: teach exactly what the past Questions below ask, in the order they earn points, and cut background the exam never tests. Retrieval beats rereading: every idea is followed by something the student must answer. Then follow the rules for the Chapter's profile:
 - "problem" (calculations, proofs): give each Question Type its Method as an algorithm Block whose `when` says what in a question's wording triggers it; then work one of its past Questions as a worked_example, step by step, the way the Marking scheme gives marks; then an exercise of the same type with `minutes` set to the exam's time for its points; end with a callout tone "warning" listing the traps (common mistakes, lost marks).
@@ -20,6 +24,7 @@ Write the Section as an ordered list of Blocks. Each Block uses exactly one Comp
 Rules:
 - Text fields are Markdown with $inline$ and $$display$$ LaTeX (KaTeX). Fields named latex are bare LaTeX. Every formula in text, diagram labels included, is LaTeX inside $…$: $\sqrt{n}$, $e^{iuX}$, never sqrt(n), e^(iu.X) or x**2. Only fields named expr use the sympy syntax.
 - Mermaid diagrams must be valid Mermaid syntax.
+- A diagram's edges follow the real relationships: one-to-many (a primary shard replicated to several nodes, a master and its workers, a broadcast) is several edges from one node, never a chain through them.
 - Show, then practise. Every Section where the material allows has at least one visual Block (plot, surface_plot, optimizer_animation, diagram, step_diagram, iteration_table, terminal) and at least one active practice Block (quiz, fill_blanks, code_exercise, exercise). Pick by what the content is:
   - a function of one variable: plot; of two variables: surface_plot; an iterative method on f(x, y): optimizer_animation;
   - a process, pipeline or architecture: diagram, or step_diagram to walk through it one stage at a time;
@@ -43,7 +48,7 @@ Rules:
 
 Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:
-{"blocks": [{"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1, "quote": "..."}], "origin": "from_source", "exam_types": []}], "proposals": []}
+{"blocks": [{"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1, "quote": "..."}], "origin": "from_source", "exam_types": [], "tests": []}], "proposals": []}
 
 Chapter: {{chapter}}
 The source pages for this Section:

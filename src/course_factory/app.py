@@ -28,6 +28,7 @@ from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
 from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
+from .progression import flag_progression
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
 from .pi_step import DEFAULT_MODEL, HARNESS_DIR, STEP_MODELS, Backend, activity, model_for, record_owner_action
 
@@ -81,6 +82,10 @@ class StepModel(BaseModel):
 
 class AutoResolve(BaseModel):
     on: bool
+
+
+class ExamScope(BaseModel):
+    in_scope: bool
 
 
 class OutlineEdit(BaseModel):
@@ -475,11 +480,16 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             raise HTTPException(409, "the Block's Chapter is still generating")
         return row
 
+    def cid_of_block(bid: int) -> int:
+        return db.execute("SELECT c.course_id FROM blocks b JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id "
+                          "WHERE b.id=?", (bid,)).fetchone()[0]
+
     def save_block(bid: int, block: dict, flags: dict):
         db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=? WHERE id=?",
                    (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
                     block["origin"], "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False), bid))
-        if not flags["errors"]:
+        flag_progression(db, cid_of_block(bid))
+        if db.execute("SELECT status FROM blocks WHERE id=?", (bid,)).fetchone()["status"] == "ok":
             db.execute("UPDATE blocks SET review_queue=0 WHERE id=?", (bid,))
         return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
 
@@ -503,7 +513,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     @app.put("/api/courses/{cid}/blocks/{bid}")
     def edit_block(cid: int, bid: int, body: BlockEdit):
         row = block_or_404(cid, bid)
-        draft = {"component": row["component"], "data": body.data, "citations": json.loads(row["citations"]), "origin": row["origin"]}
+        draft = {"component": row["component"], "data": body.data, "citations": json.loads(row["citations"]), "origin": row["origin"],
+                 "tests": json.loads(row["tests"])}
         (block,), (errors,) = check_blocks([draft], chm.source_pages(ctx, cid), components.schemas(db))
         if errors:
             raise HTTPException(422, {"errors": errors})
@@ -579,6 +590,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             raise HTTPException(409, "only a Chapter under review can be published")
         record_owner_action(db, cid, "chapter_review", {"chapter": chid}, "published")
         db.execute("UPDATE chapters SET status='published' WHERE id=?", (chid,))
+        flag_progression(db, cid)
         cram.unlock_likely_cards(ctx, cid, chid)
         if status(cid)["gate"] == "chapter_review" and not chm.awaiting_review(ctx, cid):
             finish_review(cid, tasks)
@@ -644,8 +656,18 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     @app.get("/api/courses/{cid}/exams")
     def list_exams(cid: int):
         course_or_404(cid)
-        return [{k: e[k] for k in ("id", "kind", "title", "duration_min")} | {"chapters": json.loads(e["chapters"])}
+        return [{k: e[k] for k in ("id", "kind", "title", "duration_min", "cohort")} | {"chapters": json.loads(e["chapters"]),
+                                                                                    "in_scope": bool(e["in_scope"])}
                 for e in db.execute("SELECT * FROM exams WHERE course_id=? ORDER BY kind DESC, id", (cid,))]
+
+    @app.put("/api/courses/{cid}/exams/{eid}/scope")
+    def set_exam_scope(cid: int, eid: int, body: ExamScope):
+        """Whether a Past paper weighs the Course (it was set for the learner's cohort) or is only extra practice. No model:
+        every paper's Questions already have Question Types."""
+        exam_or_404(cid, eid)
+        db.execute("UPDATE exams SET in_scope=? WHERE id=?", (int(body.in_scope), eid))
+        exm.set_exam_weights(ctx, cid)
+        return {"ok": True}
 
     @app.get("/api/courses/{cid}/exams/{eid}")
     def get_exam(cid: int, eid: int):

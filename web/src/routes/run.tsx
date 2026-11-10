@@ -448,7 +448,7 @@ function FoundGate({ cid }: { cid: number }) {
   );
 }
 
-type OSection = { id: number; title: string; pages: { source: string; page: number }[] };
+type OSection = { id: number; title: string; pages: { source: string; page: number }[]; teaches?: string[] };
 type OChapter = { id: number; title: string; priority: string; profile?: string | null; sections: OSection[] };
 /** How a Chapter is crammed: worked problems, memorisation, or commands and code. */
 const PROFILES = [["problem", "Problems"], ["recall", "Recall"], ["hands_on", "Hands-on"]] as const;
@@ -536,6 +536,10 @@ function OutlineGate({ cid }: { cid: number }) {
                   <Icon label="Merge with the next Section" disabled={j === c.sections.length - 1} onClick={() => setDraft(edits.mergeSection(draft, i, j))}><Merge className="size-3.5" /></Icon>
                   <Icon label="Start a new Chapter here" disabled={j === 0} onClick={() => setDraft(edits.splitChapter(draft, i, j))}><SplitSquareVertical className="size-3.5" /></Icon>
                   <Icon label="Remove Section" onClick={() => setDraft(edits.section(draft, i, (ss) => ss.filter((_, k) => k !== j)))}><X className="size-3.5" /></Icon>
+                  <Input key={(s.teaches ?? []).join(",")} defaultValue={(s.teaches ?? []).join(", ")} placeholder="Concepts it teaches, comma-separated"
+                    title="Practice only tests Concepts taught by its own Section or an earlier one"
+                    onBlur={(e) => setDraft(edits.section(draft, i, (ss) => ss.map((x, k) => k === j ? { ...x, teaches: e.target.value.split(",").map((t) => t.trim()).filter(Boolean) } : x)))}
+                    className="h-7 basis-full text-xs text-muted-foreground" aria-label={`Chapter ${i + 1} Section ${j + 1} Concepts`} />
                 </li>
               ))}
             </ol>

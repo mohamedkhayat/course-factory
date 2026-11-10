@@ -20,6 +20,7 @@ class PageRef(BaseModel):
 class SectionPlan(BaseModel):
     title: str
     pages: list[PageRef] = []
+    teaches: list[str] = []  # the Concepts this Section teaches, each taught in one Section only (#22)
 
 
 class ChapterPlan(BaseModel):
@@ -58,19 +59,21 @@ def save_outline(ctx: Ctx, cid: int, plan: OutlinePlan, priorities: list[Priorit
     db = ctx.db
     db.execute("DELETE FROM sections WHERE chapter_id IN (SELECT id FROM chapters WHERE course_id=?)", (cid,))
     db.execute("DELETE FROM chapters WHERE course_id=?", (cid,))
+    taught: set[str] = set()
     for i, ch in enumerate(plan.chapters):
         prio = priorities[i] if priorities else "normal"
         chid = db.execute("INSERT INTO chapters (course_id, position, title, priority, profile) VALUES (?,?,?,?,?)",
                           (cid, i, ch.title, prio, ch.profile)).lastrowid
         for j, sec in enumerate(ch.sections):
-            db.execute("INSERT INTO sections (chapter_id, position, title, pages) VALUES (?,?,?,?)",
-                       (chid, j, sec.title, json.dumps(valid_refs(ctx, cid, sec.pages))))
+            taught |= set(teaches := [c for c in dict.fromkeys(t.strip() for t in sec.teaches) if c and c not in taught])
+            db.execute("INSERT INTO sections (chapter_id, position, title, pages, teaches) VALUES (?,?,?,?,?)",
+                       (chid, j, sec.title, json.dumps(valid_refs(ctx, cid, sec.pages)), json.dumps(teaches, ensure_ascii=False)))
 
 
 def load_outline(ctx: Ctx, cid: int) -> list[dict]:
     out = []
     for ch in ctx.db.execute("SELECT * FROM chapters WHERE course_id=? ORDER BY position", (cid,)):
-        secs = [{"id": s["id"], "title": s["title"], "pages": json.loads(s["pages"])}
+        secs = [{"id": s["id"], "title": s["title"], "pages": json.loads(s["pages"]), "teaches": json.loads(s["teaches"])}
                 for s in ctx.db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (ch["id"],))]
         out.append({"id": ch["id"], "title": ch["title"], "priority": ch["priority"], "exam_hits": ch["exam_hits"],
                     "exam_weight": ch["exam_weight"], "status": ch["status"], "profile": profile_of(ctx, ch), "sections": secs})

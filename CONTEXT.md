@@ -32,6 +32,10 @@ _Avoid_: page, lesson, topic
 One use of a Component inside a Section: which Component, its content as data that fits that Component's shape, and citations to the source pages. A Block holds no code and never contains another Block.
 _Avoid_: widget, card, element
 
+**Concept**:
+One teachable idea, command or fact, named once per Course in the outline and taught in exactly one Section. A practice Block lists the Concepts it tests, and may test only Concepts taught by its own Section or an earlier one.
+_Avoid_: topic, skill, notion
+
 **Component**:
 A reusable piece of course UI, such as a theorem box or a quiz, that declares the shape of content it accepts. Components are code; Blocks are data.
 _Avoid_: widget, template
@@ -79,6 +83,10 @@ _Avoid_: test, quiz
 **Past paper**:
 An Exam rebuilt faithfully from a real exam in the material, with its correction taken from the corrigé.
 _Avoid_: annale, old exam
+
+**Cohort**:
+The year of study a Past paper was set for, read from its header ("Classe(s) : 4DS" is year 4). Only the Past papers of the learner's Cohort weigh the Course; the others stay as practice.
+_Avoid_: level, class, promotion
 
 **Mock exam**:
 A new Exam the model writes in the style of the Past papers, covering the same recurring question types.

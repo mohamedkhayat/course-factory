@@ -2,6 +2,7 @@
 sympy-verified claims. Also computes the numbers the app owns (Iteration Table rows)."""
 
 import ast
+import collections
 import json
 import jsonschema
 import re
@@ -315,6 +316,26 @@ def mermaid_ids(src: str) -> str:
     return re.sub(r'"[^"]*"|\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|', " ", src)
 
 
+EDGE = re.compile(r"([\w-]+)\s*(?:-\.+->|--+>|==+>|---)\s*(?=([\w-]+))")
+FAN_OUT = re.compile(r"r[ée]pli[cq]|broadcast|diffus|workers?\b|esclaves?\b|slaves?\b|fan.?out", re.I)  # not "each"/"partition": pipelines say those too
+
+
+def chain_errors(data: dict) -> list[str]:
+    """A diagram drawn as one chain (every node one edge in, one out) whose own words say something fans out: the
+    primary shard replicated to its replicas was drawn Node 1 -> Node 2 -> Node 3."""
+    src = data["mermaid"]
+    if not re.match(r"\s*(flowchart|graph)\b", src):
+        return []
+    edges = set(EDGE.findall(mermaid_ids(src).split("\n", 1)[-1]))
+    nodes = {n for e in edges for n in e}
+    outs, ins = collections.Counter(a for a, _ in edges), collections.Counter(b for _, b in edges)
+    if len(nodes) < 4 or max(outs.values(), default=0) > 1 or max(ins.values(), default=0) > 1:
+        return []
+    cue = FAN_OUT.search(data.get("caption", "") + " " + src)
+    return [f"the diagram is one chain but its words say \"{cue.group()}\": what fans out should branch (several edges from one "
+            "node), not pass through each node in turn"] if cue else []
+
+
 def step_errors(data: dict) -> list[str]:
     ids, errors = mermaid_ids(data["mermaid"]), []
     for n, st in enumerate(data["steps"], 1):
@@ -347,7 +368,9 @@ def component_errors(component: str, data: dict) -> list[str]:
             if any(d.has(*KINKS) for d in derived):
                 return ["expr is not differentiable everywhere (abs, sign, max...); the optimizer needs a smooth function"]
     if component == "step_diagram":
-        return step_errors(data)
+        return step_errors(data) + chain_errors(data)
+    if component == "diagram":
+        return chain_errors(data)
     return []
 
 
@@ -381,7 +404,7 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
         else:
             data, errs = validate_data(draft.component, draft.data)
         block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin,
-                 **({"exam_types": draft.exam_types} if draft.exam_types else {})}
+                 **({"exam_types": draft.exam_types} if draft.exam_types else {}), **({"tests": draft.tests} if draft.tests else {})}
         for c in draft.citations:
             if not 1 <= c.page <= sources.get(c.source, 0):
                 errs.append(f"citation to {c.source} page {c.page} does not exist")

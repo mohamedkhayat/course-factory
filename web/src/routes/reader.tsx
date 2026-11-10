@@ -115,6 +115,7 @@ export function Reader() {
         <article className="mx-auto w-full max-w-[44rem] px-5 py-8 sm:px-8">
           <p className="text-sm text-muted-foreground">{current.chapter.title}</p>
           <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">{current.title}</h1>
+          {!!current.teaches?.length && <p className="mt-2 text-sm text-muted-foreground">New here: {current.teaches.join(" · ")}</p>}
           <div className="prose-cf mt-8 space-y-10">
             {current.blocks.map((b) => <ReaderBlock key={b.id} block={b} cid={cid} onCite={setCite} />)}
           </div>

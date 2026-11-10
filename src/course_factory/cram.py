@@ -49,17 +49,18 @@ class MixedMark(BaseModel):
 
 # Question Types
 
-def past_questions(db, cid: int) -> list:
+def past_questions(db, cid: int, scoped: bool = True) -> list:
+    """The Past papers' Questions; scoped: only the papers set for the learner's cohort, the ones that weigh the Course."""
     return db.execute("SELECT q.*, e.id exam_id, e.title exam, e.duration_min, c.title chapter FROM questions q "
                       "JOIN exams e ON e.id=q.exam_id LEFT JOIN chapters c ON c.id=q.chapter_id "
-                      "WHERE e.course_id=? AND e.kind='past_paper' ORDER BY e.id, q.position", (cid,)).fetchall()
+                      "WHERE e.course_id=? AND e.kind='past_paper' AND (e.in_scope=1 OR NOT ?) ORDER BY e.id, q.position", (cid, scoped)).fetchall()
 
 
 def classify_questions(ctx: Ctx, cid: int, force: bool = False) -> None:
     """Sorts the past papers' Questions into Question Types, once (force re-sorts). A Question the model leaves out
     gets its Chapter's catch-all type, so every Question counts."""
     db = ctx.db
-    qs = past_questions(db, cid)
+    qs = past_questions(db, cid, scoped=False)  # every paper gets types: changing the scope then needs no model
     if not qs or (not force and all(q["question_type_id"] for q in qs)):
         return
     titles = {r["title"]: r["id"] for r in db.execute("SELECT id, title FROM chapters WHERE course_id=? ORDER BY position", (cid,))}
@@ -111,6 +112,8 @@ def question_types(db, cid: int) -> list[dict]:
     out = []
     for t in rows:
         mine = [q for q in qs if q["question_type_id"] == t["id"]]
+        if not mine:
+            continue  # asked only in papers for another cohort
         out.append({"id": t["id"], "name": t["name"], "trigger": t["trigger"], "template": t["template"],
                     "chapter_id": t["chapter_id"], "chapter": t["chapter"], "points": sum(q["points"] for q in mine),
                     "papers": len({q["exam_id"] for q in mine}), "share": round(sum(q["points"] for q in mine) / total, 3),
@@ -123,7 +126,8 @@ def question_types(db, cid: int) -> list[dict]:
 
 def minutes_per_point(db, cid: int) -> float | None:
     row = db.execute("SELECT SUM(e.duration_min) d, (SELECT SUM(q.points) FROM questions q JOIN exams e2 ON e2.id=q.exam_id "
-                     "WHERE e2.course_id=? AND e2.kind='past_paper') p FROM exams e WHERE e.course_id=? AND e.kind='past_paper'",
+                     "WHERE e2.course_id=? AND e2.kind='past_paper' AND e2.in_scope=1) p FROM exams e "
+                     "WHERE e.course_id=? AND e.kind='past_paper' AND e.in_scope=1",
                      (cid, cid)).fetchone()
     return row["d"] / row["p"] if row["d"] and row["p"] else None
 
@@ -227,7 +231,7 @@ def technique(ctx: Ctx, cid: int) -> dict:
     db = ctx.db
     papers = [{"title": e["title"], "duration_min": e["duration_min"], "points": e["points"]} for e in db.execute(
         "SELECT e.title, e.duration_min, SUM(q.points) points FROM exams e JOIN questions q ON q.exam_id=e.id "
-        "WHERE e.course_id=? AND e.kind='past_paper' GROUP BY e.id ORDER BY e.id", (cid,))]
+        "WHERE e.course_id=? AND e.kind='past_paper' AND e.in_scope=1 GROUP BY e.id ORDER BY e.id", (cid,))]
     schemes = {q["id"]: json.loads(q["scheme"] or "null") or [] for q in past_questions(db, cid)}
     types = []
     for t in question_types(db, cid):
@@ -371,7 +375,8 @@ def course_plan(ctx: Ctx, cid: int) -> dict:
     types = sorted({n for m in mistaken for n in json.loads(m["exam_types"])})
     mocks = [{"exam_id": e["id"], "title": e["title"], "duration_min": e["duration_min"],
               "done": bool(db.execute("SELECT 1 FROM copies WHERE exam_id=? AND handed_in_at IS NOT NULL", (e["id"],)).fetchone())}
-             for e in db.execute("SELECT * FROM exams WHERE course_id=? ORDER BY kind='past_paper', id", (cid,))]
+             for e in db.execute("SELECT * FROM exams WHERE course_id=? AND (kind!='past_paper' OR in_scope=1) "
+                                "ORDER BY kind='past_paper', id", (cid,))]
     due = db.execute("SELECT COUNT(*) FROM cards WHERE course_id=? AND due<=?", (cid, learner.now().isoformat())).fetchone()[0]
     if not course["exam_date"]:
         return {"days": [], "skip": [], "skipped_points": 0, "kept_points": 0, "needs_date": True}
@@ -481,7 +486,7 @@ def router(ctx: Ctx) -> APIRouter:
         return {"goal": course["goal"], "exam_date": course["exam_date"], "hours_per_day": course["hours_per_day"],
                 "plan": course_plan(ctx, cid), "question_types": question_types(db, cid), "technique": technique(ctx, cid),
                 "unclassified": db.execute("SELECT COUNT(*) FROM questions q JOIN exams e ON e.id=q.exam_id WHERE e.course_id=? "
-                                           "AND e.kind='past_paper' AND q.question_type_id IS NULL", (cid,)).fetchone()[0]}
+                                           "AND e.kind='past_paper' AND e.in_scope=1 AND q.question_type_id IS NULL", (cid,)).fetchone()[0]}
 
     @r.put("/api/courses/{cid}/cram/settings")
     def cram_settings(cid: int, body: CramSettings):
