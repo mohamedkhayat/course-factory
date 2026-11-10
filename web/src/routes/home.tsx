@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, BookOpen, ClipboardList, Cpu, Flame, FolderOpen, Hand, Layers, Loader2, Plus, Timer, TriangleAlert, Trash2, type LucideIcon } from "lucide-react";
@@ -401,7 +401,6 @@ export function Home() {
 export function Settings() {
   const qc = useQueryClient();
   const { data: stats } = useQuery({ queryKey: ["stats"], queryFn: () => get<Stats>("/api/stats") });
-  const { data: sys } = useQuery({ queryKey: ["system"], queryFn: () => get<System>("/api/system") });
   const goal = useMutation({ mutationFn: (daily_goal: number) => send("/api/settings", { daily_goal }, "PUT"), onSuccess: () => qc.invalidateQueries({ queryKey: ["stats"] }) });
   return (
     <Page title="Settings">
@@ -416,9 +415,8 @@ export function Settings() {
           </div>
         </section>
         <section className="border-t border-border pt-6">
-          <h2 className="font-medium">Model</h2>
-          <p className="mt-1 font-mono text-sm">{sys?.model ?? "…"}</p>
-          <p className="mt-1 text-sm text-muted-foreground">Set <code className="font-mono">CF_MODEL</code> before starting the app to use another one (for example <code className="font-mono">…:xhigh</code> for more thinking).</p>
+          <h2 className="font-medium">Models</h2>
+          <p className="mt-1 text-sm text-muted-foreground">A change applies to the next call of that step, also mid-run. Less thinking is faster.</p>
           <StepModels />
         </section>
         <Pairing />
@@ -427,44 +425,78 @@ export function Settings() {
   );
 }
 
-type StepModels = { default: string; steps: { step: string; model: string; from: "settings" | "env" | "default" }[] };
+type StepModels = { default: string; default_from: Source; steps: { step: string; model: string; from: Source }[] };
+type Source = "settings" | "env" | "default";
+type Available = { id: string; thinking: boolean }[];
 const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const STEP_NOTES: Record<string, string> = {
   repair_block: "narrow fixes; low thinking is usually enough", judge_grounding: "checks Blocks against their pages; low is usually enough",
   write_section: "the main cost of a run", read_page: "one call per page",
 };
+const SOURCES: Record<Source, string> = { settings: "set here", env: "from an env variable", default: "built-in default" };
 
-/** The thinking level (or model) of each Model step; the next call of that step uses it, no restart. */
+/** A model and its thinking level, as one "provider/model:level" id; "" is "use the default". */
+function ModelPicker({ label, value, inherited, available, onChange }: {
+  label: string; value: string; inherited?: string; available: Available; onChange: (model: string) => void;
+}) {
+  const [typed, setTyped] = useState(value);
+  useEffect(() => setTyped(value), [value]);
+  const level = LEVELS.find((l) => value.endsWith(`:${l}`));
+  const model = level ? value.slice(0, -level.length - 1) : value;
+  const thinks = available.find((m) => m.id === model)?.thinking ?? !!level;
+  if (!available.length) return (  // the backend can't list its models: type one
+    <Input value={typed} onChange={(e) => setTyped(e.target.value)} onBlur={() => typed !== value && onChange(typed.trim())} aria-label={`Model for ${label}`}
+           placeholder={inherited ? `default: ${inherited}` : "provider/model:level"} className="h-8 w-72 font-mono text-xs" />
+  );
+  const ids = [...available.map((m) => m.id), ...(model && !available.some((m) => m.id === model) ? [model] : [])];
+  return (
+    <div className="flex gap-2">
+      <Select value={model || "default"} onValueChange={(v) => onChange(v === "default" ? "" : available.find((m) => m.id === v)?.thinking ? `${v}:${level ?? "medium"}` : v)}>
+        <SelectTrigger size="sm" aria-label={`Model for ${label}`} className="w-56 font-mono text-xs"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {inherited !== undefined && <SelectItem value="default">Default · {inherited.split("/").pop()}</SelectItem>}
+          {ids.map((id) => <SelectItem key={id} value={id} className="font-mono text-xs">{id.split("/").pop()}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      {model && thinks && (
+        <Select value={level ?? "medium"} onValueChange={(l) => onChange(`${model}:${l}`)}>
+          <SelectTrigger size="sm" aria-label={`Thinking for ${label}`} className="w-28 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>{LEVELS.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}</SelectContent>
+        </Select>
+      )}
+    </div>
+  );
+}
+
+/** The default model, then each Model step's own model and thinking level; the next call of that step uses it, no restart. */
 function StepModels() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["models"], queryFn: () => get<StepModels>("/api/models") });
+  const { data: available = [], isFetched } = useQuery({ queryKey: ["models", "available"], queryFn: () => get<Available>("/api/models/available"), staleTime: 60_000 });
   const set = useMutation({ mutationFn: (b: { step: string; model: string }) => send<StepModels>("/api/models", b, "PUT"),
-                            onSuccess: (d) => qc.setQueryData(["models"], d) });
-  if (!data) return null;
-  const base = data.default.replace(/:[a-z]+$/, "");
+                            onSuccess: (d) => { qc.setQueryData(["models"], d); qc.invalidateQueries({ queryKey: ["system"] }); } });
+  if (!data || !isFetched) return <p className="mt-4 text-sm text-muted-foreground">Listing the backend's models…</p>;  // pi takes a few seconds
   return (
-    <div className="mt-5">
-      <h3 className="text-sm font-medium">Thinking per step</h3>
-      <p className="mt-1 text-sm text-muted-foreground">Less thinking is faster. Applies to the next call of that step, also mid-run.</p>
-      <ul className="mt-3 divide-y divide-border">
-        {data.steps.map((s) => {
-          const options = [...LEVELS.map((l) => `${base}:${l}`), ...(s.from === "settings" && !s.model.startsWith(`${base}:`) ? [s.model] : [])];
-          return (
-            <li key={s.step} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm capitalize">{s.step.replaceAll("_", " ")}</p>
-                {STEP_NOTES[s.step] && <p className="text-xs text-muted-foreground">{STEP_NOTES[s.step]}</p>}
-              </div>
-              <Select value={s.from === "settings" ? s.model : "default"} onValueChange={(v) => set.mutate({ step: s.step, model: v === "default" ? "" : v })}>
-                <SelectTrigger size="sm" aria-label={`Thinking for ${s.step.replaceAll("_", " ")}`} className="w-52"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">{s.from === "env" ? `env: ${s.model.split(":").pop()}` : `default: ${data.default.split(":").pop()}`}</SelectItem>
-                  {options.map((m) => <SelectItem key={m} value={m}>{m.startsWith(`${base}:`) ? m.split(":").pop() : m}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </li>
-          );
-        })}
+    <div className="mt-4">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-border px-3 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">Default for all steps</p>
+          <p className="text-xs text-muted-foreground">{SOURCES[data.default_from]}</p>
+        </div>
+        <ModelPicker label="all steps" value={data.default} available={available} onChange={(model) => set.mutate({ step: "default", model })} />
+      </div>
+      <h3 className="mt-5 text-sm font-medium">Per step</h3>
+      <ul className="mt-1 divide-y divide-border">
+        {data.steps.map((s) => (
+          <li key={s.step} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm capitalize">{s.step.replaceAll("_", " ")}</p>
+              <p className="text-xs text-muted-foreground">{[s.from === "env" && `${s.model} · from an env variable`, STEP_NOTES[s.step]].filter(Boolean).join(" · ")}</p>
+            </div>
+            <ModelPicker label={s.step.replaceAll("_", " ")} value={s.from === "settings" ? s.model : ""} inherited={data.default} available={available}
+                         onChange={(model) => set.mutate({ step: s.step, model })} />
+          </li>
+        ))}
       </ul>
       {set.error && <p className="mt-2 text-sm text-destructive">{errText(set.error)}</p>}
     </div>

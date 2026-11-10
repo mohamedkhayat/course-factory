@@ -30,7 +30,7 @@ from .checks import check_blocks
 from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
 from .progression import flag_progression
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
-from .pi_step import DEFAULT_MODEL, HARNESS_DIR, STEP_MODELS, Backend, activity, model_for, record_owner_action
+from .pi_step import HARNESS_DIR, STEP_MODELS, Backend, activity, default_model, model_for, record_owner_action
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 EXPORT_VIEWER = WEB_DIST.parent / "dist-export" / "export.html"
@@ -94,7 +94,7 @@ class OutlineEdit(BaseModel):
 
 
 class GoalChange(FoundDecision):
-    language: Literal["mixed", "en", "fr"] | None = None  # unset: unchanged
+    language: Literal["mixed", "en", "fr"] | None = None  # pyright: ignore[reportIncompatibleVariableOverride]  -- unset: unchanged
 
 
 class BlockEdit(BaseModel):
@@ -211,14 +211,28 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     def step_models():
         """The model each Model step runs on, and where that comes from (Settings, an env variable, or the default)."""
         steps = sorted(p.stem for p in HARNESS_DIR.glob("*.md"))
-        default = os.environ.get("CF_MODEL") or DEFAULT_MODEL
-        return {"default": default, "steps": [{"step": s, "model": model_for(s), "from": "settings" if s in STEP_MODELS else
+        return {"default": default_model(), "default_from": "settings" if "default" in STEP_MODELS else
+                "env" if os.environ.get("CF_MODEL") else "default", "steps": [{"step": s, "model": model_for(s), "from": "settings" if s in STEP_MODELS else
                                                 "env" if os.environ.get(f"CF_MODEL_{s.upper()}") else "default"} for s in steps]}
+
+    listed: dict = {}  # pi takes seconds to list: kept for 5 minutes
+
+    @app.get("/api/models/available")
+    def available_models():
+        """The models the backend offers; empty when it can't list them (Settings then takes a typed name)."""
+        if listed and time.monotonic() - listed["at"] < 300:
+            return listed["models"]
+        try:
+            models = backend.models()  # type: ignore[attr-defined]
+        except Exception:  # no models() on this backend, pi missing, or an unexpected listing
+            return []
+        listed.update(at=time.monotonic(), models=models)
+        return models
 
     @app.put("/api/models")
     def put_model(body: StepModel):
         """Sets (or, with no model, clears) one step's model; the next model call of that step uses it."""
-        if body.step not in {p.stem for p in HARNESS_DIR.glob("*.md")}:
+        if body.step not in {p.stem for p in HARNESS_DIR.glob("*.md")} | {"default"}:
             raise HTTPException(422, f"unknown step {body.step}")
         if body.model:
             STEP_MODELS[body.step] = body.model

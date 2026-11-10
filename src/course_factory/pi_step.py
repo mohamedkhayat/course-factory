@@ -98,11 +98,16 @@ STEP_MODELS: dict[str, str] = {}  # the owner's per-step choices from Settings (
 
 
 def model_for(step: str, attempt: int = 1) -> str:
-    """The model a step runs on: the Settings choice, else CF_MODEL_<STEP>, else CF_MODEL; one extra attempt after the retries
-    goes to CF_FALLBACK_MODEL."""
+    """The model a step runs on: its Settings choice, else CF_MODEL_<STEP>, else the default (default_model); one extra attempt
+    after the retries goes to CF_FALLBACK_MODEL."""
     if attempt > ATTEMPTS and os.environ.get("CF_FALLBACK_MODEL"):
         return os.environ["CF_FALLBACK_MODEL"]
-    return STEP_MODELS.get(step) or os.environ.get(f"CF_MODEL_{step.upper()}") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
+    return STEP_MODELS.get(step) or os.environ.get(f"CF_MODEL_{step.upper()}") or default_model()
+
+
+def default_model() -> str:
+    """The model of every step without its own: the Settings default, else CF_MODEL, else DEFAULT_MODEL."""
+    return STEP_MODELS.get("default") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
 
 
 def current_model() -> str | None:
@@ -428,6 +433,14 @@ class PiBackend:
             if event.get("type") in ("thinking_delta", "text_delta", "toolcall_delta"):  # structured output arrives as a tool call
                 report("thinking" if event["type"] == "thinking_delta" else "output", event.get("delta", ""))
         return assistant_text("".join(lines))
+
+    def models(self) -> list[dict]:
+        """The models pi's configured providers offer, as "provider/model" ids, and whether each takes a thinking level."""
+        out = subprocess.run(["pi", "--list-models"], capture_output=True, text=True, timeout=30).stdout
+        rows = [line.split() for line in out.splitlines()]
+        head = next(r for r in rows if r[:2] == ["provider", "model"])
+        return [{"id": f"{r[0]}/{r[1]}", "thinking": r[head.index("thinking")] == "yes"}
+                for r in rows[rows.index(head) + 1:] if len(r) == len(head)]
 
     def stream(self, step, prompt, files, workdir) -> Iterator[str]:
         for _, d in self._events(step, prompt, files, workdir):

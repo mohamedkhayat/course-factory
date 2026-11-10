@@ -133,6 +133,10 @@ class FakeModel:
         return out if isinstance(out, str) else json.dumps(out)
 
 
+    @staticmethod
+    def models():
+        return [{"id": "llama-swap/big", "thinking": True}, {"id": "llama-swap/small", "thinking": False}]
+
     def stream(self, step, prompt, files, workdir):
         text = self(step, prompt, files, workdir)
         for i in range(0, len(text), 12):

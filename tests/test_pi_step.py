@@ -207,3 +207,17 @@ def test_a_step_model_set_in_settings_is_used_and_kept(client, monkeypatch):
     assert client.put("/api/models", json={"step": "nope", "model": "x"}).status_code == 422
     client.put("/api/models", json={"step": "repair_block"})
     assert model_for("repair_block") == "env-model" and "repair_block" not in STEP_MODELS
+
+
+def test_a_default_model_set_in_settings_runs_every_step_without_its_own(client, monkeypatch):
+    from course_factory.pi_step import model_for
+    monkeypatch.setenv("CF_MODEL", "env-default")
+    monkeypatch.setenv("CF_MODEL_READ_PAGE", "env-reader")
+    assert client.get("/api/models/available").json() == [{"id": "llama-swap/big", "thinking": True}, {"id": "llama-swap/small", "thinking": False}]
+    got = client.put("/api/models", json={"step": "default", "model": "llama-swap/big:high"}).json()
+    assert got["default"] == "llama-swap/big:high" and got["default_from"] == "settings"
+    assert model_for("write_section") == "llama-swap/big:high" and model_for("read_page") == "env-reader"  # a step's own env still wins
+    client.put("/api/models", json={"step": "write_section", "model": "llama-swap/small"})
+    assert model_for("write_section") == "llama-swap/small"
+    assert client.put("/api/models", json={"step": "default"}).json()["default"] == "env-default"
+    client.put("/api/models", json={"step": "write_section"})
