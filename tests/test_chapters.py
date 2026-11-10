@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from course_factory.chapters import REPAIRS
 from test_outline import to_outline_gate
@@ -323,3 +324,13 @@ def test_a_placeholder_section_is_written_again(client, material, model, monkeyp
     model.handlers["write_section"] = stub_first
     generate(client, material, model)
     assert sum("RETRY FEEDBACK" in p and "is a placeholder" in p for p in seen) == 1  # only the stub is written again, told why
+
+
+@pytest.mark.parametrize("language,rule", [("en", "Write everything in English"), ("fr", "Write everything in French"),
+                                           (None, "Write your own explanations, intuitions and hints in English")])
+def test_the_course_language_chosen_before_generation_reaches_every_prompt(client, material, model, language, rule):
+    cid = generate(client, material, model, goal={"goal": "deep"} | ({"language": language} if language else {}))
+    prompts = [p for step, p in model.prompts if step in ("plan_chapter", "write_section")]
+    assert prompts and all(rule in p for p in prompts)
+    assert client.patch(f"/api/courses/{cid}", json={"goal": "deep", "language": "fr"}).json()["language"] == "fr"
+    assert client.patch(f"/api/courses/{cid}", json={"goal": "deep"}).json()["language"] == "fr"  # a goal change keeps it

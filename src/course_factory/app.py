@@ -59,6 +59,7 @@ class SourceEdit(BaseModel):
 class FoundDecision(BaseModel):
     goal: Literal["cram", "deep"]
     exam_date: dt.date | None = None
+    language: Literal["mixed", "en", "fr"] = "mixed"
 
     @model_validator(mode="after")
     def cram_needs_date(self):
@@ -93,7 +94,7 @@ class OutlineEdit(BaseModel):
 
 
 class GoalChange(FoundDecision):
-    pass
+    language: Literal["mixed", "en", "fr"] | None = None  # unset: unchanged
 
 
 class BlockEdit(BaseModel):
@@ -420,7 +421,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         course_or_404(cid)
         if status(cid)["gate"] == "found":
             raise HTTPException(409, "choose the Goal by approving the found gate")
-        db.execute("UPDATE courses SET goal=?, exam_date=? WHERE id=?", (body.goal, body.exam_date and body.exam_date.isoformat(), cid))
+        db.execute("UPDATE courses SET goal=?, exam_date=?, language=COALESCE(?, language) WHERE id=?",
+                   (body.goal, body.exam_date and body.exam_date.isoformat(), body.language, cid))
         return dict(course_or_404(cid))
 
     @app.get("/api/courses/{cid}/outline")

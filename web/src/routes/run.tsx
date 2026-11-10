@@ -378,12 +378,13 @@ function FoundGate({ cid }: { cid: number }) {
   const { data } = useQuery({ queryKey: ["found", cid], queryFn: () => get<{ sources: Source[]; unreadable_pages: { source: string; page: number }[] }>(`/api/courses/${cid}/found`) });
   const [goal, setGoal] = useState<"cram" | "deep">("deep");
   const [date, setDate] = useState("");
+  const [language, setLanguage] = useState<Language>("mixed");
   const edit = useMutation({
     mutationFn: ({ id, body }: { id: number; body: object }) => send(`/api/courses/${cid}/sources/${id}`, body, "PATCH"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["found", cid] }),
   });
   const approve = useMutation({
-    mutationFn: () => send(`/api/courses/${cid}/gates/found`, { goal, exam_date: date || null }),
+    mutationFn: () => send(`/api/courses/${cid}/gates/found`, { goal, exam_date: date || null, language }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["run", cid] }),
   });
   if (!data) return null;
@@ -438,6 +439,7 @@ function FoundGate({ cid }: { cid: number }) {
         <label className="flex items-center gap-3 text-sm">Exam date
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-44" required={goal === "cram"} />
         </label>
+        <LanguagePicker value={language} onChange={setLanguage} />
       </fieldset>
       {approve.error && <p className="mt-2 text-sm text-destructive">{errText(approve.error)}</p>}
       <Button className="mt-4" disabled={approve.isPending || (goal === "cram" && !date)} onClick={() => approve.mutate()}>
@@ -760,11 +762,24 @@ function RefreshSources({ cid }: { cid: number }) {
   );
 }
 
+type Language = "mixed" | "en" | "fr";
+const LANGUAGES: [Language, string][] = [["mixed", "French course material, English explanations"], ["fr", "All in French"], ["en", "All in English"]];
+
+function LanguagePicker({ value, onChange }: { value: Language; onChange: (l: Language) => void }) {
+  return (
+    <label className="flex flex-wrap items-center gap-3 text-sm">Language
+      <select value={value} onChange={(e) => onChange(e.target.value as Language)} className="h-8 rounded-md border border-input bg-background px-2">
+        {LANGUAGES.map(([l, label]) => <option key={l} value={l}>{label}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function Settings({ cid, course }: { cid: number; course: Course }) {
   const qc = useQueryClient();
   const [date, setDate] = useState(course.exam_date ?? "");
   const goal = useMutation({
-    mutationFn: ({ g, d }: { g: "cram" | "deep"; d: string }) => send(`/api/courses/${cid}`, { goal: g, exam_date: d || null }, "PATCH"),
+    mutationFn: ({ g, d, l }: { g: "cram" | "deep"; d: string; l?: Language }) => send(`/api/courses/${cid}`, { goal: g, exam_date: d || null, language: l }, "PATCH"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["course", String(cid)] }),
   });
   const upload = useMutation({ mutationFn: (f: File) => { const d = new FormData(); d.append("file", f); return send(`/api/courses/${cid}/sources`, d); } });
@@ -779,6 +794,8 @@ function Settings({ cid, course }: { cid: number; course: Course }) {
         <Button size="sm" variant="outline" disabled={goal.isPending || (course.goal === "deep" && !date)}
                 onClick={() => goal.mutate({ g: course.goal === "cram" ? "deep" : "cram", d: date })}>{course.goal === "cram" ? "Switch to deep" : "Switch to cram"}</Button>
       </div>
+      <LanguagePicker value={course.language} onChange={(l) => goal.mutate({ g: course.goal === "cram" ? "cram" : "deep", d: date, l })} />
+      <p className="text-xs text-muted-foreground">Applies to what is written from now on.</p>
       {goal.error && <p className="text-destructive">{errText(goal.error)}</p>}
       <div><AutoResolveToggle cid={cid} /></div>
       <RefreshSources cid={cid} />

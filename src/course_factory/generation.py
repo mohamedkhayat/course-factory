@@ -29,8 +29,8 @@ def build_graph(ctx: Ctx, langgraph_db: sqlite3.Connection):
 
     def found_gate(state: RunState):
         decision = interrupt({"gate": "found"})
-        db.execute("UPDATE courses SET goal=?, exam_date=? WHERE id=?",
-                   (decision["goal"], decision.get("exam_date"), state["course_id"]))
+        db.execute("UPDATE courses SET goal=?, exam_date=?, language=? WHERE id=?",
+                   (decision["goal"], decision.get("exam_date"), decision.get("language", "mixed"), state["course_id"]))
         return {}
 
     def outline_gate(state: RunState):

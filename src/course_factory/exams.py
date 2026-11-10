@@ -7,7 +7,7 @@ import re
 
 from pydantic import BaseModel, Field, model_validator
 
-from .chapters import LANGUAGE_RULE, page_texts
+from .chapters import language_rule, page_texts
 from .checks import render_errors
 from .context import Ctx
 from .pi_step import attach_checks, last_trace_id, run_pi_step
@@ -54,7 +54,7 @@ def rebuild_past_papers(ctx: Ctx, cid: int) -> None:
                                 (cid, src["paired_with"], src["id"], src["id"])).fetchone()
         plan = run_pi_step(db, ctx.backend, "rebuild_past_paper", {
             "exam": pages_of(ctx, cid, src), "correction": pages_of(ctx, cid, correction) if correction else [],
-            "chapters": titles, "language": LANGUAGE_RULE}, ExamPlan, ctx.course_dir(cid), course_id=cid)
+            "chapters": titles, "language": language_rule(db, cid)}, ExamPlan, ctx.course_dir(cid), course_id=cid)
         eid = save_exam(ctx, cid, plan, "past_paper", src["id"])
         text = "\n".join(p["text"] for p in pages_of(ctx, cid, src)[:2])
         db.execute("UPDATE exams SET cohort=? WHERE id=?", (cohort_of(text), eid))
@@ -110,7 +110,7 @@ def build_mock_exams(ctx: Ctx, cid: int) -> None:
         weights = [{"chapter": r["title"], "exam_weight": r["exam_weight"]} for r in db.execute(
             "SELECT title, exam_weight FROM chapters WHERE course_id=? AND priority!='skip' ORDER BY position", (cid,))]
         plan = run_pi_step(db, ctx.backend, "write_mock_exam", {
-            "number": n + 1, "past_papers": past, "chapters": weights, "language": LANGUAGE_RULE},
+            "number": n + 1, "past_papers": past, "chapters": weights, "language": language_rule(db, cid)},
             ExamPlan, ctx.course_dir(cid), course_id=cid)
         save_exam(ctx, cid, plan, "mock", None)
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from . import learner
-from .chapters import LANGUAGE_RULE, block_json
+from .chapters import language_rule, block_json
 from .context import Ctx
 from .outline import profile_of
 from .pi_step import StepFailed, run_pi_step
@@ -67,7 +67,7 @@ def classify_questions(ctx: Ctx, cid: int, force: bool = False) -> None:
     plan = run_pi_step(db, ctx.backend, "classify_questions", {
         "questions": [{"id": q["id"], "statement": q["statement"], "points": q["points"], "chapter": q["chapter"],
                        "model_answer": q["model_answer"], "scheme": json.loads(q["scheme"] or "null")} for q in qs],
-        "chapters": list(titles), "language": LANGUAGE_RULE}, TypesPlan, ctx.course_dir(cid), course_id=cid)
+        "chapters": list(titles), "language": language_rule(db, cid)}, TypesPlan, ctx.course_dir(cid), course_id=cid)
     by_id = {q["id"]: q for q in qs}
     types: dict[str, dict] = {}
     seen: set[int] = set()

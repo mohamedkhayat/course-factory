@@ -18,8 +18,17 @@ from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, reco
 
 REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
-LANGUAGE_RULE = ("Keep source statements, definitions and exercise wording in the source language (usually French), "
-                 "with the professor's notation. Write your own explanations, intuitions and hints in English.")
+LANGUAGES = {  # the Course's language, chosen at the found gate
+    "mixed": "Keep source statements, definitions and exercise wording in the source language (usually French), "
+             "with the professor's notation. Write your own explanations, intuitions and hints in English.",
+    "en": "Write everything in English: translate the source's statements, definitions and exercise wording, keeping the "
+          "professor's notation and the exact names of commands, functions and files.",
+    "fr": "Write everything in French: keep the source's statements, definitions and exercise wording, with the professor's "
+          "notation, and write your own explanations, intuitions and hints in French too."}
+
+
+def language_rule(db, cid: int) -> str:
+    return LANGUAGES[db.execute("SELECT language FROM courses WHERE id=?", (cid,)).fetchone()["language"]]
 
 
 def words(data) -> int:
@@ -164,7 +173,7 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
     try:
         lessons = plan_chapter(db, ctx.backend, ctx.course_dir(cid), cid, chapter, planned, {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "subject": subject, "cram": cram,
-            "language": LANGUAGE_RULE, "taught": json.dumps(before[sections[0]["id"]], ensure_ascii=False),
+            "language": language_rule(db, cid), "taught": json.dumps(before[sections[0]["id"]], ensure_ascii=False),
             "components": ", ".join(CATALOGUE), "exam_types": json.dumps(exam_types, ensure_ascii=False)}, exam_types)
     except StepFailed:
         lessons = {}  # no plan: the Sections are written as before rather than stalling the Run
@@ -173,7 +182,7 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         lesson = lessons.get(sec["title"])
         inputs = {"goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-                  "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE, "subject": subject, "cram": cram,
+                  "pages": pages, "catalogue": catalogue, "language": language_rule(db, cid), "subject": subject, "cram": cram,
                   "owner_notes": (notes or {}).get(sec["id"], "none"), "taught_before": before[sec["id"]],
                   "teaches": json.loads(sec["teaches"]), "plan": lesson or "none", "gaps": "none"}
         draft = run_pi_step(db, ctx.backend, "write_section", inputs, SectionDraft, ctx.course_dir(cid), course_id=cid)
@@ -273,7 +282,7 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
         try:
             fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {
                 "block": blocks[index], "errors": errors[index], "pages": pages,
-                "catalogue": catalogue_text(ctx), "language": LANGUAGE_RULE}, RepairedBlock,
+                "catalogue": catalogue_text(ctx), "language": language_rule(ctx.db, cid)}, RepairedBlock,
                 ctx.course_dir(cid), course_id=cid)
             return index, fixed.block, None, last_trace_id()
         except StepFailed as e:

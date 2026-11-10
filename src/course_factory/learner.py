@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from fsrs import Card, Rating, Scheduler
 from pydantic import BaseModel, Field
 
-from .chapters import LANGUAGE_RULE, block_json
+from .chapters import language_rule, block_json
 from .checks import GAP
 from .pi_step import StepFailed, run_pi_step
 from .context import Ctx
@@ -332,7 +332,7 @@ def router(ctx: Ctx) -> APIRouter:
             grade = run_pi_step(db, ctx.backend, "grade_code", {
                 "task": d["task"], "code_language": d["language"], "solution": d["solution"], "code": body.code,
                 "rubric": d.get("rubric") or "none",
-                "language": LANGUAGE_RULE}, CodeGrade, ctx.course_dir(cid), course_id=cid, live=True)
+                "language": language_rule(db, cid)}, CodeGrade, ctx.course_dir(cid), course_id=cid, live=True)
         except StepFailed as e:
             raise HTTPException(502, f"grading failed: {e}")
         record(ctx, "code_answer", row["chapter_id"], grade.correct)
