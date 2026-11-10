@@ -340,10 +340,10 @@ def router(ctx: Ctx) -> APIRouter:
 
     @r.post("/api/courses/{cid}/blocks/{bid}/self-mark")
     def self_mark(cid: int, bid: int, body: SelfMark):
-        """The learner marks their own by-hand work after comparing it with the correction."""
+        """The learner marks their own answer to an exercise (by hand or written) after comparing it with the correction."""
         row = published_block(cid, bid)
-        if row["component"] != "exercise" or json.loads(row["data"]).get("mode") != "hand":
-            raise HTTPException(422, "not a by-hand exercise Block")
+        if row["component"] != "exercise":
+            raise HTTPException(422, "not an exercise Block")
         record(ctx, "self_mark", row["chapter_id"], body.mark == "got")
         if body.mark != "got":  # it comes back in the next Review
             for part, front, back in card_faces(block_json(row)):

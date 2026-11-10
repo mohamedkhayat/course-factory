@@ -160,14 +160,15 @@ function FreeCode({ data, cid, block }: P<CodeData>) {
 }
 
 /** Work on paper, then reveal the correction one step at a time and mark yourself. */
-export function HandCorrection({ steps, correction, cid, block }: { steps: string[]; correction: string; cid: number; block: Block }) {
+export function HandCorrection({ steps, correction, cid, block, intro = "Work it on paper first, then compare step by step." }:
+  { steps: string[]; correction: string; cid: number; block: Block; intro?: string }) {
   const [n, setN] = useState(0);
   const [mark, setMark] = useState<string | null>(null);
   const done = n > steps.length;
   const rate = (m: string) => { setMark(m); if (!exported) send(`/api/courses/${cid}/blocks/${block.id}/self-mark`, { mark: m }).catch(() => {}); };
   return (
     <div className="mt-3 space-y-2">
-      {n === 0 && <p className="text-sm text-muted-foreground">Work it on paper first, then compare step by step.</p>}
+      {n === 0 && <p className="text-sm text-muted-foreground">{intro}</p>}
       {steps.slice(0, n).map((s, i) => <div key={i} className="flex gap-3 border-l border-border pl-3"><span className="tabular text-sm text-muted-foreground">{i + 1}</span><Md>{s}</Md></div>)}
       {done && <div className="rounded-md bg-muted/60 px-3 py-2"><Md>{correction}</Md></div>}
       {!done ? <Button size="sm" variant="outline" onClick={() => setN(n + 1)}>{n < steps.length ? `Show step ${n + 1} of ${steps.length}` : "Show the answer"}</Button>

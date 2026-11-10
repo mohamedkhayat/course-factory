@@ -175,7 +175,7 @@ def test_a_code_answer_is_graded_with_feedback_and_a_hint(client, material, mode
     assert "COPY . ." in prompt and "CMD [" in prompt  # the learner's code and the reference solution
     assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/grade", json={"code": "x"}).status_code == 422
     assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"}).status_code == 200
-    assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/self-mark", json={"mark": "got"}).status_code == 422
+    assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/self-mark", json={"mark": "got"}).status_code == 422  # not an exercise
 
 
 def test_a_code_hint_comes_from_the_tutor_and_a_missed_hand_exercise_comes_back_as_a_card(client, material, model):
