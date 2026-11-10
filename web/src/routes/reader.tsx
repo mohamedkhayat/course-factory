@@ -75,7 +75,7 @@ export function Reader() {
   const { data: chapters = [] } = useQuery({ queryKey: ["reader", cid], queryFn: () => get<Chapter[]>(`/api/courses/${cid}/reader`) });
   const { data: place } = useQuery({ queryKey: ["place", cid], queryFn: () => get<{ section_id: number | null; read: number[] }>(`/api/courses/${cid}/place`) });
   const { data: course } = useQuery({ queryKey: ["course", String(cid)], queryFn: () => get<Course>(`/api/courses/${cid}`) });
-  const [sid, setSid] = useState<number | null>(null);
+  const [sid, setSid] = useState<number | null>(() => Number(new URLSearchParams(location.search).get("section")) || null);
   const [cite, setCite] = useState<Citation | null>(null);
   const [tutor, setTutor] = useState(false);
   const mark = useMutation({ mutationFn: (section_id: number) => send(`/api/courses/${cid}/place`, { section_id }, "PUT") });

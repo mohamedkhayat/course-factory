@@ -4,13 +4,15 @@ import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from . import components
 from .catalogue import CATALOGUE, describe
 from .checks import check_blocks
 from .context import Ctx
-from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, run_pi_step
+from .outline import profile_of
+from .failures import failure_class
+from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, record_owner_action, run_pi_step
 
 REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
@@ -18,9 +20,27 @@ LANGUAGE_RULE = ("Keep source statements, definitions and exercise wording in th
                  "with the professor's notation. Write your own explanations, intuitions and hints in English.")
 
 
+def words(data) -> int:
+    if isinstance(data, dict):
+        return sum(words(v) for v in data.values())
+    if isinstance(data, list):
+        return sum(words(v) for v in data)
+    return len(data.split()) if isinstance(data, str) else 0
+
+
+MIN_SECTION_WORDS = 25
+
+
 class SectionDraft(BaseModel):
     blocks: list[dict] = Field(min_length=1)  # checked one by one so a bad Block doesn't sink the Section
     proposals: list[dict] = []  # new Components, checked one by one too
+
+    @model_validator(mode="after")
+    def not_a_placeholder(self):
+        """The model sometimes answers a Section with a stub ("test"); a rejection retries it with this feedback."""
+        if words([b.get("data") for b in self.blocks if isinstance(b, dict)]) < MIN_SECTION_WORDS:
+            raise ValueError(f"the Section is a placeholder (under {MIN_SECTION_WORDS} words): write its real content")
+        return self
 
 
 def catalogue_text(ctx: Ctx) -> str:
@@ -44,6 +64,7 @@ class GroundingResult(BaseModel):
     block: int
     grounded: bool
     contradicts: bool = False  # ungrounded because it disagrees with its pages, not just goes beyond them
+    source_error: bool = False  # the Block is right and the page has a slip (a typo in the correction): keep it, with a note
     reason: str = ""
 
 
@@ -87,18 +108,35 @@ def page_texts(ctx: Ctx, cid: int, refs: list[dict]) -> list[dict]:
     return out
 
 
-def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
+def cram_brief(ctx: Ctx, cid: int, chapter) -> dict:
+    """What a Cram Section is written for: the Chapter's Cram Profile and the Question Types that test it, with their
+    past Questions, points and Marking schemes."""
+    db = ctx.db
+    types = []
+    for t in db.execute("SELECT DISTINCT t.* FROM question_types t LEFT JOIN questions q ON q.question_type_id=t.id "
+                        "WHERE t.course_id=? AND (t.chapter_id=? OR q.chapter_id=?) ORDER BY t.id", (cid, chapter["id"], chapter["id"])):
+        qs = db.execute("SELECT statement, points, model_answer, scheme FROM questions WHERE question_type_id=? ORDER BY id", (t["id"],)).fetchall()
+        types.append({"name": t["name"], "trigger": t["trigger"], "points": sum(q["points"] for q in qs),
+                      "past_questions": [{"statement": q["statement"], "points": q["points"], "model_answer": q["model_answer"],
+                                          "scheme": json.loads(q["scheme"] or "null")} for q in qs[:3]]})
+    return {"profile": profile_of(ctx, chapter), "question_types": types}
+
+
+def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None = None) -> None:
+    """Writes the Chapter's unfinished Sections; `notes` (Section id -> text) are owner notes for the model (a Refresh
+    passes the owner's earlier edits)."""
     db = ctx.db
     db.execute("UPDATE chapters SET status='generating' WHERE id=?", (chid,))
     chapter = db.execute("SELECT * FROM chapters WHERE id=?", (chid,)).fetchone()
     goal, subject = db.execute("SELECT goal, subject FROM courses WHERE id=?", (cid,)).fetchone()
+    cram = cram_brief(ctx, cid, chapter) if goal == "cram" else "none (Deep: no exam focus)"
+    known_types = {r["name"] for r in db.execute("SELECT name FROM question_types WHERE course_id=?", (cid,))}
     sections = db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)).fetchall()
     pending_sections = []
     for sec in sections:
         if sec["generation_status"] == "complete":
             continue
         db.execute("UPDATE sections SET generation_status='generating' WHERE id=?", (sec["id"],))
-        db.execute("DELETE FROM blocks WHERE section_id=?", (sec["id"],))
         pending_sections.append(sec)
     if not pending_sections:
         db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
@@ -109,7 +147,8 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         draft = run_pi_step(db, ctx.backend, "write_section", {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-            "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE, "subject": subject},
+            "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE, "subject": subject, "cram": cram,
+            "owner_notes": (notes or {}).get(sec["id"], "none")},
             SectionDraft, ctx.course_dir(cid), course_id=cid)
         return sec, pages, draft, last_trace_id()
 
@@ -133,11 +172,23 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
     def save_section(item, result):
         sec, _, _, section_trace = item
         blocks, checks = result
+        # a rewritten Section keeps its Block ids by position (and so the Cards' history) while the Component stays the same
+        old = {r["position"]: r for r in db.execute("SELECT id, position, component FROM blocks WHERE section_id=?", (sec["id"],))}
         for pos, (block, flags) in enumerate(zip(blocks, checks)):
-            db.execute("INSERT INTO blocks (section_id, position, component, data, citations, origin, status, flags) VALUES (?,?,?,?,?,?,?,?)",
-                       (sec["id"], pos, block["component"], json.dumps(block["data"], ensure_ascii=False),
-                        json.dumps(block["citations"], ensure_ascii=False), block["origin"],
-                        "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False)))
+            values = (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
+                      block["origin"], "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False),
+                      json.dumps([n for n in block.get("exam_types", []) if n in known_types], ensure_ascii=False))
+            prev = old.pop(pos, None)
+            if prev and prev["component"] == block["component"]:
+                db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=?, exam_types=?, previous=NULL, "
+                           "review_queue=0 WHERE id=?", (*values, prev["id"]))
+                continue
+            if prev:
+                db.execute("DELETE FROM blocks WHERE id=?", (prev["id"],))
+            db.execute("INSERT INTO blocks (section_id, position, component, data, citations, origin, status, flags, exam_types) "
+                       "VALUES (?,?,?,?,?,?,?,?,?)", (sec["id"], pos, *values))
+        for prev in old.values():
+            db.execute("DELETE FROM blocks WHERE id=?", (prev["id"],))
         attach_checks(db, section_trace, [{"block": i, **flags} for i, flags in enumerate(checks)])
         db.execute("UPDATE sections SET generation_status='complete' WHERE id=?", (sec["id"],))
 
@@ -146,6 +197,31 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int) -> None:
         for future in as_completed(futures):
             save_section(futures[future], future.result())
     db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
+    if db.execute("SELECT auto_resolve FROM courses WHERE id=?", (cid,)).fetchone()[0]:
+        auto_resolve(ctx, cid, chid)
+
+
+def auto_resolve(ctx: Ctx, cid: int, chid: int) -> dict:
+    """Resolves a Chapter's flagged Blocks with the local model: each Block's flags are its repair note, then it is re-checked
+    and re-judged. The previous version is kept for undo; a Block still flagged goes to the Review Queue (worked by Claude Code)."""
+    db = ctx.db
+    resolved, queued, classes = [], [], []
+    for sec in db.execute("SELECT id, pages FROM sections WHERE chapter_id=? ORDER BY position", (chid,)).fetchall():
+        rows = db.execute("SELECT * FROM blocks WHERE section_id=? AND status='flagged' ORDER BY position", (sec["id"],)).fetchall()
+        if not rows:
+            continue
+        notes = {i: "; ".join(json.loads(r["flags"])) or "the Block is flagged" for i, r in enumerate(rows)}
+        classes += [failure_class(f) for r in rows for f in json.loads(r["flags"])]
+        blocks, flags = checked_blocks(ctx, cid, [block_json(r) for r in rows], page_texts(ctx, cid, json.loads(sec["pages"])), notes)
+        for row, block, f in zip(rows, blocks, flags):
+            previous = {k: row[k] for k in ("component", "origin", "status")} | {k: json.loads(row[k]) for k in ("data", "citations", "flags")}
+            db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=?, previous=?, review_queue=? WHERE id=?",
+                       (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
+                        block["origin"], "flagged" if f["errors"] else "ok", json.dumps(f["errors"] + f["warnings"], ensure_ascii=False),
+                        json.dumps(previous, ensure_ascii=False), int(bool(f["errors"])), row["id"]))
+            (queued if f["errors"] else resolved).append(row["id"])
+    record_owner_action(db, cid, "chapter_review", {"chapter": chid, "resolved": resolved, "queued": queued, "classes": classes}, "auto_resolved")
+    return {"resolved": resolved, "queued": queued}
 
 
 def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes: dict[int, str] | None = None,
@@ -210,6 +286,8 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
             r = results.get(i)
             if r is None:
                 warnings[i].append("grounding judge returned no result for this Block")
+            elif r.source_error:
+                warnings[i].append(f"source error: {r.reason}")  # shown to the learner next to the Block
             elif r.contradicts:
                 errors[i] = [f"contradicts its cited pages: {r.reason}"]
                 contradicted.append(i)
@@ -239,6 +317,8 @@ def checked_block(ctx: Ctx, cid: int, raw: dict, pages: list[dict], note: str | 
 def block_json(row) -> dict:
     return {"id": row["id"], "position": row["position"], "component": row["component"], "data": json.loads(row["data"]),
             "citations": json.loads(row["citations"]), "origin": row["origin"], "status": row["status"], "flags": json.loads(row["flags"]),
+            "exam_types": json.loads(row["exam_types"]), "review_queue": bool(row["review_queue"]),
+            "previous": json.loads(row["previous"]) if row["previous"] else None,
             **({} if row["component"] in CATALOGUE else {"fallback_markdown": fallback_markdown(json.loads(row["data"]))})}
 
 

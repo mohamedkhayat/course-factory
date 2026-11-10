@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Download, MessageCircle, Play } from "lucide-react";
+import { ArrowRight, Check, Download, FlaskConical, MessageCircle, Play } from "lucide-react";
 import { CodeEditor } from "@/components/code-editor";
 import { Md } from "@/components/md";
 import { Button } from "@/components/ui/button";
@@ -21,10 +21,26 @@ export function Labs() {
   return (
     <Page title="Labs">
       {!data.length && <p className="text-muted-foreground">No Lab in this Course.</p>}
-      <ul className="divide-y divide-border border-y border-border">
+      <ul className="space-y-3">
         {data.map((l) => (
-          <li key={l.id}><Link to="/c/$cid/labs/$lid" params={{ cid: String(cid), lid: String(l.id) }} className="flex justify-between py-3 hover:text-primary">
-            <span className="font-medium">{l.title}</span><span className="tabular text-sm text-muted-foreground">{l.passed} / {l.steps} Steps</span></Link></li>
+          <li key={l.id}>
+            <Link to="/c/$cid/labs/$lid" params={{ cid: String(cid), lid: String(l.id) }}
+                  className="lift group flex items-center gap-4 rounded-lg border border-border bg-card px-5 py-4 hover:border-transparent">
+              <span className={cn("grid size-10 shrink-0 place-items-center rounded-md", l.passed === l.steps && l.steps ? "bg-ok/15 text-ok" : "bg-primary/10 text-primary")}>
+                {l.passed === l.steps && l.steps ? <Check className="size-5" aria-hidden /> : <FlaskConical className="size-5" aria-hidden />}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">{l.title}</span>
+                <span className="mt-2 flex items-center gap-3">
+                  <span className="flex flex-1 gap-0.5" aria-hidden>
+                    {Array.from({ length: l.steps }, (_, i) => <span key={i} className={cn("h-1.5 flex-1 rounded-full", i < l.passed ? "bg-ok" : "bg-muted")} />)}
+                  </span>
+                  <span className="tabular shrink-0 text-xs text-muted-foreground">{l.passed} of {l.steps} Steps</span>
+                </span>
+              </span>
+              <ArrowRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+            </Link>
+          </li>
         ))}
       </ul>
     </Page>

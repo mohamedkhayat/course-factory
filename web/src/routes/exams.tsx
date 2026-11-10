@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, Eraser, PenLine, Upload } from "lucide-react";
+import { Camera, Eraser, FileText, PenLine, Upload } from "lucide-react";
 import { Md } from "@/components/md";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,16 +29,30 @@ export function Exams() {
   });
   return (
     <Page title="Exams">
-      <ul className="divide-y divide-border border-y border-border">
-        {exams.map((e) => (
-          <li key={e.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-            <span>
-              <span className="font-medium">{e.title}</span>
-              <span className="ml-2 text-sm text-muted-foreground">{e.kind === "mock" ? "Mock exam" : "Past paper"} · <span className="tabular">{e.duration_min} min</span></span>
-            </span>
-            <Button size="sm" onClick={() => start.mutate(e.id)} disabled={start.isPending}>Sit it</Button>
-          </li>
-        ))}
+      {!exams.length && <p className="text-muted-foreground">No Exam in this Course yet.</p>}
+      <ul className="space-y-3">
+        {exams.map((e) => {
+          const copies = history.filter((h) => h.exam_id === e.id);
+          const best = copies.reduce<number | null>((m, h) => Math.max(m ?? 0, h.max ? h.total / h.max : 0), null);
+          const Icon = e.kind === "mock" ? PenLine : FileText;
+          return (
+            <li key={e.id} className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-card px-5 py-4">
+              <span className={cn("grid size-10 shrink-0 place-items-center rounded-md", e.kind === "mock" ? "bg-primary/10 text-primary" : "bg-warn/15 text-warn")}>
+                <Icon className="size-5" aria-hidden />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium leading-snug">{e.title}</span>
+                <span className="tabular mt-0.5 block text-sm text-muted-foreground">
+                  {e.kind === "mock" ? "Mock exam" : "Past paper"} · {e.duration_min} min{e.chapters.length ? ` · ${e.chapters.length} Chapter${e.chapters.length === 1 ? "" : "s"}` : ""}
+                  {best != null && <> · best <span className={cn("font-medium", best >= 0.5 ? "text-ok" : "text-destructive")}>{Math.round(best * 100)}%</span></>}
+                </span>
+              </span>
+              <Button size="sm" variant={copies.length ? "outline" : "default"} onClick={() => start.mutate(e.id)} disabled={start.isPending}>
+                {copies.length ? "Sit it again" : "Sit it"}
+              </Button>
+            </li>
+          );
+        })}
       </ul>
       {start.error && <p className="mt-2 text-sm text-destructive">{errText(start.error)}</p>}
       {history.length > 0 && (

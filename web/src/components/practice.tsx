@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 import { Check, Lightbulb, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { readEvents, send, type Block } from "@/lib/api";
+import { exported, readEvents, send, type Block } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./code-editor";
 import { Md, MdLine } from "./md";
@@ -70,11 +70,30 @@ const Solution = ({ code }: { code: string }) => (
 /** Code with blanks is checked by match, like fill_blanks; free-form code goes to the model grader. */
 export function CodeExercise(props: P<CodeData>) {
   const { data } = props;
-  if (!data.blanks?.length) return <FreeCode {...props} />;
+  if (!data.blanks?.length) return exported ? <ExportedCode data={data} /> : <FreeCode {...props} />;
   return (
     <div>
       <Md>{data.task}</Md>
       <FillBlanks {...props} data={{ title: data.title, language: data.language || "text", template: data.starter, blanks: data.blanks, explanation: "" }} />
+      <Solution code={data.solution} />
+    </div>
+  );
+}
+
+/** In a standalone export there is no grader: the learner writes code, uses the written hints, and compares with the solution. */
+function ExportedCode({ data }: { data: CodeData }) {
+  const [code, setCode] = useState(data.starter);
+  const [shown, setShown] = useState(0);
+  return (
+    <div>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
+      <Md>{data.task}</Md>
+      <CodeEditor value={code} onChange={setCode} onRun={() => {}} label={`${data.language} answer`} language={data.language} />
+      {data.hints.slice(0, shown).map((h, i) => <div key={i} className="mt-2 flex gap-2 text-sm"><Lightbulb className="mt-1 size-4 shrink-0 text-warn" /><Md>{h}</Md></div>)}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}
+        <Button size="sm" variant="ghost" onClick={() => setCode(data.starter)}>Reset</Button>
+      </div>
       <Solution code={data.solution} />
     </div>
   );
@@ -145,7 +164,7 @@ export function HandCorrection({ steps, correction, cid, block }: { steps: strin
   const [n, setN] = useState(0);
   const [mark, setMark] = useState<string | null>(null);
   const done = n > steps.length;
-  const rate = (m: string) => { setMark(m); send(`/api/courses/${cid}/blocks/${block.id}/self-mark`, { mark: m }).catch(() => {}); };
+  const rate = (m: string) => { setMark(m); if (!exported) send(`/api/courses/${cid}/blocks/${block.id}/self-mark`, { mark: m }).catch(() => {}); };
   return (
     <div className="mt-3 space-y-2">
       {n === 0 && <p className="text-sm text-muted-foreground">Work it on paper first, then compare step by step.</p>}

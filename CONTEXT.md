@@ -133,7 +133,7 @@ The record of one model step: the Harness version, inputs, output, check results
 _Avoid_: log, event
 
 **Review Queue**:
-The model-made Components (and later, flagged Blocks) waiting for Claude Code to promote, fix or reject them. Claude Code works the queue from outside the app; the app itself never calls Claude.
+The model-made Components, and the flagged Blocks auto-resolve could not fix, waiting for Claude Code to promote, fix or reject them. Claude Code works the queue from outside the app; the app itself never calls Claude.
 _Avoid_: backlog, inbox
 
 **Live work**:
@@ -167,6 +167,42 @@ _Avoid_: target, quota
 **Streak**:
 The run of consecutive days the Daily Goal was met. One missed day per week is forgiven.
 _Avoid_: combo, chain
+
+**Question Type**:
+A recurring shape of exam question across past papers, answered with the same method, such as "prove a set is convex". Each has a trigger (how to recognise it) and an answer template.
+_Avoid_: question category, pattern
+
+**Exam Likelihood**:
+How likely an item is to be needed in the exam (high, medium or low), from the points of the Question Types that use it.
+_Avoid_: importance, priority (that is a Chapter setting)
+
+**Cram Profile**:
+A Chapter's cramming method: problem (worked problems, timed exercises), recall (definitions and theorems) or hands-on (commands and code).
+_Avoid_: mode, style
+
+**Cheat Sheet**:
+The compiled summary of a Course or Chapter for the last days: definitions, formulas, methods, traps and commands from checked Blocks only, most likely first, about two printed pages.
+_Avoid_: summary, crib sheet
+
+**Cram Plan**:
+The day-by-day schedule up to the exam date: learn, spaced retrieval passes, mixed practice, Mock exams, and a light last day.
+_Avoid_: schedule, timetable
+
+**Failure class**:
+A recurring kind of generation problem, derived from a check message, flag or owner fix. The ledger in the Harness records how each is handled.
+_Avoid_: error type, bug
+
+**Heal**:
+A deterministic fix code applies to model output before checking it.
+_Avoid_: patch, cleanup
+
+**Lesson**:
+A short Harness rule for a Failure class code can't handle, added only to the Model steps it affects.
+_Avoid_: tip, prompt tweak
+
+**Refresh**:
+Redoing only what changed after files in the Course folder changed: changed pages are re-read and only the Sections citing them are rewritten.
+_Avoid_: re-ingest, rebuild
 
 ## Relationships
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play, RotateCcw, StepForward } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { compileExpr, optimizerPath, type Method } from "@/lib/math";
+import { compileExpr, exprTex, optimizerPath, type Method } from "@/lib/math";
 import { Md, MdLine } from "./md";
 
 type Range = [number, number];
@@ -31,7 +31,7 @@ function colors() {
 }
 
 /** Draws with Plotly, loaded only when a 3D or contour Block is on screen. */
-function usePlotly(ref: React.RefObject<HTMLDivElement | null>, traces: object[], layout: object) {
+function usePlotly(ref: React.RefObject<HTMLDivElement | null>, traces: object[], layout: object, reset: number) {
   useEffect(() => {
     let alive = true;
     const el = ref.current;
@@ -39,17 +39,23 @@ function usePlotly(ref: React.RefObject<HTMLDivElement | null>, traces: object[]
       if (!alive || !el) return;
       const c = colors();
       Plotly.react(el, traces as never, { paper_bgcolor: "transparent", plot_bgcolor: "transparent", margin: { l: 40, r: 10, t: 10, b: 36 },
-        font: { color: c.fg, family: c.font, size: 12 }, showlegend: false, ...layout } as never, { displayModeBar: false, responsive: true });
+        font: { color: c.fg, family: c.font, size: 12 }, showlegend: false, uirevision: reset, ...structuredClone(layout) } as never, { displayModeBar: false, responsive: true });
     });
     return () => { alive = false; };
-  }, [ref, traces, layout]);
+  }, [ref, traces, layout, reset]);  // Plotly writes the zoom into the layout it gets, hence the copy; uirevision keeps it until Reset view
   useEffect(() => () => { const el = ref.current; if (el) import("plotly.js-dist-min").then(({ default: P }) => P.purge(el)); }, [ref]);
 }
 
 function Plotted({ traces, layout, label, className = "h-80" }: { traces: object[]; layout: object; label: string; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  usePlotly(ref, traces, layout);
-  return <div ref={ref} role="img" aria-label={label} className={`w-full ${className}`} />;
+  const [reset, setReset] = useState(0);
+  usePlotly(ref, traces, layout, reset);
+  return (
+    <div className="relative">
+      <div ref={ref} role="img" aria-label={label} className={`w-full ${className}`} />
+      <Button size="sm" variant="ghost" className="absolute right-0 top-0" onClick={() => setReset(reset + 1)}><RotateCcw className="size-4" />Reset view</Button>
+    </div>
+  );
 }
 
 type SurfaceData = { title: string; expr: string; x_range: Range; y_range: Range; view: "surface" | "contour" | "both"; points: { x: number; y: number; label: string }[]; caption: string };
@@ -60,7 +66,7 @@ export function SurfacePlot({ data }: { data: SurfaceData }) {
   const c = colors();
   const pts = data.points;
   const surface = useMemo(() => [
-    { type: "surface", x: g.xs, y: g.ys, z: g.z, colorscale: "YlOrBr", reversescale: true, showscale: false, contours: { z: { show: true, usecolormap: true, project: { z: true } } } },
+    { type: "surface", x: g.xs, y: g.ys, z: g.z, colorscale: "YlOrBr", reversescale: true, showscale: false, contours: { z: { show: true, usecolormap: true } } },
     ...(pts.length ? [{ type: "scatter3d", mode: "markers+text", x: pts.map((p) => p.x), y: pts.map((p) => p.y), z: pts.map((p) => (f ? f({ x: p.x, y: p.y }) : 0)),
       text: pts.map((p) => p.label), marker: { size: 4, color: c.primary } }] : []),
   ], [g, pts, f, c.primary]);
@@ -112,7 +118,7 @@ export function OptimizerAnimation({ data }: { data: OptimizerData }) {
   return (
     <figure>
       <h4 className="mb-1 font-medium"><MdLine>{data.title}</MdLine></h4>
-      <p className="mb-2 text-sm text-muted-foreground">{METHOD[data.method]} on <code>f(x, y) = {data.expr}</code> from ({data.start.join(", ")})</p>
+      <p className="mb-2 text-sm text-muted-foreground">{METHOD[data.method]} on <MdLine>{`$f(x, y) = ${exprTex(data.expr)}$`}</MdLine> from ({data.start.join(", ")})</p>
       <Plotted traces={traces} layout={layout} label={`${METHOD[data.method]} path on the contour lines of ${data.expr}`} className="h-96" />
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => { if (k >= path.length - 1) setK(0); setPlaying(!playing); }} aria-label={playing ? "Pause" : "Play"}>

@@ -1,4 +1,5 @@
 import datetime as dt
+import sqlite3
 
 import pytest
 
@@ -36,11 +37,15 @@ def test_place_is_remembered_and_reading_unlocks_cards(client, material, model, 
     assert due[0]["front"].startswith("**Definition**") and "oui" in due[1]["back"]
 
 
-def test_citation_opens_the_source_page(client, material, model):
+def test_citation_opens_the_source_page(client, material, model, data_dir):
     cid, _ = published(client, material, model)
     r = client.get(f"/api/courses/{cid}/sources/cours.pdf/pages/1")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content[:4] == b"\x89PNG"
     assert client.get(f"/api/courses/{cid}/sources/cours.pdf/pages/9").status_code == 404
+    with sqlite3.connect(data_dir / "course-factory.db") as db:  # a Source in a subfolder
+        db.execute("UPDATE sources SET name='chap1/cours.pdf' WHERE course_id=? AND name='cours.pdf'", (cid,))
+    r = client.get(f"/api/courses/{cid}/sources/chap1%2Fcours.pdf/pages/1")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
 
 
 def test_flagging_a_block(client, material, model):
@@ -190,3 +195,48 @@ def test_a_code_hint_comes_from_the_tutor_and_a_missed_hand_exercise_comes_back_
     assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "block_id": hand["id"]}).status_code == 422
     client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"})
     assert hand["id"] in [c["block_id"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]
+
+
+def test_deleting_a_course_removes_it_and_leaves_the_folder(client, material, model, data_dir, clock):
+    cid, sections = published(client, material, model)
+    client.put(f"/api/courses/{cid}/place", json={"section_id": sections[0]["id"]})
+    focus = client.post("/api/focus", json={"course_id": cid}).json()
+    old_traces = {t["id"] for t in client.get(f"/api/courses/{cid}/traces").json()}
+    assert old_traces and client.get(f"/api/courses/{cid}/cards/due").json()
+    assert (data_dir / "courses" / str(cid)).exists()
+
+    assert client.delete(f"/api/courses/{cid}").status_code == 204
+    assert client.get(f"/api/courses/{cid}").status_code == 404
+    assert client.get("/api/courses").json() == []
+    assert not (data_dir / "courses" / str(cid)).exists()
+    assert (material / "cours.pdf").exists()  # the owner's folder is never touched
+    assert client.delete(f"/api/courses/{cid}").status_code == 404
+
+    # SQLite reuses the id: the next Course must not inherit the old one's Run, Traces or place
+    again = client.post("/api/courses", json={"name": "Encore", "folder": str(material)}).json()["id"]
+    assert again == cid
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
+    assert not old_traces & {t["id"] for t in client.get(f"/api/courses/{cid}/traces").json()}
+    assert client.get(f"/api/courses/{cid}/place").json()["section_id"] is None
+    assert client.post(f"/api/focus/{focus['id']}/end").status_code == 200  # the Focus Session outlived its Course
+
+
+def test_export_is_one_html_file_with_published_content_and_answers(client, material, model, tmp_path, monkeypatch):
+    from course_factory import app as appm
+    import json
+    viewer = tmp_path / "export.html"
+    viewer.write_text('<script id="cf-course" type="application/json"><!--CF_COURSE--></script>')
+    monkeypatch.setattr(appm, "EXPORT_VIEWER", viewer)
+    cid, sections = published(client, material, model)
+    r = client.get(f"/api/courses/{cid}/export")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    data = r.text.removeprefix('<script id="cf-course" type="application/json">').removesuffix("</script>")
+    assert "<" not in data  # nothing in the data can close its tag
+    payload = json.loads(data)
+    assert [s["id"] for ch in payload["chapters"] for s in ch["sections"]] == [s["id"] for s in sections]
+    quiz = next(b for ch in payload["chapters"] for s in ch["sections"] for b in s["blocks"] if b["component"] == "quiz")
+    assert "correct" in quiz["data"]["questions"][0]  # checked in the file, without the server
+    assert all("model_answer" in q for e in payload["exams"] for q in e["questions"])
+    assert payload["cheatsheet"]["items"][0]["kind"] == "definition"  # the Cheat Sheet travels with it
+    monkeypatch.setattr(appm, "EXPORT_VIEWER", tmp_path / "missing.html")
+    assert client.get(f"/api/courses/{cid}/export").status_code == 503

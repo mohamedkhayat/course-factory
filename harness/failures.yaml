@@ -1,0 +1,79 @@
+# The Failure class ledger (#21): each recurring generation problem and how it is handled now.
+# handler: heal (code fixes the output), check (code rejects it, the repair loop fixes it), structured (the model gives
+# plain data and code compiles the fragile syntax), lesson (a short rule appended to the listed Model steps' prompts;
+# only when code can't handle it), or none (not hardened yet).
+# hardened: when the handler shipped (UTC, like Trace times), so the report can compare the rate before and after.
+# test: the regression test built from the real failing example.
+# The /harden Claude Code skill adds entries; the classes themselves come from course_factory.failures.CLASSES.
+
+schema:questions.correct:type:
+  handler: heal
+  what: a bare quiz `correct` index is coerced to a list
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_a_single_correct_index_becomes_a_list
+
+mermaid-render:
+  handler: heal
+  what: double-escaped LaTeX in Mermaid labels is healed; spaces and line breaks around math survive rendering
+  hardened: 2026-11-10
+  test: tests/test_checks.py::test_diagram_labels_with_line_breaks_and_math_render
+
+render-dom-global:
+  handler: check
+  what: Mermaid labels with HTML are render-checked with DOM globals (was "Element is not defined")
+  hardened: 2026-11-10
+  test: tests/test_checks.py::test_diagram_labels_with_line_breaks_and_math_render
+
+placeholder-section:
+  handler: check
+  what: placeholder Sections (under the word minimum) are rejected and rewritten
+  hardened: 2026-11-10
+  test: tests/test_chapters.py::test_a_placeholder_section_is_written_again
+
+ascii-math:
+  handler: check
+  what: formulas written as code outside $…$ are rejected
+  hardened: 2026-11-10
+  test: tests/test_checks.py::test_a_formula_written_as_code_in_text_is_flagged
+
+diagram-ids:
+  handler: structured
+  what: diagrams and step diagrams are nodes and edges compiled to Mermaid; highlights must be node ids
+  hardened: 2026-11-10
+  test: tests/test_checks.py::test_a_diagram_edge_to_a_missing_node_is_flagged
+
+schema:questions.prompt:missing:
+  handler: heal
+  what: quiz `question` is read as `prompt`; option objects {text, correct, explanation} and `correct_index` are unpacked
+  hardened: "2026-11-10 00:43"
+  test: tests/test_checks.py::test_field_names_the_model_writes_instead_are_healed_not_repaired
+schema:questions.explanation:missing:
+  handler: heal
+  what: a quiz question without `explanation` takes the right option's from `explanations`
+  hardened: "2026-11-10 00:43"
+  test: tests/test_checks.py::test_field_names_the_model_writes_instead_are_healed_not_repaired
+schema:blanks.answers:missing:
+  handler: heal
+  what: fill_blanks `accepted`/`answer` are read as `answers`
+  hardened: "2026-11-10 00:43"
+  test: tests/test_checks.py::test_field_names_the_model_writes_instead_are_healed_not_repaired
+schema:entries.command:missing:
+  handler: heal
+  what: terminal `input`/`cmd`/`text` are read as `command`, `comment`/`description` as `note`
+  hardened: "2026-11-10 00:43"
+  test: tests/test_checks.py::test_field_names_the_model_writes_instead_are_healed_not_repaired
+schema:steps.highlight:missing:
+  handler: heal
+  what: step_diagram `node`/`id` (one id) is read as `highlight` [id]
+  hardened: "2026-11-10 00:43"
+  test: tests/test_checks.py::test_field_names_the_model_writes_instead_are_healed_not_repaired
+not-a-block:
+  handler: heal
+  what: a Block without `origin` is from_source when it cites pages, else model_added
+  hardened: "2026-11-10 00:43"
+  test: tests/test_checks.py::test_a_block_without_origin_takes_it_from_its_citations
+tool-arg:stringified-json:
+  handler: heal
+  what: "an array/object argument of cf_return_result sent as a JSON string (blocks = \"[...]\") is parsed before validation"
+  hardened: "2026-11-10 14:05"
+  test: tests/test_pi_step.py::test_an_array_sent_as_a_json_string_is_parsed_before_validation

@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from pydantic import BaseModel
@@ -59,6 +60,32 @@ def test_assistant_text_reads_pi_json_events():
         {"type": "agent_settled"},
     ]
     assert assistant_text("\n".join(map(json.dumps, events))) == '{"ok": true}'
+
+
+def test_an_array_sent_as_a_json_string_is_parsed_before_validation(tmp_path):
+    """Qwen sends "blocks": "[...]"; the extension parses it and the prepared arguments are what the step reads."""
+    import shutil
+    import subprocess
+    from course_factory.pi_step import STRUCTURED_OUTPUT_EXTENSION
+    if not shutil.which("node"):
+        pytest.skip("node is not installed")
+    (tmp_path / "ext.mjs").write_text(STRUCTURED_OUTPUT_EXTENSION)
+    (tmp_path / "schema.json").write_text(json.dumps({"properties": {"blocks": {"type": "array"}, "title": {"type": "string"}}}))
+    (tmp_path / "run.mjs").write_text(
+        'const ext = (await import("./ext.mjs")).default; let tool; ext({ registerTool: (t) => (tool = t) });'
+        'const args = tool.prepareArguments({ blocks: \'[{"a": 1}]\', title: "[not json]" });'
+        'console.log(JSON.stringify((await tool.execute("id", args)).details.result));')
+    out = subprocess.run(["node", "run.mjs"], cwd=tmp_path, env={**os.environ, "CF_OUTPUT_SCHEMA": str(tmp_path / "schema.json")},
+                         capture_output=True, text=True, check=True).stdout
+    prepared = json.loads(out)
+    assert prepared == {"blocks": [{"a": 1}], "title": "[not json]"}
+    events = [
+        {"type": "message_end", "message": {"role": "assistant", "content": [
+            {"type": "toolCall", "name": "cf_return_result", "arguments": {"blocks": '[{"a": 1}]', "title": "[not json]"}}]}},
+        {"type": "tool_execution_end", "toolName": "cf_return_result", "isError": False,
+         "result": {"content": [], "details": {"result": prepared}}},
+    ]
+    assert json.loads(assistant_text("\n".join(map(json.dumps, events)))) == prepared
 
 
 def test_backend_failure_is_traced_and_retried(conn, tmp_path):
@@ -162,3 +189,21 @@ def test_without_a_fallback_model_a_step_gets_its_usual_attempts(conn, tmp_path)
     with pytest.raises(StepFailed):
         run_pi_step(conn, answers("{}", "{}", "{}", '{"text": "x", "readable": true}'), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 3
+
+
+def test_assistant_text_raises_the_model_servers_error():
+    refused = {"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "error",
+                                                  "errorMessage": "400: strict_tools_not_supported"}}
+    with pytest.raises(StepFailed, match="strict_tools_not_supported"):
+        assistant_text(json.dumps(refused))
+
+
+def test_a_step_model_set_in_settings_is_used_and_kept(client, monkeypatch):
+    from course_factory.pi_step import STEP_MODELS, model_for
+    monkeypatch.setenv("CF_MODEL_REPAIR_BLOCK", "env-model")
+    assert model_for("repair_block") == "env-model"
+    steps = {s["step"]: s for s in client.put("/api/models", json={"step": "repair_block", "model": "m:low"}).json()["steps"]}
+    assert steps["repair_block"] == {"step": "repair_block", "model": "m:low", "from": "settings"} and model_for("repair_block") == "m:low"
+    assert client.put("/api/models", json={"step": "nope", "model": "x"}).status_code == 422
+    client.put("/api/models", json={"step": "repair_block"})
+    assert model_for("repair_block") == "env-model" and "repair_block" not in STEP_MODELS

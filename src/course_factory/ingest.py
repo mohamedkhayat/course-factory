@@ -1,5 +1,6 @@
 """Import, page reading and Role proposals: everything before the found Approval Gate."""
 
+import hashlib
 import shutil
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -45,8 +46,8 @@ def import_sources(ctx: Ctx, cid: int) -> None:
         pages = len(pdfium.PdfDocument(str(f))) if f.suffix.lower() == ".pdf" else 0
         role = "data" if f.suffix.lower() in DATA_SUFFIXES else None
         # data files have no pages to read, so their Role is known without the model
-        db.execute("INSERT OR IGNORE INTO sources (course_id, name, path, pages, role) VALUES (?,?,?,?,?)",
-                   (cid, rel.as_posix(), str(dest / rel), pages, role))
+        db.execute("INSERT OR IGNORE INTO sources (course_id, name, path, pages, role, sha256) VALUES (?,?,?,?,?,?)",
+                   (cid, rel.as_posix(), str(dest / rel), pages, role, hashlib.sha256(f.read_bytes()).hexdigest()))
 
 def read_pages(ctx: Ctx, cid: int) -> None:
     db, backend = ctx.db, ctx.backend

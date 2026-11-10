@@ -1,5 +1,7 @@
+import base64
 import datetime as dt
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -7,28 +9,30 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import pypdfium2 as pdfium
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
 
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
-from . import components, grading, ingest, labs, learner, pairing, tutor
+from . import components, cram, failures, grading, ingest, labs, learner, pairing, refresh, tutor
 from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import check_blocks
 from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
-from .pi_step import Backend, activity, record_owner_action
+from .pi_step import DEFAULT_MODEL, HARNESS_DIR, STEP_MODELS, Backend, activity, model_for, record_owner_action
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
+EXPORT_VIEWER = WEB_DIST.parent / "dist-export" / "export.html"
 SOURCE_COLUMNS = "id, name, pages, role, paired_with, excluded"
 RUN_POLL = 0.5
 
@@ -64,6 +68,19 @@ class FoundDecision(BaseModel):
 
 class ChapterEdit(ChapterPlan):
     priority: Priority = "normal"
+
+
+class RefreshChoice(BaseModel):
+    edited: Literal["keep", "regenerate", "notes"] = "keep"
+
+
+class StepModel(BaseModel):
+    step: str
+    model: str = ""  # empty: back to the env variable or the default
+
+
+class AutoResolve(BaseModel):
+    on: bool
 
 
 class OutlineEdit(BaseModel):
@@ -109,7 +126,13 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
 
     ctx.labs_launcher = labs_launcher or docker_launcher
     graph = build_graph(ctx, sqlite3.connect(data_dir / "langgraph.db", check_same_thread=False))
-    app = FastAPI(title="course-factory")
+
+    @asynccontextmanager
+    async def lifespan(_):
+        yield
+        ctx.kernels.stop_all()  # a Lab kernel (a Docker container) outlives the app otherwise
+
+    app = FastAPI(title="course-factory", lifespan=lifespan)
     advancing: set[int] = set()  # Courses whose Run is executing right now
     lock = threading.Lock()
 
@@ -167,7 +190,32 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     @app.get("/api/system")
     def system():
         """What the home hub shows about the machine: the generation model and the GPU."""
-        return {"model": getattr(backend, "model", None), "gpu": gpu()}
+        return {"model": getattr(backend, "model", None) or model_for("write_section"), "gpu": gpu()}
+
+    db.executescript(learner.LEARNER_SCHEMA)  # the settings table, before learner.router creates it
+    row = db.execute("SELECT value FROM settings WHERE key='step_models'").fetchone()
+    STEP_MODELS.clear()
+    STEP_MODELS.update(json.loads(row["value"]) if row else {})
+
+    @app.get("/api/models")
+    def step_models():
+        """The model each Model step runs on, and where that comes from (Settings, an env variable, or the default)."""
+        steps = sorted(p.stem for p in HARNESS_DIR.glob("*.md"))
+        default = os.environ.get("CF_MODEL") or DEFAULT_MODEL
+        return {"default": default, "steps": [{"step": s, "model": model_for(s), "from": "settings" if s in STEP_MODELS else
+                                                "env" if os.environ.get(f"CF_MODEL_{s.upper()}") else "default"} for s in steps]}
+
+    @app.put("/api/models")
+    def put_model(body: StepModel):
+        """Sets (or, with no model, clears) one step's model; the next model call of that step uses it."""
+        if body.step not in {p.stem for p in HARNESS_DIR.glob("*.md")}:
+            raise HTTPException(422, f"unknown step {body.step}")
+        if body.model:
+            STEP_MODELS[body.step] = body.model
+        else:
+            STEP_MODELS.pop(body.step, None)
+        db.execute("INSERT INTO settings VALUES ('step_models', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(STEP_MODELS),))
+        return step_models()
 
     @app.post("/api/courses/upload", status_code=201)
     def create_course_from_upload(tasks: BackgroundTasks, name: str = Form(..., min_length=1), files: list[UploadFile] = File(...)):
@@ -203,6 +251,47 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     @app.get("/api/courses/{cid}")
     def get_course(cid: int):
         return dict(course_or_404(cid))
+
+    @app.delete("/api/courses/{cid}", status_code=204)
+    def delete_course(cid: int):
+        """Deletes a Course and everything made or recorded for it. The folder it was imported from is never touched;
+        Focus Sessions stay (they keep the Streak) and Traces stay as harness evidence, both unlinked from the Course."""
+        course = course_or_404(cid)
+        with lock:
+            if cid in advancing:
+                raise HTTPException(409, "The Run is working on this Course. Delete it once the Run stops or waits for you.")
+            advancing.add(cid)  # nothing may resume the Run while it is being deleted
+        try:
+            for lab in db.execute("SELECT id FROM labs WHERE course_id=?", (cid,)).fetchall():
+                ctx.kernels.stop(f"lab-{lab['id']}")
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                searchm.drop_passages(db, cid)
+                for sql in [
+                    "DELETE FROM places WHERE course_id=?", "DELETE FROM tutor_messages WHERE course_id=?",
+                    "DELETE FROM cards WHERE course_id=?",
+                    "DELETE FROM copies WHERE exam_id IN (SELECT id FROM exams WHERE course_id=?)",
+                    "DELETE FROM exams WHERE course_id=?", "DELETE FROM question_types WHERE course_id=?", "DELETE FROM labs WHERE course_id=?", "DELETE FROM lab_envs WHERE course_id=?",
+                    "DELETE FROM chapters WHERE course_id=?",  # cascades to Sections, Blocks and what hangs off them
+                    "DELETE FROM pages WHERE source_id IN (SELECT id FROM sources WHERE course_id=?)",
+                    "UPDATE sources SET paired_with=NULL WHERE course_id=?", "DELETE FROM sources WHERE course_id=?",
+                    # ids get reused: unlink what stays so a later Course with this id doesn't inherit it
+                    "UPDATE components SET course_id=NULL WHERE course_id=?", "UPDATE focus_sessions SET course_id=NULL WHERE course_id=?",
+                    "UPDATE traces SET course_id=NULL WHERE course_id=?",
+                    "DELETE FROM courses WHERE id=?",
+                ]:
+                    db.execute(sql, (cid,))
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+            graph.checkpointer.delete_thread(thread(cid)["configurable"]["thread_id"])
+        finally:
+            advancing.discard(cid)
+        shutil.rmtree(ctx.course_dir(cid), ignore_errors=True)
+        folder = Path(course["folder"]).resolve()
+        if folder.is_relative_to((data_dir / "uploads").resolve()):  # a browser upload's own copy, not the owner's folder
+            shutil.rmtree(folder, ignore_errors=True)
 
     @app.get("/api/courses/{cid}/run")
     def get_run(cid: int):
@@ -260,6 +349,33 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
                          (cid, name, str(path), pages)).lastrowid
         tasks.add_task(read_and_index, cid)
         return source_json(db.execute(f"SELECT {SOURCE_COLUMNS} FROM sources WHERE id=?", (sid,)).fetchone())
+
+    refreshes: dict[int, dict] = {}  # the last Refresh per Course: running, done (with what it did) or failed
+
+    @app.get("/api/courses/{cid}/refresh")
+    def refresh_preview(cid: int):
+        """What changed in the Course folder since it was imported, and the last Refresh."""
+        course_or_404(cid)
+        return refresh.diff(ctx, cid) | {"last": refreshes.get(cid)}
+
+    def run_refresh(cid: int, edited: str):
+        try:
+            refreshes[cid] = {"state": "done", "result": refresh.apply(ctx, cid, edited)}
+        except Exception as e:
+            refreshes[cid] = {"state": "failed", "error": str(e)[:2000]}
+        finally:
+            advancing.discard(cid)
+
+    @app.post("/api/courses/{cid}/refresh", status_code=202)
+    def start_refresh(cid: int, body: RefreshChoice, tasks: BackgroundTasks):
+        """Re-reads only changed pages and regenerates only the Sections citing them; owner-edited ones as chosen."""
+        course_or_404(cid)
+        if cid in advancing:
+            raise HTTPException(409, "the Course is busy: wait for the Run or Refresh to finish")
+        advancing.add(cid)
+        refreshes[cid] = {"state": "running"}
+        tasks.add_task(run_refresh, cid, body.edited)
+        return {"ok": True}
 
     @app.get("/api/courses/{cid}/found")
     def get_found(cid: int):
@@ -363,6 +479,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=? WHERE id=?",
                    (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
                     block["origin"], "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False), bid))
+        if not flags["errors"]:
+            db.execute("UPDATE blocks SET review_queue=0 WHERE id=?", (bid,))
         return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
 
     @app.get("/api/courses/{cid}/chapters/{chid}")
@@ -389,7 +507,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         (block,), (errors,) = check_blocks([draft], chm.source_pages(ctx, cid), components.schemas(db))
         if errors:
             raise HTTPException(422, {"errors": errors})
-        record_owner_action(db, cid, "chapter_review", {"block": bid, "data": body.data}, "edited")
+        record_owner_action(db, cid, "chapter_review", {"block": bid, "data": body.data, "classes": classes_of(row)}, "edited")
         state_errors, warnings = components.status_flags(db, row["component"])
         return save_block(bid, block, {"errors": state_errors, "warnings": warnings})
 
@@ -397,17 +515,63 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     def approve_block(cid: int, bid: int):
         block_or_404(cid, bid)
         record_owner_action(db, cid, "chapter_review", {"block": bid}, "approved")
-        db.execute("UPDATE blocks SET status='ok' WHERE id=?", (bid,))
+        db.execute("UPDATE blocks SET status='ok', review_queue=0 WHERE id=?", (bid,))
         return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
 
     @app.post("/api/courses/{cid}/blocks/{bid}/regenerate")
     def regenerate_block(cid: int, bid: int, body: RegenerateNote):
         row = block_or_404(cid, bid)
-        record_owner_action(db, cid, "chapter_review", {"block": bid, "note": body.note}, "regenerated")
+        record_owner_action(db, cid, "chapter_review", {"block": bid, "note": body.note, "classes": classes_of(row)}, "regenerated")
         current = chm.block_json(row)
         pages = chm.page_texts(ctx, cid, json.loads(row["section_pages"]))
         block, flags = chm.checked_block(ctx, cid, current, pages, note=body.note)
         return save_block(bid, block, flags)
+
+    def classes_of(row) -> list[str]:
+        """The Failure classes of what the owner fixed: its flags, or "unclassified" for a fix of a clean Block."""
+        return [failures.failure_class(f) for f in json.loads(row["flags"])] or ["unclassified"]
+
+    @app.post("/api/courses/{cid}/chapters/{chid}/auto-resolve")
+    def auto_resolve(cid: int, chid: int):
+        """The local model resolves the Chapter's flagged Blocks; what it can't goes to the Review Queue."""
+        if chapter_or_404(cid, chid)["status"] != "in_review":
+            raise HTTPException(409, "only a Chapter under review can be auto-resolved")
+        return chm.auto_resolve(ctx, cid, chid)
+
+    @app.post("/api/courses/{cid}/blocks/{bid}/undo")
+    def undo_block(cid: int, bid: int):
+        """Puts back the Block as it was before auto-resolve."""
+        row = block_or_404(cid, bid)
+        if not row["previous"]:
+            raise HTTPException(409, "nothing to undo")
+        p = json.loads(row["previous"])
+        db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=?, previous=NULL, review_queue=0 WHERE id=?",
+                   (p["component"], json.dumps(p["data"], ensure_ascii=False), json.dumps(p["citations"], ensure_ascii=False), p["origin"],
+                    p["status"], json.dumps(p["flags"], ensure_ascii=False), bid))
+        record_owner_action(db, cid, "chapter_review", {"block": bid}, "undone")
+        return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
+
+    @app.put("/api/courses/{cid}/auto-resolve")
+    def set_auto_resolve(cid: int, body: AutoResolve):
+        """Per-Run option: auto-resolve each Chapter's flags as soon as it is written, before review."""
+        course_or_404(cid)
+        db.execute("UPDATE courses SET auto_resolve=? WHERE id=?", (int(body.on), cid))
+        return dict(course_or_404(cid))
+
+    @app.get("/api/review-blocks")
+    def review_blocks():
+        """The Review Queue of flagged Blocks auto-resolve couldn't fix, with their pages. Worked by Claude Code from outside."""
+        out = []
+        for row in db.execute("SELECT b.*, s.pages AS section_pages, s.title AS section, c.title AS chapter, c.course_id FROM blocks b "
+                              "JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id WHERE b.review_queue=1 ORDER BY b.id"):
+            out.append(chm.block_json(row) | {"course_id": row["course_id"], "chapter": row["chapter"], "section": row["section"],
+                                              "classes": classes_of(row), "pages": chm.page_texts(ctx, row["course_id"], json.loads(row["section_pages"]))})
+        return out
+
+    @app.get("/api/failures")
+    def failure_report(course: int | None = None):
+        """Failure classes ranked by count, with examples, Harness versions, handler and rate before/after hardening."""
+        return failures.report(db, course)
 
     @app.post("/api/courses/{cid}/chapters/{chid}/publish")
     def publish_chapter(cid: int, chid: int, tasks: BackgroundTasks):
@@ -415,6 +579,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             raise HTTPException(409, "only a Chapter under review can be published")
         record_owner_action(db, cid, "chapter_review", {"chapter": chid}, "published")
         db.execute("UPDATE chapters SET status='published' WHERE id=?", (chid,))
+        cram.unlock_likely_cards(ctx, cid, chid)
         if status(cid)["gate"] == "chapter_review" and not chm.awaiting_review(ctx, cid):
             finish_review(cid, tasks)
         return {"ok": True}
@@ -432,8 +597,37 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     def reader(cid: int):
         """What the learner can read: published Chapters only, in course order."""
         course_or_404(cid)
-        return [chm.load_chapter(ctx, r["id"]) for r in db.execute(
-            "SELECT id FROM chapters WHERE course_id=? AND status='published' ORDER BY position", (cid,))]
+        return cram.annotate(ctx, cid, [chm.load_chapter(ctx, r["id"]) for r in db.execute(
+            "SELECT id FROM chapters WHERE course_id=? AND status='published' ORDER BY position", (cid,))])
+
+    @app.get("/api/courses/{cid}/export")
+    def export_course(cid: int):
+        """The Course as one HTML file that opens offline: published Chapters, practice and Exams with answers; no model."""
+        course = course_or_404(cid)
+        if not EXPORT_VIEWER.exists():
+            raise HTTPException(503, "the export viewer is not built: run npm run build in web/")
+        chapters = reader(cid)
+        blocks = [b for c in chapters for s in c["sections"] for b in s["blocks"]]
+        pages = {}
+        for b in blocks:  # only Figures carry their page image; Citations stay as text to keep the file small
+            if b["component"] == "figure":
+                row = db.execute("SELECT p.image FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",
+                                 (cid, b["data"]["source"], b["data"]["page"])).fetchone()
+                if row and row["image"] and Path(row["image"]).exists():
+                    pages[f'{b["data"]["source"]}#{b["data"]["page"]}'] = "data:image/png;base64," + base64.b64encode(Path(row["image"]).read_bytes()).decode()
+        comps = []
+        for name in sorted({b["component"] for b in blocks}):
+            js = components.comp_dir(ctx, name) / "component.js"
+            if js.exists() and db.execute("SELECT 1 FROM components WHERE name=? AND status='approved'", (name,)).fetchone():
+                comps.append({"name": name, "bundle": js.read_text()})
+        exams = [exm.load_exam(ctx, e["id"], with_answers=True) for e in db.execute(
+            "SELECT id FROM exams WHERE course_id=? ORDER BY kind DESC, id", (cid,))]
+        payload = {"course": {"name": course["name"]}, "chapters": chapters, "exams": exams, "pages": pages, "components": comps,
+                   "cheatsheet": cram.cheat_sheet(ctx, cid)}
+        data = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")  # no "</script>" can close the data tag
+        html = EXPORT_VIEWER.read_text().replace("<!--CF_COURSE-->", data, 1)
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "-", course["name"]).strip("-") or "course"
+        return Response(html, media_type="text/html", headers={"content-disposition": f'attachment; filename="{filename}.html"'})
 
     def exam_or_404(cid: int, eid: int) -> sqlite3.Row:
         row = db.execute("SELECT * FROM exams WHERE id=? AND course_id=?", (eid, cid)).fetchone()
@@ -503,6 +697,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     app.add_middleware(pairing.PairingGuard, db=db)
     app.include_router(components.router(ctx))
     app.include_router(learner.router(ctx))
+    app.include_router(cram.router(ctx))
     app.include_router(tutor.router(ctx))
     app.include_router(grading.router(ctx))
     app.include_router(app_labs)

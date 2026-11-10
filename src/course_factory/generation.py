@@ -10,7 +10,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from . import chapters, exams, ingest, labs, outline, search
+from . import chapters, cram, exams, ingest, labs, outline, search
 from .context import Ctx
 
 
@@ -47,7 +47,8 @@ def build_graph(ctx: Ctx, langgraph_db: sqlite3.Connection):
            "propose_roles": node(ingest.propose_roles), "found_gate": found_gate,
            "index_passages": node(lambda c, cid: search.index_course(c.db, c.search, cid)),
            "propose_outline": node(outline.propose_outline), "outline_gate": outline_gate,
-           "rebuild_past_papers": node(exams.rebuild_past_papers), "generate_chapters": node(chapters.generate_chapters),
+           "rebuild_past_papers": node(exams.rebuild_past_papers),
+           "classify_questions": node(cram.classify_questions), "generate_chapters": node(chapters.generate_chapters),
            "build_mock_exams": node(exams.build_mock_exams), "build_labs": node(labs.build_labs),
            "chapter_review_gate": chapter_review_gate}
     steps = [(name, fns[name]) for name, _ in PIPELINE]
@@ -70,6 +71,7 @@ PIPELINE = [  # the Run's steps in order, with what the Run screen calls them
     ("propose_outline", "Propose the outline"),
     ("outline_gate", "Fix the outline"),
     ("rebuild_past_papers", "Rebuild past papers"),  # before Chapters: Exam Weight orders Cram generation
+    ("classify_questions", "Sort past Questions into types"),  # Cram Sections are written for these
     ("generate_chapters", "Write the Chapters"),
     ("build_mock_exams", "Write Mock exams"),
     ("build_labs", "Build Labs"),

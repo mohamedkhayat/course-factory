@@ -43,7 +43,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && vite build --config vite.export.config.ts",
     "typecheck": "tsc -b",
     "smoke": "node --test --test-concurrency=1 math.test.mjs smoke.test.mjs"
   },

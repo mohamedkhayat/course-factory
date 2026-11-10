@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .context import Ctx, Priority
+from .context import Ctx, Priority, Profile
 from .pi_step import run_pi_step
 
 PAGE_HEAD_CHARS = 500
@@ -25,6 +25,7 @@ class SectionPlan(BaseModel):
 class ChapterPlan(BaseModel):
     title: str
     sections: list[SectionPlan]
+    profile: Profile | None = None  # None: from the Course's subject
 
 
 class OutlinePlan(BaseModel):
@@ -59,8 +60,8 @@ def save_outline(ctx: Ctx, cid: int, plan: OutlinePlan, priorities: list[Priorit
     db.execute("DELETE FROM chapters WHERE course_id=?", (cid,))
     for i, ch in enumerate(plan.chapters):
         prio = priorities[i] if priorities else "normal"
-        chid = db.execute("INSERT INTO chapters (course_id, position, title, priority) VALUES (?,?,?,?)",
-                          (cid, i, ch.title, prio)).lastrowid
+        chid = db.execute("INSERT INTO chapters (course_id, position, title, priority, profile) VALUES (?,?,?,?,?)",
+                          (cid, i, ch.title, prio, ch.profile)).lastrowid
         for j, sec in enumerate(ch.sections):
             db.execute("INSERT INTO sections (chapter_id, position, title, pages) VALUES (?,?,?,?)",
                        (chid, j, sec.title, json.dumps(valid_refs(ctx, cid, sec.pages))))
@@ -72,5 +73,16 @@ def load_outline(ctx: Ctx, cid: int) -> list[dict]:
         secs = [{"id": s["id"], "title": s["title"], "pages": json.loads(s["pages"])}
                 for s in ctx.db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (ch["id"],))]
         out.append({"id": ch["id"], "title": ch["title"], "priority": ch["priority"], "exam_hits": ch["exam_hits"],
-                    "exam_weight": ch["exam_weight"], "status": ch["status"], "sections": secs})
+                    "exam_weight": ch["exam_weight"], "status": ch["status"], "profile": profile_of(ctx, ch), "sections": secs})
     return out
+
+
+DEFAULT_PROFILE: dict[str, Profile] = {"theoretical": "problem", "practical": "hands_on", "mixed": "problem"}
+
+
+def profile_of(ctx: Ctx, chapter) -> Profile:
+    """The Chapter's Cram Profile; unset, it follows the Course's subject."""
+    if chapter["profile"]:
+        return chapter["profile"]
+    subject = ctx.db.execute("SELECT subject FROM courses WHERE id=?", (chapter["course_id"],)).fetchone()["subject"]
+    return DEFAULT_PROFILE.get(subject, "problem")

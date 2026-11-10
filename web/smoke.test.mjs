@@ -2,17 +2,18 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, devices } from "playwright";
 
 const PORT = 8790 + Math.floor(Math.random() * 100);
 const BASE = `http://127.0.0.1:${PORT}`;
+const dataDir = mkdtempSync(join(tmpdir(), "cf-smoke-"));
 let server, browser, folder;
 
 before(async () => {
-  server = spawn("uv", ["run", "python", "tests/fake_server.py", String(PORT), mkdtempSync(join(tmpdir(), "cf-smoke-"))], { cwd: "..", stdio: ["ignore", "pipe", "inherit"] });
+  server = spawn("uv", ["run", "python", "tests/fake_server.py", String(PORT), dataDir], { cwd: "..", stdio: ["ignore", "pipe", "inherit"] });
   await new Promise((ok, fail) => {
     server.stdout.on("data", (d) => String(d).includes("seeded course") && ok());
     server.on("exit", (c) => fail(new Error(`fake server exited ${c}`)));
@@ -21,7 +22,7 @@ before(async () => {
   folder = (await (await fetch(`${BASE}/api/courses/1`)).json()).folder;
   browser = await chromium.launch();
 });
-after(async () => { await browser?.close(); server?.kill(); });
+after(async () => { await browser?.close(); server?.kill(); rmSync(dataDir, { recursive: true, force: true }); });
 
 async function page(opts = {}) {
   const p = await browser.newPage(opts);
@@ -41,7 +42,7 @@ test("found gate, outline gate, then Review and publish", async () => {
   await p.getByLabel("Course name").fill("Smoke");
   await p.getByRole("button", { name: /^Import \d+ files$/ }).click();
   await p.getByRole("heading", { name: "What was found" }).waitFor({ timeout: 30_000 });
-  await p.getByText("Step 4 of 12: Check what was found").waitFor();
+  await p.getByText("Step 4 of 13: Check what was found").waitFor();
   assert.ok(await p.locator("[data-source]").count() >= 6);
   await p.getByLabel("Role of TD1_corrige.pdf").waitFor();
   await p.getByRole("button", { name: /propose an outline/ }).click();

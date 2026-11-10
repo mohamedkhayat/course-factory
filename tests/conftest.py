@@ -66,6 +66,7 @@ class FakeModel:
                      "scheme": [{"step": "Hessienne", "points": 4}, {"step": "Conclusion", "points": 2}]},
                     {"statement": "Calculer $x_1$.", "points": 14, "model_answer": "$x_1 = 0.5$", "scheme": None,
                      "chapter": "Méthodes de descente"}]},
+            "classify_questions": self._classify,
             "write_mock_exam": lambda prompt, files: {
                 "title": "Examen blanc " + prompt.split("Mock exam number ", 1)[1].split(" ", 1)[0], "duration_min": 90,
                 "chapters": ["Méthodes de descente"], "questions": [
@@ -95,6 +96,16 @@ class FakeModel:
              "data": {"kind": "definition", "title": self.section_of(prompt), "statement": "Un ensemble est convexe si..."}},
             {"component": "quiz", "origin": "model_added", "data": {"questions": [
                 {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}]}
+
+    @staticmethod
+    def _classify(prompt, files):
+        """One Question Type per Chapter named in the questions."""
+        qs = json.loads(prompt.split("QUESTIONS:", 1)[1])
+        types: dict = {}
+        for q in qs:
+            types.setdefault(q["chapter"], []).append(q["id"])
+        return {"types": [{"name": f"Type {ch}", "trigger": f"asks about {ch}", "chapter": ch, "template": "1. Poser\n2. Conclure",
+                           "questions": ids} for ch, ids in types.items()]}
 
     def _roles(self, prompt, files):
         roles = {"TD1.pdf": ("exercise sheet", "TD1_corrige.pdf"), "TD1_corrige.pdf": ("correction", None),
@@ -151,6 +162,13 @@ def material(tmp_path):
 @pytest.fixture
 def model():
     return FakeModel()
+
+
+@pytest.fixture(autouse=True)
+def stub_sections(monkeypatch):
+    """Test Sections are a Block or two of stub text; the placeholder guard has its own test."""
+    from course_factory import chapters
+    monkeypatch.setattr(chapters, "MIN_SECTION_WORDS", 0)
 
 
 @pytest.fixture

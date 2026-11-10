@@ -84,6 +84,7 @@ def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], wo
     for _ in range(QUEUE_RETRIES):
         try:
             with GATE.lane(live):
+                report("running", True)  # the Run screen shows a step that has the model, not one waiting for a lane
                 structured = getattr(backend, "structured", None)
                 if output_schema is not None and structured is not None:
                     return structured(step, prompt, files, workdir, output_schema)
@@ -93,11 +94,15 @@ def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], wo
     raise StepFailed(f"{step}: no lane after {QUEUE_RETRIES} waits")
 
 
+STEP_MODELS: dict[str, str] = {}  # the owner's per-step choices from Settings (stored in the settings table)
+
+
 def model_for(step: str, attempt: int = 1) -> str:
-    """The model a step runs on: CF_MODEL_<STEP>, else CF_MODEL; one extra attempt after the retries goes to CF_FALLBACK_MODEL."""
+    """The model a step runs on: the Settings choice, else CF_MODEL_<STEP>, else CF_MODEL; one extra attempt after the retries
+    goes to CF_FALLBACK_MODEL."""
     if attempt > ATTEMPTS and os.environ.get("CF_FALLBACK_MODEL"):
         return os.environ["CF_FALLBACK_MODEL"]
-    return os.environ.get(f"CF_MODEL_{step.upper()}") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
+    return STEP_MODELS.get(step) or os.environ.get(f"CF_MODEL_{step.upper()}") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
 
 
 def current_model() -> str | None:
@@ -117,6 +122,9 @@ def render_prompt(step: str, inputs: dict) -> str:
     prompt = (HARNESS_DIR / f"{step}.md").read_text()
     for key, value in inputs.items():
         prompt = prompt.replace("{{" + key + "}}", value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
+    from .failures import lessons  # the ledger imports HARNESS_DIR from here
+    if rules := lessons(step):
+        prompt += "\n\nLessons from earlier runs:\n" + "\n".join(f"- {r}" for r in rules)
     return re.sub(r"\{\{\w+\}\}", "", prompt)  # an optional input left out renders empty
 
 
@@ -324,18 +332,18 @@ def activity(course_id: int) -> dict | None:
     """The newest active model step for the Run screen."""
     with _activity_lock:
         entries = ACTIVITY.get(course_id, {})
-        current = max(entries.values(), key=lambda a: a["started"], default=None)
+        current = max(entries.values(), key=lambda a: (a.get("running", False), a["started"]), default=None)
         return dict(current) if current else None
 
 
-def report(kind: str, delta: str) -> None:
+def report(kind: str, delta: str | bool) -> None:
     """A backend streams what the model is thinking ("thinking") or writing ("output") into this thread's step."""
     cid = getattr(_now, "course_id", None)
     activity_id = getattr(_now, "activity_id", None)
     with _activity_lock:
         a = ACTIVITY.get(cid, {}).get(activity_id) if cid is not None and activity_id else None
     if a is not None:
-        a[kind] = (a[kind] + delta)[-ACTIVITY_TAIL:]
+        a[kind] = delta if kind == "running" else (a[kind] + delta)[-ACTIVITY_TAIL:]
 
 
 def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, workdir: Path,
@@ -417,7 +425,7 @@ class PiBackend:
         lines = []
         for line, event in self._events(step, prompt, files, workdir, schema):
             lines.append(line)
-            if event.get("type") in ("thinking_delta", "text_delta"):
+            if event.get("type") in ("thinking_delta", "text_delta", "toolcall_delta"):  # structured output arrives as a tool call
                 report("thinking" if event["type"] == "thinking_delta" else "output", event.get("delta", ""))
         return assistant_text("".join(lines))
 
@@ -436,14 +444,10 @@ class PiBackend:
             extension = None
             if output_schema and temp:
                 root = Path(temp.name)
-                agent_dir = root / "agent"
-                agent_dir.mkdir()
-                self._strict_model_config(model, agent_dir)
                 schema_path = root / "schema.json"
                 schema_path.write_text(json.dumps(output_schema, ensure_ascii=False))
                 extension = root / "structured-output.mjs"
                 extension.write_text(STRUCTURED_OUTPUT_EXTENSION)
-                env["PI_CODING_AGENT_DIR"] = str(agent_dir)
                 env["CF_OUTPUT_SCHEMA"] = str(schema_path)
             stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
             stdin.write(prompt)
@@ -469,25 +473,9 @@ class PiBackend:
             if temp:
                 temp.cleanup()
 
-    def _strict_model_config(self, model: str, agent_dir: Path) -> None:
-        """Give the confirmed Qwen endpoint's strict tool support to this Pi subprocess only."""
-        source_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
-        source = source_dir / "models.json"
-        config = json.loads(source.read_text()) if source.exists() else {"providers": {}}
-        if "qwen3.8-27b" in model.lower():
-            provider_id, model_id = model.split("/", 1)
-            model_id = model_id.split(":", 1)[0]
-            provider = config.get("providers", {}).get(provider_id)
-            if provider:
-                provider.setdefault("compat", {})["supportsStrictMode"] = True
-                for entry in provider.get("models", []):
-                    if entry.get("id") == model_id:
-                        entry.setdefault("compat", {})["supportsStrictMode"] = True
-        (agent_dir / "models.json").write_text(json.dumps(config, ensure_ascii=False))
-
 
 def assistant_text(jsonl: str) -> str:
-    text = ""
+    text, error = "", None
     for line in jsonl.splitlines():
         try:
             ev = json.loads(line)
@@ -495,12 +483,18 @@ def assistant_text(jsonl: str) -> str:
             continue
         msg = ev.get("message") or {}
         if ev.get("type") == "message_end" and msg.get("role") == "assistant":
+            error = msg.get("errorMessage") or "model error" if msg.get("stopReason") == "error" else None
             content = msg.get("content", [])
             calls = [p for p in content if p.get("type") == "toolCall" and p.get("name") == "cf_return_result"]
             if calls:
                 text = json.dumps(calls[-1].get("arguments", {}), ensure_ascii=False)
             else:
                 text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
+        elif ev.get("type") == "tool_execution_end" and ev.get("toolName") == "cf_return_result" and not ev.get("isError"):
+            if "result" in ((ev.get("result") or {}).get("details") or {}):  # the arguments after prepareArguments
+                text = json.dumps(ev["result"]["details"]["result"], ensure_ascii=False)
+    if error:  # pi exits 0 when the model server refuses a request; the reason is only in the event
+        raise StepFailed(f"model server: {error}"[:2000])
     return text
 
 
@@ -519,8 +513,19 @@ export default function (pi) {
     // Use strict sampling where this schema fits Pi's strict subset. Generic Block data
     // falls back to normal function arguments, which are still returned as JSON.
     constrainedSampling: { type: "json_schema", strict: "prefer" },
-    async execute(_id, params) {
-      return { content: [{ type: "text", text: "Result accepted." }], details: {}, terminate: true };
+    // Qwen sometimes sends an array or object argument as a JSON string ("blocks": "[...]"); parse it before validation
+    prepareArguments(args) {
+      if (!args || typeof args !== "object") return args;
+      const out = { ...args };
+      for (const [k, v] of Object.entries(out)) {
+        if (typeof v === "string" && schema.properties?.[k]?.type !== "string" && /^\\s*[\\[{]/.test(v)) {
+          try { out[k] = JSON.parse(v); } catch {}
+        }
+      }
+      return out;
+    },
+    async execute(_id, params) {  // details carry the prepared arguments: the assistant message keeps the raw ones
+      return { content: [{ type: "text", text: "Result accepted." }], details: { result: params }, terminate: true };
     },
   });
 }

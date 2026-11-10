@@ -306,3 +306,20 @@ def test_run_shows_a_section_checking_repairing_judging_then_flagged(client, mat
     client.post(f"/api/courses/{cid}/gates/outline")
     assert ["repairing"] in seen and ["judging"] in seen
     assert states() == ["flagged"]
+
+
+def test_a_placeholder_section_is_written_again(client, material, model, monkeypatch):
+    from course_factory import chapters as chm
+    monkeypatch.setattr(chm, "MIN_SECTION_WORDS", 25)
+    real = model.handlers["write_section"]
+    seen = []
+    def stub_first(prompt, files):
+        seen.append(prompt)
+        if len(seen) == 1:
+            return {"blocks": [{"component": "prose", "data": {"markdown": "test"}, "origin": "model_added"}]}
+        out = real(prompt, files)
+        out["blocks"] += one_block("prose", {"markdown": "Un ensemble est convexe quand le segment entre deux de ses points reste dedans, ce qui garantit l'unicité du minimum."})
+        return out
+    model.handlers["write_section"] = stub_first
+    generate(client, material, model)
+    assert sum("RETRY FEEDBACK" in p and "is a placeholder" in p for p in seen) == 1  # only the stub is written again, told why

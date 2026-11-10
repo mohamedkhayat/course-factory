@@ -281,7 +281,7 @@ def router(ctx: Ctx) -> APIRouter:
             "WHERE c.course_id=? ORDER BY r.section_id", (cid,))]
         return {"section_id": row["section_id"] if row else None, "read": read}
 
-    @r.get("/api/courses/{cid}/sources/{name}/pages/{n}")
+    @r.get("/api/courses/{cid}/sources/{name:path}/pages/{n}")
     def source_page(cid: int, name: str, n: int):
         """The rendered source page behind a Citation."""
         row = db.execute("SELECT p.image FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",

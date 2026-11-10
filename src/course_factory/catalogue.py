@@ -3,9 +3,10 @@
 Text fields are Markdown with $inline$ / $$display$$ math. Fields named `latex` are bare LaTeX.
 """
 
+import re
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field, ValidationError, model_validator
+from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, ValidationError, model_validator
 
 Md = str
 
@@ -62,7 +63,7 @@ class TheoremBox(BaseModel):
     kind: Literal["definition", "theorem", "proposition", "lemma", "corollary", "property"]
     title: str = ""
     statement: Md
-    proof: Md = ""
+    proof: Annotated[Md, BeforeValidator(lambda v: v or "")] = ""  # the model writes null for no proof
 
 
 class WorkedExample(BaseModel):
@@ -76,7 +77,7 @@ class WorkedExample(BaseModel):
 
 
 class Exercise(BaseModel):
-    """Use when the learner should solve a problem; mode "hand" for paper calculations, with `steps` revealed one by one and a self-mark."""
+    """Use when the learner should solve a problem; mode "hand" for paper calculations, with `steps` revealed one by one and a self-mark; `minutes` sets a time limit."""
 
     title: str
     statement: Md
@@ -84,16 +85,39 @@ class Exercise(BaseModel):
     correction: Md
     mode: Literal["written", "hand"] = "written"
     steps: list[Md] = []
+    minutes: int = Field(0, ge=0, le=240)  # a time limit, as in the exam for its points; 0 = untimed
     claims: Claims = []
 
 
 class QuizQuestion(BaseModel):
-    prompt: Md
+    prompt: Md = Field(validation_alias=AliasChoices("prompt", "question"))
     options: list[Md] = Field(min_length=2)
-    correct: list[int] = Field(min_length=1)
+    correct: Annotated[list[int], BeforeValidator(lambda v: [v] if isinstance(v, int) else v)] = Field(
+        min_length=1, validation_alias=AliasChoices("correct", "correct_index", "answer"))  # the model writes one answer as a bare index
     explanation: Md
     explanations: list[Md] = []  # optional: why each option is right or wrong, in option order
     multiple: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def explanation_from_options(cls, data):
+        """The model often explains each option but not the question: the right option's explanation is the answer's."""
+        if not isinstance(data, dict):
+            return data
+        opts = data.get("options")
+        if isinstance(opts, list) and opts and all(isinstance(o, dict) for o in opts):  # [{text, correct, explanation}]
+            data = data | {"options": [o.get("text") or o.get("option") or "" for o in opts],
+                           "explanations": [o.get("explanation") or o.get("feedback") or "" for o in opts]}
+            if "correct" not in data or isinstance(data["correct"], bool):
+                data["correct"] = [i for i, o in enumerate(opts) if o.get("correct")]
+        if isinstance(data.get("explanation"), list):  # one per option, under the singular name
+            data = data | {"explanations": data["explanation"], "explanation": ""}
+        if not data.get("explanation") and isinstance(data.get("explanations"), list):
+            right = next((data[k] for k in ("correct", "correct_index", "answer") if k in data), None)
+            right = right[0] if isinstance(right, list) and right else right
+            if isinstance(right, int) and 0 <= right < len(data["explanations"]):
+                data = data | {"explanation": data["explanations"][right]}
+        return data
 
 
 class Quiz(BaseModel):
@@ -119,9 +143,10 @@ class Callout(BaseModel):
 
 
 class Algorithm(BaseModel):
-    """Use when presenting an algorithm or procedure as numbered steps with inputs and output."""
+    """Use when presenting an algorithm, procedure or exam Method as numbered steps with inputs and output; `when` says what in a question triggers it."""
 
     name: str
+    when: Md = ""  # the trigger: what in a question says to use this method
     inputs: Md
     steps: list[Md] = Field(min_length=1)
     output: Md
@@ -176,10 +201,55 @@ class Explorer(BaseModel):
     explanation: Md = ""
 
 
-class Diagram(BaseModel):
-    """Use when showing a flow, architecture, pipeline or relations as a Mermaid diagram."""
+MERMAID_WORDS = {"end", "graph", "flowchart", "subgraph", "style", "class", "classdef", "click", "linkstyle", "direction", "default"}
 
-    mermaid: str
+
+def node_id(raw: str) -> str:
+    """A node id Mermaid accepts: word characters only, never a keyword such as "end"."""
+    s = re.sub(r"\W", "_", raw.strip()) or "n"
+    return "n_" + s if s.lower() in MERMAID_WORDS or s[0].isdigit() else s
+
+
+def mermaid_label(text: str) -> str:
+    s = text.replace('"', "#quot;").replace("\n", "<br/>")
+    return re.sub(r"^(\s*)(\d+)\.(?=\s)|^(\s*)([-+*])(?=\s)",  # a label starting like a Markdown list fails to render
+                  lambda m: f"{m[1]}{m[2]}#46;" if m[2] else f"{m[3]}#{ord(m[4])};", s)
+
+
+def compile_mermaid(direction: str, nodes: dict[str, str], edges: list[list[str]]) -> str:
+    """Mermaid from nodes and edges, so the model never writes Mermaid syntax (quoting, escapes, keywords) itself."""
+    lines = [f"flowchart {direction}"] + [f'  {node_id(k)}["{mermaid_label(v)}"]' for k, v in nodes.items()]
+    for e in edges:
+        a, b = node_id(e[0]), node_id(e[1])
+        lines.append(f'  {a} -->|"{mermaid_label(e[2])}"| {b}' if len(e) > 2 and e[2] else f"  {a} --> {b}")
+    return "\n".join(lines)
+
+
+class Structured(BaseModel):
+    """nodes/edges compile to `mermaid`; afterwards only `mermaid` is kept, so an owner edit of it is never overwritten."""
+
+    nodes: dict[str, Md] = {}
+    edges: list[list[str]] = []
+    direction: Literal["TD", "LR"] = "TD"
+    mermaid: str = ""
+
+    @model_validator(mode="after")
+    def compiled(self):
+        if self.nodes:
+            if any(not 2 <= len(e) <= 3 for e in self.edges):
+                raise ValueError("each edge is [from, to] or [from, to, label]")
+            missing = sorted({x for e in self.edges for x in e[:2]} - set(self.nodes))
+            if missing:
+                raise ValueError(f"edges use node ids that are not in nodes: {', '.join(missing)}")
+            self.mermaid, self.nodes, self.edges = compile_mermaid(self.direction, self.nodes, self.edges), {}, []
+        elif not self.mermaid.strip():
+            raise ValueError("give nodes {id: label} and edges [[from, to], [from, to, label]]")
+        return self
+
+
+class Diagram(Structured):
+    """Use when showing a flow, pipeline or relations: give nodes {id: label} and edges [[from, to], [from, to, label]]; code draws it. Write raw `mermaid` only for kinds nodes and edges cannot express (sequence, class, state)."""
+
     caption: Md = ""
 
 
@@ -217,7 +287,8 @@ Range = tuple[float, float]
 
 
 class Blank(BaseModel):
-    answers: list[str] = Field(min_length=1)
+    answers: Annotated[list[str], BeforeValidator(lambda v: [v] if isinstance(v, str) else v)] = Field(
+        min_length=1, validation_alias=AliasChoices("answers", "accepted", "answer"))
     regex: str = ""  # also accepted when the whole answer matches, case ignored
     hint: str = ""
 
@@ -279,23 +350,37 @@ class OptimizerAnimation(BaseModel):
 
 
 class DiagramStep(BaseModel):
-    highlight: list[str] = Field(min_length=1)
+    @model_validator(mode="before")
+    @classmethod
+    def flag_highlight(cls, data):  # {"target": "T1", "highlight": true}: the id is in target
+        return {k: v for k, v in data.items() if not (k == "highlight" and isinstance(v, bool))} if isinstance(data, dict) else data
+
+    highlight: Annotated[list[str], BeforeValidator(lambda v: [v] if isinstance(v, str) else v)] = Field(
+        min_length=1, validation_alias=AliasChoices("highlight", "node", "nodes", "id", "target"))
     edges: list[tuple[str, str]] = []  # [from, to] node ids of edges to light up
     caption: Md
 
 
-class StepDiagram(BaseModel):
-    """Use when walking through a process one stage at a time: a Mermaid diagram whose nodes and edges light up in order, with captions."""
+class StepDiagram(Structured):
+    """Use when walking through a process one stage at a time: nodes {id: label} and edges [[from, to]] as for diagram, then steps whose highlight lists node ids to light up in order, with captions."""
 
-    mermaid: str
     steps: list[DiagramStep] = Field(min_length=1)
     caption: Md = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def same_ids(cls, data):
+        if isinstance(data, dict) and data.get("nodes") and isinstance(data.get("steps"), list):  # highlights name nodes as written
+            data = data | {"steps": [st | {"highlight": [node_id(h) for h in st.get("highlight", [])],
+                                           "edges": [[node_id(a), node_id(b)] for a, b, *_ in st.get("edges", [])]}
+                                     if isinstance(st, dict) else st for st in data["steps"]]}
+        return data
+
 
 class TerminalEntry(BaseModel):
-    command: str
+    command: str = Field(validation_alias=AliasChoices("command", "input", "cmd", "text"))
     output: str = ""
-    note: Md = ""
+    note: Md = Field("", validation_alias=AliasChoices("note", "comment", "description"))
 
 
 class Terminal(BaseModel):
@@ -326,6 +411,14 @@ class BlockDraft(BaseModel):
     data: dict
     citations: list[Citation] = []
     origin: Literal["from_source", "model_added"]
+    exam_types: list[str] = []  # Cram: the Question Types this Block prepares for
+
+    @model_validator(mode="before")
+    @classmethod
+    def origin_from_citations(cls, data):
+        if isinstance(data, dict) and "origin" not in data:  # the model forgets it: a cited Block is from its source
+            data = data | {"origin": "from_source" if data.get("citations") else "model_added"}
+        return data
 
 
 def validate_data(component: str, data: dict, catalogue: dict[str, type[BaseModel]] = CATALOGUE) -> tuple[dict, list[str]]:

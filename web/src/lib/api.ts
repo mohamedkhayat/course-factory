@@ -43,17 +43,36 @@ export async function readEvents(res: Response, onEvent: (event: string, data: a
   }
 }
 
+/** An exported Course: the data a standalone file carries instead of a server (see export.tsx). */
+export type Exported = {
+  course: { name: string }; chapters: Chapter[]; exams: ExportedExam[];
+  pages: Record<string, string>; components: { name: string; bundle: string }[]; cheatsheet?: CheatSheet;
+};
+export type Likelihood = "high" | "medium" | "low";
+export type CheatItem = { block_id: number; kind: string; title: string; body: string; likelihood: Likelihood | null;
+  chapter_id: number; chapter: string; section_id: number; section: string };
+export type CheatSheet = { items: CheatItem[]; left_out: number; budget_chars: number };
+export type ExportedExam = { id: number; kind: string; title: string; duration_min: number;
+  questions: { id: number; statement: string; points: number; model_answer: string; scheme: { step: string; points: number }[] | null }[] };
+export const exported: Exported | undefined = (() => {
+  const el = document.getElementById("cf-course");
+  return el ? JSON.parse(el.textContent!) : undefined;
+})();
+
 export const pageUrl = (cid: number | string, source: string, page: number) =>
-  `/api/courses/${cid}/sources/${encodeURIComponent(source)}/pages/${page}`;
+  exported ? exported.pages[`${source}#${page}`] ?? "" : `/api/courses/${cid}/sources/${encodeURIComponent(source)}/pages/${page}`;
 
 export type Citation = { source: string; page: number; quote?: string };
 export type Block = {
   id: number; position: number; component: string; data: any; citations: Citation[];
   origin: "from_source" | "model_added"; status: "ok" | "flagged"; flags: string[]; fallback_markdown?: string;
+  exam_types?: string[]; review_queue?: boolean;
+  previous?: { component: string; data: any; citations: Citation[]; origin: "from_source" | "model_added"; status: "ok" | "flagged"; flags: string[] } | null;
+  cram?: { likelihood: Likelihood | null; types: string[]; questions: { id: number; exam: string; points: number }[]; minutes: number | null };
 };
 export type Section = { id: number; title: string; pages: Citation[]; blocks: Block[] };
-export type Chapter = { id: number; title: string; priority: string; exam_weight: number; status: string; sections: Section[] };
-export type Course = { id: number; name: string; folder: string; goal: string | null; exam_date: string | null; run_error: string | null };
+export type Chapter = { id: number; title: string; priority: string; exam_weight: number; status: string; sections: Section[]; profile?: string };
+export type Course = { id: number; name: string; folder: string; goal: string | null; exam_date: string | null; run_error: string | null; hours_per_day?: number; auto_resolve?: number };
 
 export type CourseSummary = Course & {
   run: { status: string; gate: string | null; error: string | null; active: boolean; pages_read: number; pages_total: number; seconds_left?: number | null };

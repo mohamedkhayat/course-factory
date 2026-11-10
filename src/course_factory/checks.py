@@ -163,6 +163,8 @@ OUTSIDE_MATH = [
     (re.compile(r"\\q?quad\s*"), " "),
 ]
 MERMAID_LIST = re.compile(r'(["|]\s*)(\d+\.|[-+*])(?=\s)')  # a label starting like a Markdown list fails to render
+MERMAID_MATH = re.compile(r"\$[^$\n]+\$")
+MERMAID_PARENS = re.compile(r'(\b\w+)\[(?!["(\[/\\])([^\]"\n]*[()][^\]"\n]*)\]')  # A[Uvicorn (ASGI)] fails; A[(db)] is a cylinder
 LIST_FIELDS = {"steps", "hints"}
 
 
@@ -187,10 +189,30 @@ def heal_text(data, key: str = ""):
     if not isinstance(data, str):
         return data
     if key == "mermaid":
+        data = MERMAID_MATH.sub(lambda m: re.sub(r"\\\\(?=[A-Za-z])", r"\\", m[0]), data)  # "\\geq" escaped twice: a line break, then "geq"
+        data = MERMAID_PARENS.sub(r'\1["\2"]', data)
         return MERMAID_LIST.sub(lambda m: m[1] + (m[2][:-1] + "#46;" if m[2].endswith(".") else f"#{ord(m[2])};"), data)
     if key == "latex":
         return TEXT_FIXES[2][0].sub(TEXT_FIXES[2][1], data)
     return data if key in NOT_MARKDOWN else heal_markdown(data)
+
+
+ASCII_MATH = re.compile(r"\bsqrt\(|\bexp\(|(?<!\*\*)[\w)]\*\*(?:[\d(]|[A-Za-z](?!\w))|\w\^\(")  # x**2, e**x; not **D**éveloppeurs (bold)
+CODE_SPAN = re.compile(r"```.*?```|`[^`]*`", re.S)
+# shortcut: assumes French/English courses; a course taught in Chinese, Japanese or Korean would need this off
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
+
+
+def ascii_math_errors(data, key: str = "") -> list[str]:
+    """Formulas written as code (sqrt(n), e^(iu.X)) outside $…$: they show as plain text, not as math."""
+    if isinstance(data, dict):
+        return [e for k, v in data.items() if k != "claims" for e in ascii_math_errors(v, k)]  # claims are sympy syntax
+    if isinstance(data, list):
+        return [e for v in data for e in ascii_math_errors(v, key)]
+    if not isinstance(data, str) or (key in NOT_MARKDOWN and key != "mermaid"):
+        return []
+    m = ASCII_MATH.search(CODE_SPAN.sub("", MATH_SPAN.sub("", data)))
+    return [f"{key or 'text'} writes a formula as code near {m.group()!r}: write it as LaTeX inside $…$ (e.g. $\\sqrt{{n}}$, $e^{{iuX}}$)"] if m else []
 
 
 def iteration_rows(data: dict) -> list[dict]:
@@ -233,6 +255,7 @@ def expr_errors(component: str, data: dict) -> list[str]:
 DOCKER_INSTRUCTIONS = {"FROM", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV", "ADD", "COPY", "ENTRYPOINT", "VOLUME", "USER",
                        "WORKDIR", "ARG", "ONBUILD", "STOPSIGNAL", "HEALTHCHECK", "SHELL"}
 GAP = re.compile(r"\[\[(\d+)\]\]")
+CONSOLE_REQUEST = re.compile(r"^(?:GET|PUT|POST|DELETE|HEAD|PATCH) /\S*[ \t]*$", re.M)
 
 
 def syntax_errors(language: str, src: str) -> list[str]:
@@ -244,7 +267,9 @@ def syntax_errors(language: str, src: str) -> list[str]:
         elif lang in ("yaml", "yml"):
             list(yaml.safe_load_all(src))
         elif lang == "json":
-            json.loads(src)
+            for body in CONSOLE_REQUEST.split(src):  # Elasticsearch/Kibana console: "PUT /index" lines, each followed by JSON
+                if body.strip():
+                    json.loads(body)
         elif lang == "dockerfile":
             for line in re.sub(r"\\\n", " ", src).splitlines():  # continuation lines join their instruction
                 word = line.split(maxsplit=1)[0] if line.strip() and not line.lstrip().startswith("#") else None
@@ -355,7 +380,8 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
             data, errs = draft.data, schema_errors(extra[draft.component], draft.data)
         else:
             data, errs = validate_data(draft.component, draft.data)
-        block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin}
+        block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin,
+                 **({"exam_types": draft.exam_types} if draft.exam_types else {})}
         for c in draft.citations:
             if not 1 <= c.page <= sources.get(c.source, 0):
                 errs.append(f"citation to {c.source} page {c.page} does not exist")
@@ -367,6 +393,9 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
             errs += claim_errors(data.get("claims", []))
             errs += expr_errors(draft.component, data)
             errs += component_errors(draft.component, data)
+            errs += ascii_math_errors(data)
+            if m := CJK.search(json.dumps(data, ensure_ascii=False)):  # Qwen slips into Chinese mid-sentence
+                errs.append(f"Chinese/Japanese/Korean text {m.group()!r}: write it in the course's language")
             if draft.component == "iteration_table":
                 try:
                     data["rows"] = iteration_rows(data)
