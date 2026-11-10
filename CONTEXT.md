@@ -36,6 +36,14 @@ _Avoid_: widget, card, element
 One teachable idea, command or fact, named once per Course in the outline and taught in exactly one Section. A practice Block lists the Concepts it tests, and may test only Concepts taught by its own Section or an earlier one.
 _Avoid_: topic, skill, notion
 
+**Chapter plan**:
+The design of a Chapter made once before its Sections are written: per Section, its Objectives, the misconceptions its quizzes target, the practice ramp (worked, faded, independent, exam) and the one visual worth drawing. Plain code holds it to the rules in docs/research/learning-design.md; it is kept on the Chapter and reused when a Section is regenerated.
+_Avoid_: outline (that is the Chapter and Section list), lesson plan
+
+**Objective**:
+What the learner can do after a Section, at one level (remember, understand, apply, analyse), tied to the Concepts it uses and the Question Types it prepares for. Every Objective is practised at its level.
+_Avoid_: goal (that is the Course's Goal), outcome
+
 **Component**:
 A reusable piece of course UI, such as a theorem box or a quiz, that declares the shape of content it accepts. Components are code; Blocks are data.
 _Avoid_: widget, template

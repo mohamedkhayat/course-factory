@@ -18,6 +18,12 @@ When the Cram brief has a profile, the student sits the exam soon: teach exactly
 - "hands_on" (commands, configuration, code): a terminal session of the exact commands, then a drill (fill_blanks or code_exercise) that makes the student type them, and a callout tone "exam" with the procedure as a short checklist.
 Put a callout tone "exam" on what the past papers ask most. Tag every Block that prepares for a Question Type with "exam_types": ["<its exact name>"].
 
+The Chapter plan for this Section: {{plan}}
+When there is a plan, follow it: state its objectives in the opening Block, write its practice items in that order with those Components, and draw its visual. Build each quiz's wrong options from its misconceptions: 3 or 4 options, each wrong one a real mistake, its explanation naming the mistake; never "all of the above" or "none of the above", and the right option not always the longest. After a worked example or a diagram, add one question that asks why a step holds.
+What your previous version missed from the plan, add it: {{gaps}}
+
+Diagrams: at most 9 nodes and labels of 2-4 words; put detail in the text, and walk a longer process with a step_diagram. In a Mermaid flowchart you may mark nodes with the house classes, only where the text names why: `:::key` the node or path the Section is about, `:::muted` context, `:::warn` a failure or trap.
+
 Write the Section as an ordered list of Blocks. Each Block uses exactly one Component from this Catalogue, with data matching its fields (? = optional):
 {{catalogue}}
 

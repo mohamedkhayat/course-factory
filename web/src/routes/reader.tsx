@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { MessageCircle, Send, X } from "lucide-react";
 import { PageViewer, ReaderBlock } from "@/components/blocks";
-import { Md } from "@/components/md";
+import { Md, MdLine } from "@/components/md";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { get, readEvents, send, type Chapter, type Citation, type Course } from "@/lib/api";
@@ -116,6 +116,12 @@ export function Reader() {
           <p className="text-sm text-muted-foreground">{current.chapter.title}</p>
           <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">{current.title}</h1>
           {!!current.teaches?.length && <p className="mt-2 text-sm text-muted-foreground">New here: {current.teaches.join(" · ")}</p>}
+          {!!current.objectives?.length && (
+            <div className="mt-4 text-sm">
+              <p className="font-medium">You'll be able to</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">{current.objectives.map((o, i) => <li key={i}><MdLine>{o}</MdLine></li>)}</ul>
+            </div>
+          )}
           <div className="prose-cf mt-8 space-y-10">
             {current.blocks.map((b) => <ReaderBlock key={b.id} block={b} cid={cid} onCite={setCite} />)}
           </div>

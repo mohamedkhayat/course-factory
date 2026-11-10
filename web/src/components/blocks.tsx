@@ -233,6 +233,22 @@ function IterationTable({ data }: P) {
   );
 }
 
+/** The house diagram look, light and dark (Mermaid needs hex, not the app's oklch tokens). Okabe-Ito accents stay
+ *  readable to colour-blind readers, and every class has a second cue: key is bold, muted dashed, warn thick and italic. */
+const MERMAID_LOOK = {
+  light: { bg: "#faf8f3", fg: "#2b2622", node: "#f1ede5", line: "#8a8278", key: "#23395b", soft: "#7a736b", warn: "#d55e00" },
+  dark: { bg: "#0f1724", fg: "#dfe8ef", node: "#1b2536", line: "#6b7a90", key: "#5fd0e6", soft: "#8593a8", warn: "#e69f00" },
+};
+
+function themed(src: string, dark: boolean) {
+  const c = MERMAID_LOOK[dark ? "dark" : "light"];
+  if (!/^\s*(flowchart|graph)\b/.test(src)) return src;
+  const defs = [`classDef key stroke:${c.key},stroke-width:2.5px,font-weight:bold`,
+    `classDef muted stroke:${c.soft},stroke-dasharray:4 3,color:${c.soft}`,
+    `classDef warn stroke:${c.warn},stroke-width:3px,font-style:italic`];
+  return src + "\n" + defs.filter((d) => !new RegExp(`classDef ${d.split(" ")[1]}\\b`).test(src)).join("\n");
+}
+
 /** Mermaid's SVG for a diagram source: null while rendering, "" when it does not render. */
 function useMermaid(src: string) {
   const id = "m" + useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -240,10 +256,14 @@ function useMermaid(src: string) {
   const dark = document.documentElement.dataset.theme === "instrument";
   useEffect(() => {
     import("mermaid").then(({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
+      const c = MERMAID_LOOK[dark ? "dark" : "light"];
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "base", themeVariables: {
+        darkMode: dark, background: c.bg, fontFamily: "inherit", fontSize: "15px", primaryColor: c.node, primaryTextColor: c.fg,
+        primaryBorderColor: c.line, secondaryColor: c.bg, tertiaryColor: c.bg, lineColor: c.line, textColor: c.fg,
+        clusterBkg: c.bg, clusterBorder: c.line, edgeLabelBackground: c.bg, noteBkgColor: c.node, noteTextColor: c.fg } });
       // mermaid renders math only between $$; the model writes single $. It drops a line break before math and
       // trims the spaces around it, so words run into the formula: those become #nbsp;.
-      return mermaid.render(id, src.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, m) => `$$${m}$$`)
+      return mermaid.render(id, themed(src, dark).replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, m) => `$$${m}$$`)
         .replace(/(?:<br\s*\/?>| )(?=\$\$)|(?<=\$\$) /g, "#nbsp;"));
     }).then((r) => setSvg(r.svg)).catch(() => setSvg(""));
   }, [src, id, dark]);

@@ -70,7 +70,7 @@ export type Block = {
   previous?: { component: string; data: any; citations: Citation[]; origin: "from_source" | "model_added"; status: "ok" | "flagged"; flags: string[] } | null;
   cram?: { likelihood: Likelihood | null; types: string[]; questions: { id: number; exam: string; points: number }[]; minutes: number | null };
 };
-export type Section = { id: number; title: string; pages: Citation[]; blocks: Block[]; teaches?: string[] };
+export type Section = { id: number; title: string; pages: Citation[]; blocks: Block[]; teaches?: string[]; objectives?: string[] };
 export type Chapter = { id: number; title: string; priority: string; exam_weight: number; status: string; sections: Section[]; profile?: string };
 export type Course = { id: number; name: string; folder: string; goal: string | null; exam_date: string | null; run_error: string | null; hours_per_day?: number; auto_resolve?: number };
 

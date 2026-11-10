@@ -8,11 +8,12 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from . import components
 from .catalogue import CATALOGUE, describe
-from .checks import check_blocks
+from .checks import block_warnings, check_blocks
 from .context import Ctx
 from .outline import profile_of
 from .failures import failure_class
 from .progression import flag_progression
+from .lesson_plan import plan_chapter, plan_gaps
 from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, record_owner_action, run_pi_step
 
 REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
@@ -157,14 +158,29 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
         return
     catalogue = catalogue_text(ctx)
     before = taught_before(ctx, cid)
+    planned = [{"title": s["title"], "teaches": json.loads(s["teaches"]),
+                "excerpt": " … ".join(p["text"][:400] for p in page_texts(ctx, cid, json.loads(s["pages"])))[:1200]} for s in sections]
+    exam_types = [t["name"] for t in cram["question_types"]] if isinstance(cram, dict) else []
+    try:
+        lessons = plan_chapter(db, ctx.backend, ctx.course_dir(cid), cid, chapter, planned, {
+            "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "subject": subject, "cram": cram,
+            "language": LANGUAGE_RULE, "taught": json.dumps(before[sections[0]["id"]], ensure_ascii=False),
+            "components": ", ".join(CATALOGUE), "exam_types": json.dumps(exam_types, ensure_ascii=False)}, exam_types)
+    except StepFailed:
+        lessons = {}  # no plan: the Sections are written as before rather than stalling the Run
 
     def write(sec):
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
-        draft = run_pi_step(db, ctx.backend, "write_section", {
-            "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-            "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE, "subject": subject, "cram": cram,
-            "owner_notes": (notes or {}).get(sec["id"], "none"), "taught_before": before[sec["id"]], "teaches": json.loads(sec["teaches"])},
-            SectionDraft, ctx.course_dir(cid), course_id=cid)
+        lesson = lessons.get(sec["title"])
+        inputs = {"goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
+                  "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE, "subject": subject, "cram": cram,
+                  "owner_notes": (notes or {}).get(sec["id"], "none"), "taught_before": before[sec["id"]],
+                  "teaches": json.loads(sec["teaches"]), "plan": lesson or "none", "gaps": "none"}
+        draft = run_pi_step(db, ctx.backend, "write_section", inputs, SectionDraft, ctx.course_dir(cid), course_id=cid)
+        if lesson and (gaps := plan_gaps(lesson, draft.blocks)):  # one more try to follow the plan; then take what's written
+            attach_checks(db, last_trace_id(), [{"warnings": [f"plan: {g}" for g in gaps]}])
+            draft = run_pi_step(db, ctx.backend, "write_section", inputs | {"gaps": "\n".join(f"- {g}" for g in gaps)},
+                                SectionDraft, ctx.course_dir(cid), course_id=cid)
         return sec, pages, draft, last_trace_id()
 
     with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending_sections))) as pool:
@@ -320,9 +336,9 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
         judge([i for i in contradicted if not errors[i]])
 
     flags = []
-    for block, block_errors, block_warnings in zip(blocks, errors, warnings):
+    for block, block_errors, warned in zip(blocks, errors, warnings):
         state_errors, state_warnings = components.status_flags(ctx.db, block["component"]) if not block_errors else ([], [])
-        flags.append({"errors": block_errors + state_errors, "warnings": block_warnings + state_warnings})
+        flags.append({"errors": block_errors + state_errors, "warnings": warned + state_warnings + block_warnings(block)})
     return blocks, flags
 
 
@@ -342,10 +358,11 @@ def block_json(row) -> dict:
 
 def load_chapter(ctx: Ctx, chid: int) -> dict:
     ch = ctx.db.execute("SELECT * FROM chapters WHERE id=?", (chid,)).fetchone()
+    plan = {p["title"]: p for p in json.loads(ch["plan"] or '{"sections": []}')["sections"]}
     sections = []
     for s in ctx.db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)):
         blocks = [block_json(b) for b in ctx.db.execute("SELECT * FROM blocks WHERE section_id=? ORDER BY position", (s["id"],))]
         sections.append({"id": s["id"], "title": s["title"], "pages": json.loads(s["pages"]), "teaches": json.loads(s["teaches"]),
-                         "blocks": blocks})
+                         "objectives": [o["text"] for o in plan.get(s["title"], {}).get("objectives", [])], "blocks": blocks})
     return {"id": ch["id"], "title": ch["title"], "priority": ch["priority"], "exam_weight": ch["exam_weight"],
             "status": ch["status"], "sections": sections}

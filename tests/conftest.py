@@ -48,6 +48,7 @@ class FakeModel:
                     {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}]},
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
             "write_section": self._section,
+            "plan_chapter": self._plan,
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
             "lab_tutor": lambda prompt, files: f"Look at what `f` returns. ({len(files)} plots seen)",
             "tutor": lambda prompt, files: "Une fonction est « convexe » si... [cours.pdf p.1] [made_up.pdf p.2]",
@@ -96,6 +97,16 @@ class FakeModel:
              "data": {"kind": "definition", "title": self.section_of(prompt), "statement": "Un ensemble est convexe si..."}},
             {"component": "quiz", "origin": "model_added", "data": {"questions": [
                 {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}]}
+
+    @staticmethod
+    def _plan(prompt, files):
+        """One remember objective per Section, practised by a quiz, tagged with every Question Type."""
+        types = json.loads(prompt.split("(exact names): ", 1)[1].split("\n", 1)[0] or "[]")
+        sections = json.loads(prompt.split("SECTIONS:", 1)[1].split("\n", 1)[0])
+        return {"sections": [{"title": s["title"], "objectives": [{"id": "o1", "level": "remember", "text": "State it.",
+                                                                   "concepts": [], "exam_types": types}],
+                              "misconceptions": [{"id": "m1", "text": "Confuses it with its converse."}],
+                              "practice": [{"objective": "o1", "kind": "retrieval", "component": "quiz"}]} for s in sections]}
 
     @staticmethod
     def _classify(prompt, files):

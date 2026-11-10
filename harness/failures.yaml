@@ -89,3 +89,21 @@ diagram-chain:
   what: a diagram drawn as one chain whose words say it fans out (replication, workers, broadcast) is flagged to branch
   hardened: 2026-11-10
   test: tests/test_progression.py::test_a_chain_diagram_whose_caption_describes_a_fan_out_is_flagged
+
+plan:
+  handler: check
+  what: a Chapter plan breaking the learning-design rules (objective without practice at its level, ramp out of order, quiz without misconceptions, uncovered Question Type) is re-asked once; a Section missing planned practice is re-written once
+  hardened: 2026-11-10
+  test: tests/test_lesson_plan.py
+
+quiz-cue:
+  handler: check
+  what: an "all/none of the above" option is an error; the right option being the longest in every question is a warning
+  hardened: 2026-11-10
+  test: tests/test_lesson_plan.py
+
+diagram-size:
+  handler: check
+  what: a flowchart with more than 9 nodes or a label longer than 6 words is a warning on the Block
+  hardened: 2026-11-10
+  test: tests/test_lesson_plan.py

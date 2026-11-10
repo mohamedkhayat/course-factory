@@ -76,7 +76,35 @@ def quiz_errors(data: dict) -> list[str]:
             errs.append(f"question {n}: single-choice must have exactly one correct option")
         if not q["explanation"].strip():
             errs.append(f"question {n}: explanation is empty")
+        if any(CATCH_ALL.search(o) for o in opts):
+            errs.append(f"question {n}: \"all/none of the above\" is a cue, not a mistake: make every wrong option a real misconception")
     return errs
+
+
+CATCH_ALL = re.compile(r"\b(all|none) of the above\b|toutes les r[ée]ponses|aucune (de ces|des) r[ée]ponses", re.I)
+LABEL = re.compile(r'\["?([^\]"]*)"?\]|\("?([^)"]*)"?\)|\{"?([^}"]*)"?\}')
+
+
+def block_warnings(block: dict) -> list[str]:
+    """Item-writing and readability heuristics: shown on the Block, never block it."""
+    data, out = block["data"], []
+    if block["component"] == "quiz":
+        qs = [q for q in data.get("questions", []) if len(q["options"]) > 1 and len(q["correct"]) == 1]
+        longest = [len(q["options"][q["correct"][0]]) > max(len(o) for i, o in enumerate(q["options"]) if i != q["correct"][0])
+                   for q in qs]
+        if len(longest) >= 3 and all(longest):
+            out.append("quiz cue: the right option is the longest in every question; make wrong options as long and as specific")
+    if block["component"] in ("diagram", "step_diagram") and re.match(r"\s*(flowchart|graph)\b", src := data.get("mermaid", "")):
+        body = src.split("\n", 1)[-1]
+        ids = set(re.findall(r"(?m)(?:^|[;&>-])\s*([A-Za-z_][\w-]*)\s*(?=[\[({>]|-|$|;|&|:::)", mermaid_ids(body)))
+        ids -= {"subgraph", "end", "classDef", "class", "style", "linkStyle", "direction", "click"}
+        if len(ids) > 9 and block["component"] == "diagram":  # a step_diagram already shows it a stage at a time
+            out.append(f"diagram size: {len(ids)} nodes; keep to 9 at most, split it or walk it as a step_diagram")
+        long = [t for t in (next(g for g in m if g) for m in LABEL.findall(body) if any(m))
+                if len(re.findall(r"[^\W\d_]{2,}", re.sub(r"\$[^$]*\$|<[^>]+>", " ", t))) > 6]  # words, not symbols
+        if long:
+            out.append(f"diagram size: labels of 2-4 words read at a glance; shorten {long[0]!r} and put the detail in the text")
+    return out
 
 
 FLOAT_TOLERANCE = 1e-4  # relative: decimals in a worked example are already rounded
