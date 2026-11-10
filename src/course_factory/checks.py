@@ -352,7 +352,7 @@ def chain_errors(data: dict) -> list[str]:
     """A diagram drawn as one chain (every node one edge in, one out) whose own words say something fans out: the
     primary shard replicated to its replicas was drawn Node 1 -> Node 2 -> Node 3."""
     src = data["mermaid"]
-    if not re.match(r"\s*(flowchart|graph)\b", src):
+    if not re.match(r"\s*(flowchart|graph)\b", src) or re.search(r"^\s*subgraph\b", src, re.M):  # nodes drawn as boxes holding shards: the path is a route
         return []
     edges = set(EDGE.findall(mermaid_ids(src).split("\n", 1)[-1]))
     nodes = {n for e in edges for n in e}

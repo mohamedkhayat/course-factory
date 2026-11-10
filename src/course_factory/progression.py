@@ -9,6 +9,7 @@ WORD = re.compile(r"\w[\w\-]*")
 CODE_SPAN = re.compile(r"```[^\n]*\n(.*?)```|`([^`\n]+)`", re.S)
 CALL = re.compile(r"\.?([A-Za-z_]\w*)\s*\(|/(_\w+)")  # function and method calls, `/_update`-style endpoints
 GAP = re.compile(r"\[\[\d+\]\]")
+NAMED = re.compile(r"\b(?:index|indices?|documents?|champs?|fields?|tables?|fichiers?|files?|dossiers?|topics?|colonnes?|columns?)\s+[«\"]?\s*`([^`]+)`", re.I)
 STOP = set("""a an and are as at be by de des du en et for from if in is it la le les of on or ou par pas pour que qui sur the
 to un une with dans est sont ce cette il elle on ne se sa son ses au aux y oui non yes no true false none null self print return
 def import from int str float len list dict set range open sum min max map filter lambda""".split())
@@ -47,6 +48,18 @@ def in_context(template: str, n: int, answer: str) -> set[str]:
     return words(f"{m[1]}{answer}{m[2]}" if m else answer)
 
 
+def values(template: str, blanks: list[dict]) -> list[tuple[str, str]]:
+    """(label, answer) of the blanks whose answer is this exercise's own data, not a taught term: a quoted value, a document
+    id after `_doc/` or `_update/`, or a name with digits (`transaction_001`). Only the exercise can give those."""
+    out = []
+    for i, b in enumerate(blanks, 1):
+        a = (b.get("answers") or [""])[0]
+        if a and not number(a) and (re.search(rf':\s*"\[\[{i}\]\]"', template) or re.search(rf"/_(?:doc|update|create)/\[\[{i}\]\]", template)
+                                    or (re.fullmatch(r"[\w\-.]+", a) and re.search(r"\d", a) and re.search(r"[A-Za-z]", a))):
+            out.append((f"blank {i}", a))
+    return out
+
+
 def tested(component: str, data: dict) -> tuple[list[tuple[str, set[str]]], str]:
     """(what the Block expects, as (label, terms) pairs; the text the learner sees before answering)."""
     if component == "fill_blanks" or (component == "code_exercise" and data.get("blanks")):
@@ -62,7 +75,9 @@ def tested(component: str, data: dict) -> tuple[list[tuple[str, set[str]]], str]
         out = []
         for n, q in enumerate(data["questions"], 1):
             right = " ".join(q["options"][i] for i in q["correct"] if i < len(q["options"]))
-            out.append((f"question {n}", {w for w in words(spans(q["prompt"]) + " " + spans(right)) if not number(w)}))
+            # "l'index `capteurs`", `("L1", 5)`: names and string literals the prompt gives are data, not taught terms
+            named = words(" ".join(NAMED.findall(q["prompt"]) + re.findall(r'"([^"\n]*)"', spans(q["prompt"]))))
+            out.append((f"question {n}", {w for w in words(spans(q["prompt"]) + " " + spans(right)) if not number(w)} - named))
         return out, ""
     return [], ""
 
@@ -92,6 +107,12 @@ def progression_errors(blocks: list[dict]) -> dict[int, list[str]]:
         if b["component"] in PRACTICE:
             parts, shown = tested(b["component"], b["data"])
             given = words(shown)
+            if b["component"] == "fill_blanks" or (b["component"] == "code_exercise" and b["data"].get("blanks")):
+                for label, value in values(b["data"].get("template") or b["data"].get("starter", ""), b["data"]["blanks"]):
+                    if not words(value) <= given:
+                        errors.setdefault(b["id"], []).append(
+                            f"{label}: expects \"{value}\", a value only this exercise can give (an id, a name, a new field value): "
+                            "state it in the title or task")
             code = b["component"] != "fill_blanks" or bool(b["data"].get("language"))  # prose words recur everywhere: code terms only
             for label, terms in parts:
                 for t in sorted(terms - given - STOP):
@@ -119,6 +140,45 @@ def progression_errors(blocks: list[dict]) -> dict[int, list[str]]:
 
 
 MARK = "progression: "
+REPEAT = 0.9  # share of the smaller answer's terms found in the earlier one: same API names with another folder or value is a new case
+
+
+def answer_terms(component: str, data: dict) -> list[tuple[str, set[str]]]:
+    """What a practice Block makes the learner produce, as (label, terms): its filled-in code, or each quiz question's prompt."""
+    if component == "quiz":
+        return [(f"question {n}", words(q["prompt"]) - STOP) for n, q in enumerate(data["questions"], 1)]
+    if component == "exercise":
+        text = spans(data["correction"])
+    elif data.get("blanks"):
+        text = data.get("template") or data.get("starter", "")
+        for i, b in enumerate(data["blanks"], 1):
+            text = text.replace(f"[[{i}]]", (b.get("answers") or [""])[0])
+    else:
+        text = data.get("solution", "")
+    return [("", words(text) - STOP)]
+
+
+def repeat_errors(blocks: list[dict]) -> dict[int, list[str]]:
+    """A practice Block (or quiz question) asking what an earlier one in its Chapter already asked, with the same names and
+    values: the learner only recalls the earlier answer. `blocks` in reading order, as in progression_errors."""
+    seen: list[tuple[dict, str, set[str]]] = []
+    errors: dict[int, list[str]] = {}
+    for b in blocks:
+        if b["component"] not in PRACTICE:
+            continue
+        mine = answer_terms(b["component"], b["data"])
+        for label, terms in mine:
+            for other, other_label, prior in seen:
+                small = min(len(terms), len(prior))
+                if other["chapter"] == b["chapter"] and small >= 4 and len(terms & prior) >= REPEAT * small:
+                    title = other["data"].get("title") or other_label
+                    errors.setdefault(b["id"], []).append(
+                        f"repeat: {(label + ' ') if label else ''}asks what \"{title}\" (Section \"{other['section']}\") already asked, "
+                        "with the same names and values, so the learner only recalls that answer: give it another case (another "
+                        "index, id, field, value or dataset, every fact stated in the task) or practise another skill")
+                    break
+        seen += [(b, label, terms) for label, terms in mine]
+    return errors
 
 
 def ledger_errors(blocks: list[dict], concepts: dict[str, tuple[int, str]]) -> dict[int, list[str]]:
@@ -163,7 +223,7 @@ def flag_progression(db, cid: int) -> dict[int, list[str]]:
     with why; one whose only flags were progression flags is ok again. Returns the errors per Block id."""
     blocks, concepts = course_blocks(db, cid)
     errors = progression_errors(blocks)
-    for bid, errs in ledger_errors(blocks, concepts).items():
+    for bid, errs in [*ledger_errors(blocks, concepts).items(), *repeat_errors(blocks).items()]:
         errors.setdefault(bid, []).extend(errs)
     for b in blocks:
         row = db.execute("SELECT status, flags FROM blocks WHERE id=?", (b["id"],)).fetchone()

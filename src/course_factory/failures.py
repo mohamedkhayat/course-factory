@@ -12,6 +12,7 @@ from .pi_step import HARNESS_DIR
 # (pattern, class); the first match wins. Validation errors are classed by their field path in schema_class.
 CLASSES = [
     (r"^owner note:", "owner-note"),
+    (r"^progression: repeat:", "repeat"),
     (r"^progression:", "progression"),
     (r"should branch", "diagram-chain"),
     (r"^plan:", "plan"),

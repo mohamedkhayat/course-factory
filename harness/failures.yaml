@@ -84,6 +84,12 @@ progression:
   hardened: 2026-11-10
   test: tests/test_progression.py::test_practice_expecting_an_answer_nothing_taught_or_gave_is_flagged_and_an_edit_clears_it
 
+repeat:
+  handler: check
+  what: a practice Block or quiz question asking what an earlier one of its Chapter asked, with the same names and values, is flagged course-wide and repaired with another case; the writer is told to give each practice its own data
+  hardened: 2026-11-10
+  test: tests/test_progression.py::test_practice_repeating_an_earlier_one_with_the_same_names_and_values_is_flagged
+
 diagram-chain:
   handler: check
   what: a diagram drawn as one chain whose words say it fans out (replication, workers, broadcast) is flagged to branch

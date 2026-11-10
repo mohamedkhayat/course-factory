@@ -9,7 +9,8 @@ import pytest
 from conftest import make_pdf
 from course_factory.checks import check_blocks
 from course_factory.exams import cohort_of, default_scope
-from course_factory.progression import ledger_errors, progression_errors
+from course_factory.failures import failure_class
+from course_factory.progression import MARK, ledger_errors, progression_errors, repeat_errors
 from test_chapters import CONVEXES, GRADIENT, chapters, generate
 
 OUTLINE = {"chapters": [
@@ -61,7 +62,8 @@ def test_practice_testing_a_concept_a_later_section_teaches_is_flagged(client, m
     (_, _, _), (_, status, msgs) = flags(client, cid, "Convexité")
     assert status == "flagged"
     assert any('"mise à jour partielle"' in m and f'"{GRADIENT}"' in m for m in msgs)
-    assert all(st == "ok" for _, st, _ in flags(client, cid, "Méthodes de descente"))  # tested after it is taught
+    # tested after it is taught; the fake writes the same drill in each Section, which is only a repeat
+    assert [m for _, _, ms in flags(client, cid, "Méthodes de descente") for m in ms if "repeat:" not in m] == []
 
 
 def test_practice_expecting_an_answer_nothing_taught_or_gave_is_flagged_and_an_edit_clears_it(client, material, model):
@@ -104,6 +106,14 @@ def test_a_chain_diagram_whose_caption_describes_a_fan_out_is_flagged(edges, cap
     _, (errors,) = check_blocks([{"component": "diagram", "origin": "model_added",
                                   "data": {"nodes": nodes, "edges": edges, "caption": caption}}], {})
     assert bool([e for e in errors if "branch" in e]) == bad
+
+
+def test_a_route_through_nodes_drawn_as_boxes_holding_shards_is_not_a_chain():
+    src = ('flowchart LR\n  doc["Document"]\n  subgraph N1["Node 1 (master)"]\n    a0["a0 primaire"]\n  end\n'
+           '  subgraph N2["Node 2"]\n    b3p["b3 primaire"]\n  end\n  subgraph N3["Node 3"]\n    b3r["b3 réplique"]\n  end\n'
+           '  doc --> N1\n  N1 -->|"route"| b3p\n  b3p -->|"réplication"| b3r')
+    _, (errors,) = check_blocks([{"component": "diagram", "origin": "model_added", "data": {"mermaid": src, "caption": "routé puis répliqué"}}], {})
+    assert errors == []
 
 
 @pytest.fixture
@@ -165,3 +175,50 @@ def test_a_paper_set_for_two_years_counts_for_either():
     default_scope(db, 1, [1, 2, 3, 4])
     assert {r[0]: r[1] for r in db.execute("SELECT id, in_scope FROM exams")} == {1: 1, 2: 1, 3: 0, 4: 1}
     assert cohort_of("Classe(s) : 4DS | 5DS") == "4/5"
+
+
+# The real course-5 drill: the doc id and the new status were in an earlier terminal session, never in the drill itself.
+UPDATE_DRILL = {"title": "Écrire les commandes ES (6 shards / 3 réplicas + partial update)", "language": "json",
+                "template": "PUT /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": [[1]],\n    \"number_of_replicas\": [[2]]\n  }\n}\n\n"
+                            "POST /ventes/_update/[[3]]\n{\n  \"doc\": {\n    \"Statut\": \"[[4]]\"\n  }\n}",
+                "blanks": [{"answers": [a]} for a in ("6", "3", "transaction_001", "annulée")]}
+
+
+def test_a_value_only_the_exercise_can_give_must_be_in_the_exercise():
+    session = {"id": 1, "chapter": 1, "section": "REST", "component": "terminal", "data": {"entries": [
+        {"command": "POST /ventes/_update/transaction_001 {\"doc\": {\"Statut\": \"annulée\"}}"}]}}
+    drill = {"id": 2, "chapter": 1, "section": "Shards", "component": "fill_blanks", "data": UPDATE_DRILL}
+    errors = progression_errors([session, drill])[2]
+    assert any('"transaction_001"' in e for e in errors) and any('"annulée"' in e for e in errors) and len(errors) == 2
+    given = UPDATE_DRILL | {"title": "Index `ventes` (6 shards, 3 réplicas), puis passer le Statut du document `transaction_001` à « annulée »"}
+    assert progression_errors([session, drill | {"data": given}]) == {}
+
+
+# The real course-5 pair: the code exercise right after the drill asks the same partial update on the same document.
+UPDATE_EXERCISE = {"title": "Partial update d'un document Elasticsearch", "language": "json",
+                   "task": "Le document `transaction_001` dans l'index **ventes** a `\"Statut\": \"payée\"`. Mettre à jour uniquement `Statut` à `\"annulée\"`.",
+                   "starter": "POST /ventes/_update/____\n{\n  \"____\": {\n    \"Statut\": \"____\"\n  }\n}",
+                   "solution": "POST /ventes/_update/transaction_001\n{\n  \"doc\": {\n    \"Statut\": \"annulée\"\n  }\n}", "hints": []}
+
+
+def test_practice_repeating_an_earlier_one_with_the_same_names_and_values_is_flagged():
+    drill = {"id": 1, "chapter": 1, "section": "Shards", "component": "fill_blanks", "data": UPDATE_DRILL}
+    again = {"id": 2, "chapter": 1, "section": "Shards", "component": "code_exercise", "data": UPDATE_EXERCISE}
+    [err] = repeat_errors([drill, again])[2]
+    assert "Écrire les commandes ES" in err and failure_class(MARK + err) == "repeat"
+    varied = UPDATE_EXERCISE | {"solution": "POST /clients/_update/client_042\n{\n  \"doc\": {\n    \"Ville\": \"Sfax\"\n  }\n}"}
+    assert repeat_errors([drill, again | {"data": varied}]) == {}
+    assert repeat_errors([drill, again | {"chapter": 2}]) == {}  # another Chapter's revision may come back to it
+    quiz = lambda i: {"id": i, "chapter": 1, "section": "REST", "component": "quiz", "data": {"questions": [
+        {"prompt": "Pour une mise à jour partielle d'un seul champ, quelle commande utilise-t-on ?", "options": ["PUT", "POST _update"], "correct": [1]}]}}
+    assert list(repeat_errors([quiz(1), quiz(2)])) == [2]
+
+
+def test_a_name_the_quiz_prompt_gives_is_not_tested():
+    q = {"prompt": "L'index `capteurs` est créé avec `number_of_shards: 4` et `number_of_replicas: 2`. Combien de shards ?",
+         "options": ["6", "8", "12", "16"], "correct": [2]}
+    taught = {"id": 1, "chapter": 1, "section": "S", "component": "table", "data": {"rows": [["number_of_shards", "number_of_replicas"]]}}
+    assert progression_errors([taught, {"id": 2, "chapter": 1, "section": "S", "component": "quiz", "data": {"questions": [q]}}]) == {}
+    join = {"prompt": "`a` contient `(\"L1\", 5)`. Que renvoie `a.join(b).collect()` ?", "options": ["[(\"L1\", (5, \"Centre\"))]", "[]"], "correct": [0]}
+    taught["data"]["rows"].append(["join", "collect", "centre"])
+    assert progression_errors([taught, {"id": 2, "chapter": 1, "section": "S", "component": "quiz", "data": {"questions": [join]}}]) == {}
