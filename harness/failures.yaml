@@ -113,3 +113,9 @@ diagram-size:
   what: a flowchart with more than 9 nodes or a label longer than 6 words is a warning on the Block
   hardened: 2026-11-10
   test: tests/test_lesson_plan.py
+
+definition-cram:
+  handler: check
+  what: a definition theorem_box with three or more bold "Term:" leads is a warning on the Block; the write prompt asks for one theorem_box per term
+  hardened: 2026-11-10
+  test: tests/test_lesson_plan.py

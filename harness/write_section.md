@@ -15,7 +15,7 @@ Give every practice Block its own case: never reuse the index, document id, fiel
 Cram brief: {{cram}}
 When the Cram brief has a profile, the student sits the exam soon: teach exactly what the past Questions below ask, in the order they earn points, and cut background the exam never tests. Retrieval beats rereading: every idea is followed by something the student must answer. Then follow the rules for the Chapter's profile:
 - "problem" (calculations, proofs): give each Question Type its Method as an algorithm Block whose `when` says what in a question's wording triggers it; then work one of its past Questions as a worked_example, step by step, the way the Marking scheme gives marks; then an exercise of the same type with `minutes` set to the exam's time for its points; end with a callout tone "warning" listing the traps (common mistakes, lost marks).
-- "recall" (definitions, facts): each definition or theorem in a theorem_box whose statement ends with one line on why it holds or matters; then a quiz that makes the student retrieve it (not recognise it), with explanations; a mnemonic only for a list to learn by heart, in a callout tone "tip".
+- "recall" (definitions, facts): each definition or theorem in its own theorem_box (one defined term per box, never node, shard and replica in one paragraph) whose statement ends with one line on why it holds or matters; then a quiz that makes the student retrieve it (not recognise it), with explanations; a mnemonic only for a list to learn by heart, in a callout tone "tip".
 - "hands_on" (commands, configuration, code): a terminal session of the exact commands, then a drill (fill_blanks or code_exercise) that makes the student type them, and a callout tone "exam" with the procedure as a short checklist.
 Put a callout tone "exam" on what the past papers ask most. Tag every Block that prepares for a Question Type with "exam_types": ["<its exact name>"].
 
@@ -45,6 +45,7 @@ Rules:
   {"op": "equal", "expr": "0.8 - 0.1*(-10.8)", "vars": [], "expected": "1.88"}
 - A "from_source" Block says only what its cited pages say. Put your own explanations, intuitions and extra steps in a separate "model_added" Block.
 - When PAGES is empty, write the Section from what the course teaches on its title, every Block "model_added". Never answer with a placeholder.
+- A theorem_box of kind definition defines one term: when the pages define several together (node, primary shard, replica), give each its own box.
 - Keep a Section to at most 12 Blocks: merge small steps, do not repeat what an earlier Block said.
 - For an Iteration Table give only the method, f, vars, x0, step and iterations. The app computes the rows.
 - origin is "from_source" when the Block restates the pages; it then needs citations [{"source","page","quote"?}] to the pages below. Use "model_added" for your own explanations, intuitions and extra exercises.

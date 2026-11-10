@@ -104,6 +104,11 @@ def block_warnings(block: dict) -> list[str]:
                 if len(re.findall(r"[^\W\d_]{2,}", re.sub(r"\$[^$]*\$|<[^>]+>", " ", t))) > 6]  # words, not symbols
         if long:
             out.append(f"diagram size: labels of 2-4 words read at a glance; shorten {long[0]!r} and put the detail in the text")
+    if block["component"] == "theorem_box" and data.get("kind") == "definition":
+        terms = list(dict.fromkeys(t.strip() for t in re.findall(r"\*\*([^*\n]{1,40}?)(?::\*\*|\*\*\s*:)", data.get("statement", ""))))
+        if len(terms) >= 3:
+            out.append(f"definition cram: one definition defines {', '.join(terms)}; give each term its own theorem_box, "
+                       "with its own why-it-matters line")
     return out
 
 

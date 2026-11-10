@@ -18,6 +18,7 @@ CLASSES = [
     (r"^plan:", "plan"),
     (r"^quiz cue:|is a cue, not a mistake", "quiz-cue"),
     (r"^diagram size:", "diagram-size"),
+    (r"^definition cram:", "definition-cram"),
     (r"^grounding judge (failed|returned no result)", "judge-failed"),
     (r"^contradicts its cited pages", "contradicts-pages"),
     (r"^grounding:", "beyond-pages"),

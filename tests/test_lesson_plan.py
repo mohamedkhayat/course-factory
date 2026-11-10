@@ -147,3 +147,19 @@ def test_a_big_diagram_or_a_long_label_is_a_warning():
     long = 'flowchart LR\n  a["CI : relance les jobs d\'entraînement à chaque changement de code"] --> b["$b \\cdot Y = b \\cdot a + M^t b X$"]'
     [label] = block_warnings({"component": "diagram", "data": {"mermaid": long}})
     assert "CI : relance" in label and "cdot" not in label
+
+
+# The real course-5 definition that packed three terms into one paragraph, and its one-term rewrite.
+CRAMMED = ("**PrimaryShard:** the index is split into 5 (default value) primary shards; it is *not* possible to change the number of "
+           "partitions after its creation. **SecondaryShard (replica):** these are replicated partitions; an index can have zero to many "
+           "per primary shard. **Node:** each node is an Elasticsearch instance; a master node is chosen and is replaced by another node "
+           "in case of failure. *Why it matters:* replicas spread the read load across nodes.")
+NODE = ("A **node** is one Elasticsearch instance (one running server). The nodes together form the **cluster**. One node is chosen "
+        "as **master**; if it fails, another node replaces it.\n\n*Why it matters:* a node holds **many shards**, not one.")
+
+
+def test_a_definition_of_three_terms_at_once_is_a_warning():
+    box = lambda s: {"component": "theorem_box", "data": {"kind": "definition", "title": "T", "statement": s}}
+    [w] = block_warnings(box(CRAMMED))
+    assert failure_class(w) == "definition-cram" and "PrimaryShard, SecondaryShard (replica), Node" in w
+    assert block_warnings(box(NODE)) == []
