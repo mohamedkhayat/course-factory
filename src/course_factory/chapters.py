@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from . import components
 from .catalogue import CATALOGUE, describe
-from .checks import block_warnings, check_blocks
+from .checks import DIAGRAMS, block_warnings, check_blocks
 from .context import Ctx
 from .outline import profile_of
 from .failures import failure_class
@@ -348,7 +348,7 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
     flags = []
     for block, block_errors, warned in zip(blocks, errors, warnings):
         state_errors, state_warnings = components.status_flags(ctx.db, block["component"]) if not block_errors else ([], [])
-        cited = page_texts(ctx, cid, block.get("citations") or []) if block["component"] in ("diagram", "step_diagram") else []
+        cited = page_texts(ctx, cid, block.get("citations") or []) if block["component"] in DIAGRAMS else []
         flags.append({"errors": block_errors + state_errors, "warnings": warned + state_warnings + block_warnings(block, cited)})
     return blocks, flags
 

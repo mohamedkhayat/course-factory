@@ -12,12 +12,13 @@ Scope: the app as one owner runs it on their own machine, with an optional paire
 
 | Surface | Protection |
 |---|---|
-| Network | Binds 127.0.0.1 by default (`CF_HOST`). `PairingGuard` refuses any Host that is not an IP literal or `localhost` (DNS rebinding), and any request whose Origin differs from its Host (cross-site requests from a page in the browser). Non-loopback clients need a device token: a one-time six-digit code, revoked after 5 failed claims, in an `HttpOnly`, `SameSite=Strict` cookie. |
+| Network | No CORS middleware, so browsers keep the same-origin default. Binds 127.0.0.1 by default (`CF_HOST`). `PairingGuard` refuses any Host that is not an IP literal or `localhost` (DNS rebinding), and any request whose Origin differs from its Host (cross-site requests from a page in the browser). Non-loopback clients need a device token: a one-time six-digit code, revoked after 5 failed claims, in an `HttpOnly`, `SameSite=Strict` cookie. |
 | Model steps | `pi` runs with `--no-tools` / `--no-builtin-tools --no-mcp --no-extensions` (only `cf_return_result`), `--no-skills --no-context-files`. The model can't run commands or read files beyond the attached pages. Its output is parsed into pydantic schemas. |
 | Lab code (learner and model) | `DockerLauncher`: `--network none`, 4 GB memory and swap, 256 pids, runs as the owner's uid (not root), course data mounted read-only. `LocalLauncher` (no isolation) is only used by the tests. |
 | Model-made Components | Gated (strict tsc, import allowlist: `react` only, no `require` or dynamic import), then run only in an `<iframe sandbox="allow-scripts">` (no same-origin) with a CSP of `default-src 'none'`: no network, no access to the app or its cookie. |
-| Model text in the page | react-markdown without raw HTML; KaTeX with `trust` off; Mermaid with `securityLevel: "strict"`. The exported HTML escapes `<` in the embedded JSON, so no `</script>` can break out. |
+| Model text in the page | react-markdown without raw HTML. The only two `dangerouslySetInnerHTML` sites insert library output, never model text directly: KaTeX's HTML (`md.tsx`, `trust` off) and Mermaid's SVG (`blocks.tsx`, `securityLevel: "strict"`, which strips scripts and event handlers). The exported HTML escapes `<` in the embedded JSON, so no `</script>` can break out. |
 | Math the learner types | mathjs's own parser (`compile`), never JS `eval`; `constructor` escapes are refused (checked on mathjs 15.2). |
+| Traces | Store each Model step's inputs (prompt variables and file paths), output, error and model name. The model server's API key reaches `pi` through the environment and is never a prompt variable, so no Trace holds it. |
 | Uploads | 40 MB cap; images by declared type only (PNG, JPEG, WebP), stored under random names in the Course folder; PDFs rendered to PNGs. |
 
 ## Fixed in this pass
@@ -29,6 +30,7 @@ Scope: the app as one owner runs it on their own machine, with an optional paire
   - **katex** 0.16 → 0.19.1: prototype pollution could bypass `trust`. One copy now via `overrides`, so rehype-katex and mermaid use it too.
   - **lodash-es, chevrotain, langium, @mermaid-js/parser:** `npm audit fix`, within their ranges.
   - Versions published in the last two weeks were avoided (vite 6.4.6).
+  - The vite advisories touch only the dev server (`npm run dev`); the app itself serves the built `dist/`, so they never reached a normal run. Fixed anyway, since the dev server serves the repo. No Windows-only advisory remained after the upgrades.
 
 ## Accepted risks
 

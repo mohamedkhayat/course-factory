@@ -442,7 +442,8 @@ export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number;
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {slides.map((c) => (
             <figure key={`${c.source}#${c.page}`}>
-              <img src={pageUrl(cid, c.source, c.page)} alt={`${c.source} page ${c.page}`} loading="lazy" className="w-full rounded-md border border-border" />
+              <button type="button" onClick={() => onCite(c)} aria-label={`Open ${c.source} page ${c.page}`} className="block w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <img src={pageUrl(cid, c.source, c.page)} alt={`${c.source} page ${c.page}`} loading="lazy" className="w-full cursor-zoom-in rounded-md border border-border" /></button>
               <figcaption className="mt-1 text-xs text-muted-foreground">{c.source}, p. {c.page}</figcaption>
             </figure>
           ))}

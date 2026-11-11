@@ -73,6 +73,8 @@ def test_exam_likelihood_follows_the_points_and_exercises_get_the_exam_time(clie
     defs = {ch: b["cram"] for ch, b in blocks if b["component"] == "theorem_box"}
     assert defs["Méthodes de descente"]["likelihood"] == "high" and defs["Convexité"]["likelihood"] == "medium"
     assert defs["Convexité"]["questions"][0]["exam"] == "Examen 2024" and defs["Convexité"]["types"] == ["Type Convexité"]
+    coverage = {t["name"]: t["blocks"] for t in client.get(f"/api/courses/{cid}/cram").json()["question_types"]}
+    assert coverage == {"Type Méthodes de descente": 6, "Type Convexité": 3}  # 3 tagged Blocks a Section; descente has two Sections
     exercise = next(b for ch, b in blocks if ch == "Méthodes de descente" and b["component"] == "exercise")
     assert exercise["cram"]["minutes"] == 84  # 120 min for 20 points, and its type's Question is worth 14
     formula = next(b for ch, b in blocks if ch == "Méthodes de descente" and b["component"] == "key_formula")

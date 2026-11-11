@@ -21,7 +21,7 @@ LEVELS = ("high", "medium", "low")
 ITEM_KINDS = {"theorem_box", "key_formula", "algorithm"}  # the Blocks a fallback on Chapter Exam Weight rates
 SECTION_MIN, PASS_MIN, CARDS_MIN, MISTAKES_MIN, VARIANTS_MIN, MIXED_MIN = 15, 20, 15, 15, 15, 25
 EVE_SHEET_MIN, EVE_MISTAKES_MIN, EVE_RETRIEVAL_MIN = 30, 20, 30
-REVIEW_KINDS = ("card_review", "quiz_answer", "self_mark", "code_answer", "mixed")
+REVIEW_KINDS = ("card_review", "quiz_answer", "self_mark", "written_grade", "code_answer", "mixed")
 
 
 class TypePlan(BaseModel):
@@ -109,6 +109,11 @@ def question_types(db, cid: int) -> list[dict]:
                       "WHERE t.course_id=? ORDER BY t.id", (cid,)).fetchall()
     qs = past_questions(db, cid)
     total = sum(q["points"] for q in qs) or 1
+    prepared: dict[str, int] = {}  # coverage: how many Blocks prepare for each type
+    for (names,) in db.execute("SELECT b.exam_types FROM blocks b JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id "
+                               "WHERE c.course_id=?", (cid,)):
+        for n in json.loads(names or "[]"):
+            prepared[n] = prepared.get(n, 0) + 1
     out = []
     for t in rows:
         mine = [q for q in qs if q["question_type_id"] == t["id"]]
@@ -116,7 +121,7 @@ def question_types(db, cid: int) -> list[dict]:
             continue  # asked only in papers for another cohort
         out.append({"id": t["id"], "name": t["name"], "trigger": t["trigger"], "template": t["template"],
                     "chapter_id": t["chapter_id"], "chapter": t["chapter"], "points": sum(q["points"] for q in mine),
-                    "papers": len({q["exam_id"] for q in mine}), "share": round(sum(q["points"] for q in mine) / total, 3),
+                    "papers": len({q["exam_id"] for q in mine}), "blocks": prepared.get(t["name"], 0), "share": round(sum(q["points"] for q in mine) / total, 3),
                     "questions": [{"id": q["id"], "exam": q["exam"], "points": q["points"], "statement": q["statement"]} for q in mine]})
     levels = thirds({t["name"]: t["points"] * (1 + 0.5 * (t["papers"] - 1)) for t in out})  # asked in several papers weighs more
     for t in out:

@@ -168,6 +168,10 @@ _Avoid_: revision, study (too broad)
 The owner's handwritten work on a Question or an exercise, as ink, photos or a PDF, handed in for grading.
 _Avoid_: submission, answer sheet
 
+**Written answer**:
+The owner's answer to an exercise Block, typed or uploaded, kept per Block and graded against the exercise's steps. Its uploads are a Copy.
+_Avoid_: submission, response
+
 **Paired Device**:
 A device on the home network, such as a tablet, that the owner has allowed to use the app with a one-time code. The host machine itself needs no pairing.
 _Avoid_: client, remote

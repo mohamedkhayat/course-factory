@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Lightbulb, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { exported, get, readEvents, send, type Block } from "@/lib/api";
+import { exported, get, readEvents, send, type Block, type Gpu } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -162,7 +162,6 @@ function FreeCode({ data, cid, block }: P<CodeData>) {
   );
 }
 
-/** Work on paper, then reveal the correction one step at a time and mark yourself. */
 type Written = { text: string; files: number; subject: string;
   grade: { total: number; max: number; transcription: string; steps: { step: string; points: number; awarded: number; comment: string }[] } | null };
 
@@ -172,6 +171,7 @@ export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
   const url = `/api/courses/${cid}/blocks/${block.id}/written`;
   const qc = useQueryClient();
   const { data: w } = useQuery({ queryKey: ["written", block.id], queryFn: () => get<Written>(url), enabled: !exported });
+  const { data: sys } = useQuery({ queryKey: ["system"], queryFn: () => get<{ model: string | null; gpu: Gpu | null }>("/api/system"), enabled: !exported });
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | "upload" | "grade">("");
   const [error, setError] = useState("");
@@ -193,6 +193,7 @@ export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
     for (const f of Array.from(files ?? [])) { const body = new FormData(); body.append("file", f); r = await send<Written>(`${url}/files`, body); }
     return r;
   });
+  const why = sys && !sys.model ? "No model is set up to grade it" : !value.trim() && !w?.files ? "Type or upload an answer first" : "";
   if (exported) return <Textarea className="mt-3" rows={6} aria-label="Your answer" placeholder="Write your answer here…" />;
   if (!w) return null;
   return (
@@ -218,10 +219,12 @@ export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
         </TabsContent>
       </Tabs>
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="secondary" disabled={!!busy || (!value.trim() && !w.files)}
-                title={!value.trim() && !w.files ? "Type or upload an answer first" : undefined}
+        <Button size="sm" variant="secondary" disabled={!!busy || !!why}
+                title={why || undefined}
                 onClick={() => act("grade", async () => { if (text !== null) await send(url, { text: value }, "PUT"); return send<Written>(`${url}/grade`); })}>
           {busy === "grade" ? "Grading…" : w.grade ? "Grade it again" : "Grade it"}</Button>
+        {why && !busy && <span className="text-sm text-muted-foreground">{why}</span>}
+        {!why && (sys?.gpu?.util ?? 0) >= 90 && <span className="text-sm text-muted-foreground">The GPU is busy: grading waits for a free lane.</span>}
         {error && <span role="alert" className="text-sm text-destructive">{error}</span>}
       </div>
       {w.grade && (
@@ -240,6 +243,7 @@ export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
   );
 }
 
+/** Work on paper, then reveal the correction one step at a time and mark yourself. */
 export function HandCorrection({ steps, correction, cid, block, intro = "Work it on paper first, then compare step by step." }:
   { steps: string[]; correction: string; cid: number; block: Block; intro?: string }) {
   const [n, setN] = useState(0);

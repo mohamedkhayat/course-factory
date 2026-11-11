@@ -26,7 +26,7 @@ from . import components, cram, failures, grading, ingest, labs, learner, pairin
 from .kernels import DockerLauncher, Launcher, lab_image
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
-from .checks import check_blocks
+from .checks import DIAGRAMS, check_blocks
 from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
 from .progression import flag_progression
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
@@ -666,7 +666,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         pages = {}
         # only Figures and the slides a diagram redraws carry their page image; other Citations stay as text to keep the file small
         shown = [(b["data"]["source"], b["data"]["page"]) for b in blocks if b["component"] == "figure"]
-        shown += [(c["source"], c["page"]) for b in blocks if b["component"] in ("diagram", "step_diagram") for c in b["citations"]]
+        shown += [(c["source"], c["page"]) for b in blocks if b["component"] in DIAGRAMS for c in b["citations"]]
         for source, page in dict.fromkeys(shown):
             row = db.execute("SELECT p.image FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",
                              (cid, source, page)).fetchone()

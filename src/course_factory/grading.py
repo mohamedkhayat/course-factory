@@ -65,6 +65,17 @@ def save_upload(folder: Path, upload: UploadFile) -> list[str]:
     return [str(p)]
 
 
+def score_steps(scheme: list[dict], graded: QuestionGrade) -> list[dict]:
+    """Matches the model's grades to the scheme's steps (by name, else by position); never more than a step is worth."""
+    by_step = {g.step: g for g in graded.steps}
+    out = []
+    for i, s in enumerate(scheme):
+        g = by_step.get(s["step"]) or (graded.steps[i] if i < len(graded.steps) else None)
+        out.append({"step": s["step"], "points": s["points"], "awarded": min(g.awarded, s["points"]) if g else 0.0,
+                    "comment": g.comment if g else "not addressed"})
+    return out
+
+
 def grade_copy(ctx: Ctx, cid: int, copy) -> dict:
     db = ctx.db
     files = json.loads(copy["files"])
@@ -94,14 +105,10 @@ def grade_copy(ctx: Ctx, cid: int, copy) -> dict:
         graded = run_pi_step(db, ctx.backend, "grade_answer", {
             "statement": q["statement"], "model_answer": q["model_answer"], "scheme": scheme, "answer": answer or "(no answer)"},
             QuestionGrade, workdir, course_id=cid, live=True)
-        by_step = {g.step: g for g in graded.steps}
-        steps = []
-        for i, s in enumerate(scheme):
-            g = by_step.get(s["step"]) or (graded.steps[i] if i < len(graded.steps) else None)
-            awarded = min(g.awarded, s["points"]) if g else 0.0  # never more than the step is worth
-            hits = searchm.search(db, ctx.search, cid, f"{s['step']} {q['statement']}", 1) if awarded < s["points"] else []
-            steps.append({"step": s["step"], "points": s["points"], "awarded": awarded, "comment": g.comment if g else "not addressed",
-                          "page": {"source": hits[0]["source"], "page": hits[0]["page"]} if hits else None})
+        steps = score_steps(scheme, graded)
+        for s in steps:  # a missed step points to the page that teaches it
+            hits = searchm.search(db, ctx.search, cid, f"{s['step']} {q['statement']}", 1) if s["awarded"] < s["points"] else []
+            s["page"] = {"source": hits[0]["source"], "page": hits[0]["page"]} if hits else None
         score = sum(s["awarded"] for s in steps)
         total, max_total = total + score, max_total + q["points"]
         out.append({"question_id": q["id"], "position": q["position"], "points": q["points"], "awarded": score,

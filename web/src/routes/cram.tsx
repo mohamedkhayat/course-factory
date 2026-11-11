@@ -16,7 +16,7 @@ type Activity = { kind: string; title: string; minutes: number; chapter_id?: num
   types?: string[]; done?: boolean; ready?: boolean };
 type Day = { date: string; eve: boolean; minutes: number; activities: Activity[] };
 type QType = { id: number; name: string; trigger: string; chapter: string | null; points: number; papers: number; share: number;
-  likelihood: "high" | "medium" | "low" };
+  likelihood: "high" | "medium" | "low"; blocks: number };
 type Technique = { minutes_per_point: number | null; papers: { title: string; duration_min: number; points: number }[];
   types: { name: string; trigger: string; template: string; points: number; papers: number; likelihood: "high" | "medium" | "low";
     chapter: string | null; method_marks: { step: string; points: number }[] }[] };
@@ -216,31 +216,30 @@ export function CramPage() {
             {data.question_types.map((t) => {
               const tech = how.get(t.name);
               return (
-                <li key={t.id}>
-                  <details className="group py-3">
-                    <summary className="cursor-pointer list-none rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-                      <p className="flex items-start gap-2 text-sm font-medium">
-                        <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-90" />
-                        <span className="min-w-0 flex-1"><MdLine>{t.name}</MdLine></span></p>
-                      <div className="ml-6 mt-1.5 flex items-center gap-2 text-xs">
-                        <div className="h-1.5 flex-1 rounded-full bg-muted" aria-hidden>
-                          <div className={cn("h-1.5 rounded-full", t.likelihood === "high" ? "bg-destructive/70" : t.likelihood === "medium" ? "bg-warn/70" : "bg-muted-foreground/40")}
-                               style={{ width: `${(100 * t.share) / top}%` }} /></div>
-                        <span className="tabular shrink-0 text-muted-foreground">{Math.round(t.share * 100)}% of points · {t.papers} paper{t.papers === 1 ? "" : "s"}</span>
-                      </div>
-                    </summary>
-                    <div className="ml-6 mt-3 space-y-3 text-sm">
-                      {t.trigger && <div><p className="text-xs font-medium text-muted-foreground">How to recognise it</p><MdLine>{t.trigger}</MdLine></div>}
-                      {tech?.template && <div><p className="text-xs font-medium text-muted-foreground">How to answer</p><Md className="sheet-md">{tech.template}</Md></div>}
-                      {!!tech?.method_marks.length && (
-                        <div><p className="text-xs font-medium text-muted-foreground">Marks are given for</p>
-                          <ul className="mt-1 space-y-0.5">{tech.method_marks.map((m) => (
-                            <li key={m.step} className="flex justify-between gap-3"><MdLine>{m.step}</MdLine><span className="tabular shrink-0 text-muted-foreground">{m.points} pts</span></li>))}</ul></div>
-                      )}
-                      <Link to="/c/$cid/mixed" params={{ cid: String(cid) }} search={{ types: t.name } as never} className="inline-flex items-center gap-1 text-primary hover:underline">
-                        Practise this type<ArrowRight className="size-3.5" /></Link>
-                    </div>
-                  </details>
+                <li key={t.id} className="py-3">
+                  <p className="text-sm font-medium"><MdLine>{t.name}</MdLine></p>
+                  <div className="mt-1.5 flex items-center gap-2 text-xs">
+                    <div className="h-1.5 flex-1 rounded-full bg-muted" aria-hidden>
+                      <div className={cn("h-1.5 rounded-full", t.likelihood === "high" ? "bg-destructive/70" : t.likelihood === "medium" ? "bg-warn/70" : "bg-muted-foreground/40")}
+                           style={{ width: `${(100 * t.share) / top}%` }} /></div>
+                    <span className="tabular shrink-0 text-muted-foreground">{Math.round(t.share * 100)}% of points · {t.papers} paper{t.papers === 1 ? "" : "s"}</span>
+                  </div>
+                  <p className={cn("mt-1 text-xs", t.blocks ? "text-muted-foreground" : "text-warn")}>
+                    {t.blocks ? `${t.blocks} Block${t.blocks === 1 ? "" : "s"} prepare for it` : "No Block prepares for it yet"}</p>
+                  <div className="mt-2 space-y-2 text-sm">
+                    {t.trigger && <div><p className="text-xs font-medium text-muted-foreground">How to recognise it</p><MdLine>{t.trigger}</MdLine></div>}
+                    {tech?.template && <div><p className="text-xs font-medium text-muted-foreground">How to answer</p><Md className="sheet-md">{tech.template}</Md></div>}
+                    {!!tech?.method_marks.length && (
+                      <details className="group">
+                        <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                          <ChevronRight className="size-3.5 transition-transform duration-200 group-open:rotate-90" />Marks are given for</summary>
+                        <ul className="ml-5 mt-1 space-y-0.5">{tech.method_marks.map((m) => (
+                          <li key={m.step} className="flex justify-between gap-3"><MdLine>{m.step}</MdLine><span className="tabular shrink-0 text-muted-foreground">{m.points} pts</span></li>))}</ul>
+                      </details>
+                    )}
+                    <Link to="/c/$cid/mixed" params={{ cid: String(cid) }} search={{ types: t.name } as never} className="inline-flex items-center gap-1 text-primary hover:underline">
+                      Practise this type<ArrowRight className="size-3.5" /></Link>
+                  </div>
                 </li>
               );
             })}

@@ -7,6 +7,7 @@ import json
 import jsonschema
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,8 @@ from sympy.parsing.sympy_parser import parse_expr, standard_transformations, imp
 
 from .catalogue import CATALOGUE, BlockDraft, validate_data
 from .pi_step import LATEX_WORDS
+
+DIAGRAMS = ("diagram", "step_diagram")  # the Components drawn in Mermaid
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 MATH_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.S)
@@ -49,7 +52,7 @@ def math_in(data, path: str = "") -> list[tuple[str, bool]]:
 def render_errors(blocks: list[dict]) -> dict[int, list[str]]:
     """KaTeX and Mermaid parse every Block's math and diagrams in one node call."""
     math = [{"id": i, "tex": t, "display": d} for i, b in enumerate(blocks) for t, d in math_in(b["data"])]
-    diagrams = [{"id": i, "src": b["data"]["mermaid"]} for i, b in enumerate(blocks) if b["component"] in ("diagram", "step_diagram")]
+    diagrams = [{"id": i, "src": b["data"]["mermaid"]} for i, b in enumerate(blocks) if b["component"] in DIAGRAMS]
     if not math and not diagrams:
         return {}
     out = subprocess.run(["node", str(WEB_DIR / "scripts" / "check-render.mjs")], input=json.dumps({"math": math, "mermaid": diagrams}),
@@ -103,13 +106,13 @@ def figure_warnings(src: str, pages: list[dict]) -> list[str] | None:
     if entities and len(missing) > (1 - FIGURE_KEPT) * len(entities):
         out.append(f"the cited figure shows {len(entities)} things, the diagram keeps {len(entities) - len(missing)}; "
                    f"missing {', '.join(missing[:12])}")
-    if any(f.get("contains") for f in figures) and not re.search(r"(?m)^\s*subgraph\b", src):
-        holders = list(dict.fromkeys(c[0] for f in figures for c in f.get("contains", [])))
+    holders = list(dict.fromkeys(c[0] for f in figures for c in f.get("contains", []) if len(c) == 2))
+    if holders and not re.search(r"(?m)^\s*subgraph\b", src):
         out.append(f"the figure puts things inside {', '.join(holders[:6])}; draw each as a subgraph holding its parts, not a flat chain")
     return ["figure fidelity: " + "; ".join(out)] if out else []
 
 
-def block_warnings(block: dict, pages: list[dict] = ()) -> list[str]:  # type: ignore[assignment]
+def block_warnings(block: dict, pages: Sequence[dict] = ()) -> list[str]:
     """Item-writing and readability heuristics: shown on the Block, never block it. `pages`: the Block's cited pages."""
     data, out = block["data"], []
     if block["component"] == "quiz":
@@ -118,7 +121,7 @@ def block_warnings(block: dict, pages: list[dict] = ()) -> list[str]:  # type: i
                    for q in qs]
         if len(longest) >= 3 and all(longest):
             out.append("quiz cue: the right option is the longest in every question; make wrong options as long and as specific")
-    if block["component"] in ("diagram", "step_diagram") and re.match(r"\s*(flowchart|graph)\b", src := data.get("mermaid", "")):
+    if block["component"] in DIAGRAMS and re.match(r"\s*(flowchart|graph)\b", src := data.get("mermaid", "")):
         body = src.split("\n", 1)[-1]
         ids = set(re.findall(r"(?m)(?:^|[;&>-])\s*([A-Za-z_][\w-]*)\s*(?=[\[({>]|-|$|;|&|:::)", mermaid_ids(body)))
         ids -= {"subgraph", "end", "classDef", "class", "style", "linkStyle", "direction", "click"}

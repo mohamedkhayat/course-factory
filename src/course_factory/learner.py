@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from .chapters import language_rule, block_json
 from .checks import GAP
-from .grading import QuestionGrade, Transcription, save_upload
+from .grading import QuestionGrade, Transcription, save_upload, score_steps
 from .pi_step import StepFailed, run_pi_step
 from .context import Ctx
 
@@ -376,7 +376,7 @@ def router(ctx: Ctx) -> APIRouter:
         return {"text": w["text"], "files": json.loads(w["files"]), "grade": json.loads(w["grade"]) if w["grade"] else None} if w else \
             {"text": "", "files": [], "grade": None}
 
-    def keep(bid: int, **fields) -> None:
+    def save_written(bid: int, **fields) -> None:
         db.execute("INSERT INTO written_answers (block_id, updated_at) VALUES (?,?) ON CONFLICT(block_id) DO NOTHING", (bid, now().isoformat()))
         for k, v in fields.items():  # k is one of text, files, grade: this file's names, never the request's
             db.execute(f"UPDATE written_answers SET {k}=?, updated_at=? WHERE block_id=?", (v, now().isoformat(), bid))
@@ -392,9 +392,9 @@ def router(ctx: Ctx) -> APIRouter:
         return written_json(cid, bid)
 
     @r.put("/api/courses/{cid}/blocks/{bid}/written")
-    def save_written(cid: int, bid: int, body: WrittenText):
+    def put_written(cid: int, bid: int, body: WrittenText):
         exercise_or_422(cid, bid)
-        keep(bid, text=body.text)
+        save_written(bid, text=body.text)
         return written_json(cid, bid)
 
     @r.post("/api/courses/{cid}/blocks/{bid}/written/files", status_code=201)
@@ -402,7 +402,7 @@ def router(ctx: Ctx) -> APIRouter:
         """A photo of paper, tablet ink exported as an image, or a PDF (one image per page)."""
         exercise_or_422(cid, bid)
         files = written(bid)["files"] + save_upload(ctx.course_dir(cid) / "written" / str(bid), file)
-        keep(bid, files=json.dumps(files))
+        save_written(bid, files=json.dumps(files))
         return written_json(cid, bid)
 
     @r.get("/api/courses/{cid}/blocks/{bid}/written/files/{index}")
@@ -418,7 +418,7 @@ def router(ctx: Ctx) -> APIRouter:
         exercise_or_422(cid, bid)
         for f in written(bid)["files"]:
             Path(f).unlink(missing_ok=True)
-        keep(bid, files="[]")
+        save_written(bid, files="[]")
         return written_json(cid, bid)
 
     @r.post("/api/courses/{cid}/blocks/{bid}/written/grade")
@@ -440,16 +440,11 @@ def router(ctx: Ctx) -> APIRouter:
                                  "scheme": scheme, "answer": answer}, QuestionGrade, workdir, course_id=cid, live=True)
         except StepFailed as e:
             raise HTTPException(502, f"the model could not grade it (busy or unavailable): {str(e)[:300]}")
-        by_step = {g.step: g for g in graded.steps}
-        steps = []
-        for i, s in enumerate(scheme):
-            g = by_step.get(s["step"]) or (graded.steps[i] if i < len(graded.steps) else None)
-            steps.append({"step": s["step"], "points": s["points"], "awarded": min(g.awarded, s["points"]) if g else 0.0,
-                          "comment": g.comment if g else "not addressed"})
+        steps = score_steps(scheme, graded)
         grade = {"graded_at": now().isoformat(), "total": sum(s["awarded"] for s in steps), "max": sum(s["points"] for s in steps),
                  "transcription": transcribed, "steps": steps}
-        keep(bid, grade=json.dumps(grade, ensure_ascii=False))
-        record(ctx, "self_mark", row["chapter_id"], grade["total"] >= grade["max"])
+        save_written(bid, grade=json.dumps(grade, ensure_ascii=False))
+        record(ctx, "written_grade", row["chapter_id"], grade["total"] >= grade["max"])
         if grade["total"] < grade["max"] / 2:
             due_again(cid, row)
         return written_json(cid, bid)

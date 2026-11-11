@@ -25,7 +25,7 @@ class PageFigure(BaseModel):
     """A figure's structure, so a redraw can keep it: what it shows, what contains what, and the labelled links."""
     kind: str = ""
     entities: list[str] = []
-    contains: list[tuple[str, str]] = []
+    contains: list[list[str]] = []  # [holder, part] pairs; lenient so one odd entry doesn't fail the page
     relations: list[list[str]] = []
 
 
