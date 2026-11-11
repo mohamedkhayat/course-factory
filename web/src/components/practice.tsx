@@ -189,7 +189,7 @@ export function Terminal({ data }: P<{ title: string; shell: string; entries: { 
       <div className="overflow-x-auto rounded-md bg-[#16181d] px-4 py-3 font-mono text-[0.85rem] leading-relaxed text-[#e6e6e6]">
         {data.entries.slice(0, n).map((e, i) => (
           <div key={i} className={cn(i > 0 && "mt-3")}>
-            <div><span className="select-none text-[#7ee787]">{prompt} </span>{e.command}</div>
+            <div className="whitespace-pre-wrap"><span className="select-none text-[#7ee787]">{prompt} </span>{e.command}</div>
             {e.output && <pre className="whitespace-pre-wrap text-[#a8b0bd]">{e.output}</pre>}
           </div>
         ))}
