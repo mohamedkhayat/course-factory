@@ -66,13 +66,18 @@ def split_page(text: str) -> list[str]:
     return [p.strip() for p in pieces if p.strip()]
 
 
-def index_course(db: sqlite3.Connection, models: SearchModels, course_id: int) -> int:
-    """(Re)builds the Passages of a Course from its readable pages of non-excluded Sources."""
+def drop_passages(db: sqlite3.Connection, course_id: int) -> None:
+    """Removes a Course's Passages from the table and both indexes."""
     old = [r["id"] for r in db.execute("SELECT id FROM passages WHERE course_id=?", (course_id,))]
     for pid in old:
         db.execute("INSERT INTO passages_fts(passages_fts, rowid, text) SELECT 'delete', id, text FROM passages WHERE id=?", (pid,))
         db.execute("DELETE FROM passages_vec WHERE rowid=?", (pid,))
     db.execute("DELETE FROM passages WHERE course_id=?", (course_id,))
+
+
+def index_course(db: sqlite3.Connection, models: SearchModels, course_id: int) -> int:
+    """(Re)builds the Passages of a Course from its readable pages of non-excluded Sources."""
+    drop_passages(db, course_id)
     rows = db.execute("""SELECT s.id sid, p.n, p.text FROM pages p JOIN sources s ON s.id=p.source_id
                          WHERE s.course_id=? AND s.excluded=0 AND p.readable=1 ORDER BY s.id, p.n""", (course_id,)).fetchall()
     pieces = [(r["sid"], r["n"], t) for r in rows for t in split_page(r["text"] or "")]

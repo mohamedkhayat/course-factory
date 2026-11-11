@@ -17,7 +17,7 @@ from jupyter_client.blocking.client import BlockingKernelClient
 from jupyter_client.connect import write_connection_file
 
 LAB_DIR = Path(__file__).resolve().parents[2] / "lab"
-LAB_IMAGE_TAG = "course-factory-lab:1"
+LAB_IMAGE_TAG = "course-factory-lab:2"  # 2: MLflow, FastAPI
 IDLE_SECONDS = 20 * 60
 MEMORY = "4g"
 RUN_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "course-factory"
@@ -35,7 +35,8 @@ class LocalLauncher:
         if not link.exists():
             link.symlink_to(data_dir, target_is_directory=True)
         proc = subprocess.Popen([sys.executable, "-m", "ipykernel_launcher", "-f", str(conn_file)], cwd=workdir,
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env={**os.environ, "JPY_PARENT_PID": str(os.getpid())})  # the kernel exits if the app dies
         return proc.kill
 
 

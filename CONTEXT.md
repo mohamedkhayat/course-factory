@@ -32,6 +32,18 @@ _Avoid_: page, lesson, topic
 One use of a Component inside a Section: which Component, its content as data that fits that Component's shape, and citations to the source pages. A Block holds no code and never contains another Block.
 _Avoid_: widget, card, element
 
+**Concept**:
+One teachable idea, command or fact, named once per Course in the outline and taught in exactly one Section. A practice Block lists the Concepts it tests, and may test only Concepts taught by its own Section or an earlier one.
+_Avoid_: topic, skill, notion
+
+**Chapter plan**:
+The design of a Chapter made once before its Sections are written: per Section, its Objectives, the misconceptions its quizzes target, the practice ramp (worked, faded, independent, exam) and the one visual worth drawing. Plain code holds it to the rules in docs/research/learning-design.md; it is kept on the Chapter and reused when a Section is regenerated.
+_Avoid_: outline (that is the Chapter and Section list), lesson plan
+
+**Objective**:
+What the learner can do after a Section, at one level (remember, understand, apply, analyse), tied to the Concepts it uses and the Question Types it prepares for. Every Objective is practised at its level.
+_Avoid_: goal (that is the Course's Goal), outcome
+
 **Component**:
 A reusable piece of course UI, such as a theorem box or a quiz, that declares the shape of content it accepts. Components are code; Blocks are data.
 _Avoid_: widget, template
@@ -79,6 +91,10 @@ _Avoid_: test, quiz
 **Past paper**:
 An Exam rebuilt faithfully from a real exam in the material, with its correction taken from the corrigé.
 _Avoid_: annale, old exam
+
+**Cohort**:
+The year of study a Past paper was set for, read from its header ("Classe(s) : 4DS" is year 4). Only the Past papers of the learner's Cohort weigh the Course; the others stay as practice.
+_Avoid_: level, class, promotion
 
 **Mock exam**:
 A new Exam the model writes in the style of the Past papers, covering the same recurring question types.
@@ -133,7 +149,7 @@ The record of one model step: the Harness version, inputs, output, check results
 _Avoid_: log, event
 
 **Review Queue**:
-The model-made Components (and later, flagged Blocks) waiting for Claude Code to promote, fix or reject them. Claude Code works the queue from outside the app; the app itself never calls Claude.
+The model-made Components, and the flagged Blocks auto-resolve could not fix, waiting for Claude Code to promote, fix or reject them. Claude Code works the queue from outside the app; the app itself never calls Claude.
 _Avoid_: backlog, inbox
 
 **Live work**:
@@ -152,6 +168,10 @@ _Avoid_: revision, study (too broad)
 The owner's handwritten work on a Question or an exercise, as ink, photos or a PDF, handed in for grading.
 _Avoid_: submission, answer sheet
 
+**Written answer**:
+The owner's answer to an exercise Block, typed or uploaded, kept per Block and graded against the exercise's steps. Its uploads are a Copy.
+_Avoid_: submission, response
+
 **Paired Device**:
 A device on the home network, such as a tablet, that the owner has allowed to use the app with a one-time code. The host machine itself needs no pairing.
 _Avoid_: client, remote
@@ -167,6 +187,42 @@ _Avoid_: target, quota
 **Streak**:
 The run of consecutive days the Daily Goal was met. One missed day per week is forgiven.
 _Avoid_: combo, chain
+
+**Question Type**:
+A recurring shape of exam question across past papers, answered with the same method, such as "prove a set is convex". Each has a trigger (how to recognise it) and an answer template.
+_Avoid_: question category, pattern
+
+**Exam Likelihood**:
+How likely an item is to be needed in the exam (high, medium or low), from the points of the Question Types that use it.
+_Avoid_: importance, priority (that is a Chapter setting)
+
+**Cram Profile**:
+A Chapter's cramming method: problem (worked problems, timed exercises), recall (definitions and theorems) or hands-on (commands and code).
+_Avoid_: mode, style
+
+**Cheat Sheet**:
+The compiled summary of a Course or Chapter for the last days: definitions, formulas, methods, traps and commands from checked Blocks only, most likely first, about two printed pages.
+_Avoid_: summary, crib sheet
+
+**Cram Plan**:
+The day-by-day schedule up to the exam date: learn, spaced retrieval passes, mixed practice, Mock exams, and a light last day.
+_Avoid_: schedule, timetable
+
+**Failure class**:
+A recurring kind of generation problem, derived from a check message, flag or owner fix. The ledger in the Harness records how each is handled.
+_Avoid_: error type, bug
+
+**Heal**:
+A deterministic fix code applies to model output before checking it.
+_Avoid_: patch, cleanup
+
+**Lesson**:
+A short Harness rule for a Failure class code can't handle, added only to the Model steps it affects.
+_Avoid_: tip, prompt tweak
+
+**Refresh**:
+Redoing only what changed after files in the Course folder changed: changed pages are re-read and only the Sections citing them are rewritten.
+_Avoid_: re-ingest, rebuild
 
 ## Relationships
 

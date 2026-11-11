@@ -1,0 +1,1593 @@
+[
+{
+"id": 94,
+"title": "Presentation and Architecture",
+"teaches": [],
+"blocks": [
+{
+"id": 1147,
+"component": "theorem_box",
+"data": {
+"kind": "definition",
+"title": "Elasticsearch (presentation)",
+"statement": "**Elasticsearch** is a real-time distributed search and analysis tool. It enables distributed real-time document storage where all fields are indexed and searchable, and it is a scalable distributed search engine for real-time analysis of structured and/or unstructured data. It powers the search of Wikipedia, The Guardian, StackOverflow and GitHub, and it depends on **Apache Lucene** (a search engine) and a **JVM** (Java). *Why it matters:* because it is distributed and real-time, a single index can be split into shards across many nodes while every field stays instantly searchable.",
+"proof": "The distribution (shards on nodes) is what makes it scalable; Lucene does the actual indexing under the hood."
+}
+},
+{
+"id": 1148,
+"component": "diagram",
+"data": {
+"nodes": {},
+"edges": [],
+"direction": "TD",
+"mermaid": "flowchart TD\n  doc[\"Document à indexer\"]\n  master[\"Node 1 (Master) — Elasticsearch instance\"]\n  n2[\"Node 2 — Elasticsearch instance\"]\n  n3[\"Node 3 — Elasticsearch instance\"]\n  n4[\"Node 4 — Elasticsearch instance\"]\n  doc -->|\"Route\"| master\n  master -->|\"shard primaire\"| n2\n  n2 -->|\"réplication\"| n3\n  n3 -->|\"réplication\"| n4",
+"caption": "An **Index** is a logical space for documents of the same type, split into **Primary Shards** (5 by default) and replicated onto **Secondary (replica) Shards** on other nodes. A document is *routed* to its primary shard, then *replicated* to its replicas. Blue = shard primaire, yellow = shard répliqué (from the professor's figure); a and b are two indexes."
+}
+},
+{
+"id": 1149,
+"component": "theorem_box",
+"data": {
+"kind": "definition",
+"title": "Primary Shard vs Replica (Secondary) Shard",
+"statement": "**PrimaryShard:** the index is split into 5 (default value) primary shards; it is *not* possible to change the number of partitions after its creation. **SecondaryShard (replica):** these are replicated partitions; an index can have zero to many per primary shard. **Node:** each node is an Elasticsearch instance; a master node is chosen and is replaced by another node in case of failure. *Why it matters:* replicas spread the read load across nodes (parallelism / load balancing) and keep the cluster available when a node fails, while writes always go to the primary shard.",
+"proof": "Replicas are copies of primary shards on other nodes, so a read can be served by any replica and survives a node outage."
+}
+},
+{
+"id": 1150,
+"component": "table",
+"data": {
+"headers": [
+"Elasticsearch",
+"SQL Database"
+],
+"rows": [
+[
+"Index",
+"Base de données"
+],
+[
+"Documents",
+"Lignes"
+],
+[
+"Champs",
+"Colonnes"
+]
+],
+"caption": "Analogy between Elasticsearch and a relational (SQL) database — a past exam asks you to complete exactly this table (Index = a logical space for documents of the same type)."
+}
+},
+{
+"id": 1151,
+"component": "terminal",
+"data": {
+"title": "Elasticsearch / Kibana Dev Tools console",
+"shell": "bash",
+"entries": [
+{
+"command": "GET /_cluster/health?pretty",
+"output": "{\n  \"cluster_name\" : \"es-cluster\",\n  \"status\" : \"yellow\",\n  \"unassigned_shards\" : 5,\n  \"active_shards\" : 15,\n  \"relocating_shards\" : 0\n}",
+"note": "Status **yellow** = all primary shards are allocated (data is available) but at least one replica shard is not (usually a node offline or missing resources)."
+},
+{
+"command": "PUT /ventes\n{\n  \"settings\" : {\n    \"number_of_shards\" : 6,\n    \"number_of_replicas\" : 3\n  }\n}",
+"output": "{\n  \"acknowledged\" : true,\n  \"shards_acknowledged\" : true,\n  \"index\" : \"ventes\"\n}",
+"note": "Creates index **ventes** with 6 primary shards, each replicated 3 times. The shard count is **fixed at creation** and cannot be changed later."
+},
+{
+"command": "GET /ventes/_mapping/field/location",
+"output": "{\n  \"ventes\" : {\n    \"mappings\" : {\n      \"location\" : { \"type\" : \"geo_point\" }\n    }\n  }\n}",
+"note": "Verify the field type (e.g. **geo_point**) with `_mapping` (or `_field_caps`) before building a Kibana map."
+},
+{
+"command": "POST /ventes/_update/transaction_001\n{\n  \"doc\" : { \"Statut\" : \"annulée\" }\n}",
+"output": "{\n  \"_id\" : \"transaction_001\",\n  \"result\" : \"updated\"\n}",
+"note": "**Partial update**: `_update` with a `doc` body changes only `Statut`; the other fields stay untouched (a `PUT` would replace the whole document)."
+}
+]
+}
+},
+{
+"id": 1152,
+"component": "fill_blanks",
+"data": {
+"title": "Type the ES/Kibana commands",
+"language": "http",
+"template": "[[1]] /_cluster/health?pretty\n\nPUT /[[2]]\n{\n  \"settings\" : {\n    \"number_of_shards\" : [[3]],\n    \"number_of_replicas\" : [[4]]\n  }\n}\n\nPOST /ventes/_[[5]]/transaction_001\n{\n  \"[[6]]\" : { \"Statut\" : \"annulée\" }\n}",
+"blanks": [
+{
+"answers": [
+"GET"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"ventes"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"6"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"3"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"update"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"doc"
+],
+"regex": "",
+"hint": ""
+}
+],
+"explanation": "`GET /_cluster/health?pretty` reports the cluster status. `PUT /ventes` with `settings` creates the index (6 primary + 3 replica shards, fixed after creation). `POST /ventes/_update/transaction_001` with a `\"doc\"` body is a partial update — only `Statut` changes."
+}
+},
+{
+"id": 1153,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "`GET /_cluster/health?pretty` returns status **yellow**. What does that mean?",
+"options": [
+"The cluster is fully green: every primary and replica shard is allocated.",
+"All primary shards are allocated, but at least one replica shard is not.",
+"Some primary shards are unallocated, so part of the data is unavailable.",
+"The cluster is completely down."
+],
+"correct": [
+1
+],
+"explanation": "Yellow = all primaries allocated (data available) but at least one replica missing (usually a node offline or resource shortage). Green = everything allocated; red = some primaries unallocated.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Once Kibana is launched, what is the default URL (port) to access it?",
+"options": [
+"http://localhost:9200",
+"http://localhost:5601",
+"http://localhost:8080",
+"http://localhost:5000"
+],
+"correct": [
+1
+],
+"explanation": "Kibana runs on port **5601** (http://localhost:5601). Port 9200 is Elasticsearch itself, not Kibana.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "From which Kibana tab can you run REST Elasticsearch requests (GET / PUT / POST / DELETE) directly?",
+"options": [
+"Visualizations",
+"Dashboard",
+"Dev Tools",
+"Index Patterns"
+],
+"correct": [
+2
+],
+"explanation": "The **Dev Tools** console lets you interact directly with Elasticsearch and type ES REST queries. It is where you would run the commands from the terminal session.",
+"explanations": [],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1154,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**What past papers ask (Décrire Elasticsearch et écrire des commandes ES/Kibana):**\n1. Complete the ES ↔ SQL table: Index ↔ Base de données, Documents ↔ Lignes, Champs ↔ Colonnes.\n2. Explain a cluster-health status (yellow = primaries allocated, ≥ 1 replica not).\n3. Explain why replica shards help search (load balancing / parallelism + availability).\n4. Name Kibana's role, its port **5601**, and the **Dev Tools** tab.\n5. Write `PUT /<index>` with `number_of_shards` and `number_of_replicas`.\n6. Write a partial `_update` with a `doc` body.\n7. Verify a field type with `GET /<index>/_mapping`.\n\n**Command checklist:** `GET /_cluster/health?pretty` → `PUT /<index>` (shards + replicas) → index a document → `POST /<index>/_update/<id>` (with `doc`) → `GET /<index>/_mapping`."
+}
+}
+]
+},
+{
+"id": 95,
+"title": "Cluster Status and Health",
+"teaches": [],
+"blocks": [
+{
+"id": 1155,
+"component": "theorem_box",
+"data": {
+"kind": "definition",
+"title": "Cluster Health Status",
+"statement": "The `status` field in `GET /_cluster/health?pretty` gives an overall indication of the operation of the cluster:\n\n- **green**: All primary and replica Shards are active (The cluster is working and fault tolerance is ensured).\n- **Yellow**: All the primary Shards are active, but the replica Shards are not all active (The cluster is working but if a node goes down, fault tolerance is not guaranteed).\n- **Red**: Primary Shards are inactive (The cluster is not functional).",
+"proof": ""
+}
+},
+{
+"id": 1156,
+"component": "terminal",
+"data": {
+"title": "Checking Cluster Health",
+"shell": "bash",
+"entries": [
+{
+"command": "curl -X GET 'localhost:9200/_cluster/health?pretty'",
+"output": "{\n  \"cluster_name\" : \"my-cluster\",\n  \"status\" : \"green\",\n  \"timed_out\" : false,\n  \"number_of_nodes\" : 3,\n  \"number_of_data_nodes\" : 3,\n  \"active_primary_shards\" : 6,\n  \"active_shards\" : 12,\n  \"relocating_shards\" : 0,\n  \"unassigned_shards\" : 0\n}",
+"note": "All 6 primaries **and** 6 replicas active → **green**."
+},
+{
+"command": "curl -X GET 'localhost:9200/_cluster/health?pretty'",
+"output": "{\n  \"cluster_name\" : \"my-cluster\",\n  \"status\" : \"yellow\",\n  \"timed_out\" : false,\n  \"number_of_nodes\" : 2,\n  \"number_of_data_nodes\" : 2,\n  \"active_primary_shards\" : 6,\n  \"active_shards\" : 9,\n  \"relocating_shards\" : 0,\n  \"unassigned_shards\" : 3\n}",
+"note": "All 6 primaries active, but 3 replicas unassigned (one node down) → **yellow**."
+},
+{
+"command": "curl -X GET 'localhost:9200/_cluster/health?pretty'",
+"output": "{\n  \"cluster_name\" : \"my-cluster\",\n  \"status\" : \"red\",\n  \"timed_out\" : false,\n  \"number_of_nodes\" : 1,\n  \"number_of_data_nodes\" : 1,\n  \"active_primary_shards\" : 4,\n  \"active_shards\" : 4,\n  \"relocating_shards\" : 0,\n  \"unassigned_shards\" : 8\n}",
+"note": "2 primary shards inactive → **red**. Cluster not fully functional."
+}
+]
+}
+},
+{
+"id": 1157,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "A cluster shows `\"status\": \"yellow\"`. What does this mean?",
+"options": [
+"All primary and replica shards are active; fault tolerance is ensured.",
+"All primary shards are active, but at least one replica shard is not active; the cluster works but fault tolerance is not guaranteed.",
+"Some primary shards are inactive; the cluster is not functional.",
+"The cluster has no data nodes at all."
+],
+"correct": [
+1
+],
+"explanation": "Correct: yellow means all primaries are up (data is available) but some replicas are missing. A node failure would lose data because no replica can take over.",
+"explanations": [
+"This describes **green**, not yellow.",
+"Correct: yellow means all primaries are up (data is available) but some replicas are missing. A node failure would lose data because no replica can take over.",
+"This describes **red**, not yellow.",
+"Not a valid description of any cluster status."
+],
+"multiple": false
+},
+{
+"prompt": "In which status is fault tolerance guaranteed?",
+"options": [
+"Yellow",
+"Green",
+"Red",
+"Both yellow and green"
+],
+"correct": [
+1
+],
+"explanation": "Correct: green means all primary AND replica shards are active, so fault tolerance is ensured.",
+"explanations": [
+"Yellow: replicas are not all active, so if a node goes down, fault tolerance is NOT guaranteed.",
+"Correct: green means all primary AND replica shards are active, so fault tolerance is ensured.",
+"Red: the cluster is not functional at all.",
+"Only green guarantees full fault tolerance."
+],
+"multiple": false
+},
+{
+"prompt": "You run `GET /_cluster/health?pretty` and see `\"status\": \"red\"`. What is the immediate concern?",
+"options": [
+"Replicas are missing but data is safe.",
+"Primary shards are inactive — the cluster is not functional.",
+"The cluster needs a Kibana restart.",
+"The index mapping is incorrect."
+],
+"correct": [
+1
+],
+"explanation": "Correct: red means primary shards are inactive, so the cluster is **not functional**. Investigate immediately.",
+"explanations": [
+"That would be yellow, not red.",
+"Correct: red means primary shards are inactive, so the cluster is **not functional**. Investigate immediately.",
+"Not a standard ES troubleshooting step for cluster health.",
+"Mapping issues do not cause a cluster-level red status."
+],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1158,
+"component": "fill_blanks",
+"data": {
+"title": "Write the cluster health command",
+"language": "",
+"template": "In Kibana Dev Tools, type the following command to display the cluster status:\n\n[[1]] /_cluster/[[2]]?pretty",
+"blanks": [
+{
+"answers": [
+"GET"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"health"
+],
+"regex": "",
+"hint": ""
+}
+],
+"explanation": "The HTTP method is `GET` and the REST endpoint is `_cluster/health`. The `?pretty` query parameter formats the JSON response for human readability."
+}
+},
+{
+"id": 1159,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**Past papers ask:** « Un administrateur exécute la requête `GET /_cluster/health?pretty` et obtient un statut *yellow*. Que signifie ce statut ? » *(0.25 pt)*\n\n**Checklist for a full answer (every line earns marks):**\n1. State that **all primary shards are active** → data is available.\n2. State that **at least one replica shard is not active** (unassigned).\n3. Consequence: the cluster is **functional** but **fault tolerance is not guaranteed** if a node goes down."
+}
+},
+{
+"id": 1160,
+"component": "callout",
+"data": {
+"tone": "warning",
+"text": "**Traps that cost marks:**\n- Saying yellow means \"data is lost\" — it does **not**; all primaries are up. What is missing is *redundancy*, not data availability.\n- Confusing yellow with red: in **red**, *primary* shards are inactive and the cluster is *not functional* at all.\n- Forgetting the operational consequence: yellow → \"if a node goes down, fault tolerance is **not** guaranteed\". The exam expects you to state this explicitly, not just list shard counts."
+}
+}
+]
+},
+{
+"id": 96,
+"title": "REST API: Request Types",
+"teaches": [],
+"blocks": [
+{
+"id": 1161,
+"component": "table",
+"data": {
+"headers": [
+"Méthode",
+"Rôle",
+"Réponse"
+],
+"rows": [
+[
+"POST",
+"Créer un document",
+"Code HTTP + JSON"
+],
+[
+"PUT",
+"Mettre à jour ou créer un document",
+"Code HTTP + JSON"
+],
+[
+"GET",
+"Récupération d'un document",
+"Code HTTP + JSON"
+],
+[
+"HEAD",
+"Tester si un document existe",
+"Code HTTP seul (pas de corps JSON)"
+],
+[
+"DELETE",
+"Supprimer un document",
+"Code HTTP + JSON"
+]
+],
+"caption": "Méthodes de l'API REST Elasticsearch : chaque requête renvoie un code HTTP (200, 404, …) et une réponse encodée en JSON — sauf les requêtes HEAD."
+}
+},
+{
+"id": 1162,
+"component": "terminal",
+"data": {
+"title": "Les 5 verbes REST en action (curl → localhost:9200)",
+"shell": "bash",
+"entries": [
+{
+"command": "curl -X POST 'localhost:9200/ventes/_doc/transaction_001?pretty' -H 'Content-Type: application/json' -d '{ \"Produit\":\"Smartphone Galaxy S23\",\"Prix\":799.99,\"Statut\":\"payée\" }'",
+"output": "{\n  \"_index\" : \"ventes\",\n  \"_id\" : \"transaction_001\",\n  \"_version\" : 1,\n  \"result\" : \"created\",\n  \"status\" : 201\n}",
+"note": "POST creates the document. HTTP 201 (Created) + JSON body."
+},
+{
+"command": "curl 'localhost:9200/ventes/_doc/transaction_001?pretty'",
+"output": "{\n  \"_index\" : \"ventes\",\n  \"_id\" : \"transaction_001\",\n  \"found\" : true,\n  \"_source\" : {\n    \"Produit\" : \"Smartphone Galaxy S23\",\n    \"Prix\" : 799.99,\n    \"Statut\" : \"payée\"\n  }\n}",
+"note": "GET (or no verb) retrieves the document. found: true, HTTP 200."
+},
+{
+"command": "curl -X PUT 'localhost:9200/ventes/_doc/transaction_001?pretty' -H 'Content-Type: application/json' -d '{ \"Produit\":\"Smartphone Galaxy S23\",\"Prix\":699.99,\"Statut\":\"payée\" }'",
+"output": "{\n  \"_index\" : \"ventes\",\n  \"_id\" : \"transaction_001\",\n  \"_version\" : 2,\n  \"result\" : \"updated\",\n  \"status\" : 200\n}",
+"note": "PUT replaces the whole document (or creates it if missing). HTTP 200, result: updated."
+},
+{
+"command": "curl -X POST 'localhost:9200/ventes/_update/transaction_001?pretty' -H 'Content-Type: application/json' -d '{ \"doc\": { \"Statut\":\"annulée\" } }'",
+"output": "{\n  \"_index\" : \"ventes\",\n  \"_id\" : \"transaction_001\",\n  \"_version\" : 3,\n  \"result\" : \"updated\",\n  \"status\" : 200\n}",
+"note": "POST /_update changes ONLY the field Statut; the other fields stay intact. This is exactly the expected answer to the exam's partial-update question."
+},
+{
+"command": "curl -I 'localhost:9200/ventes/_doc/transaction_001'",
+"output": "HTTP/1.1 200 OK",
+"note": "HEAD tests existence: returns only an HTTP status code (200 = exists, 404 = missing), no JSON body."
+},
+{
+"command": "curl -X DELETE 'localhost:9200/ventes/_doc/transaction_001?pretty'",
+"output": "{\n  \"_index\" : \"ventes\",\n  \"_id\" : \"transaction_001\",\n  \"result\" : \"deleted\",\n  \"status\" : 200\n}",
+"note": "DELETE removes the document. HTTP 200, result: deleted."
+}
+]
+}
+},
+{
+"id": 1163,
+"component": "code_exercise",
+"data": {
+"title": "Complétez les 5 commandes REST",
+"task": "Sur l'index `ventes`, le document `transaction_001` (champ `Statut` = « payée »). Complétez les 5 commandes curl, une par méthode, dans cet ordre : (1) créer le document, (2) le récupérer, (3) mettre à jour UNIQUEMENT le champ Statut à « annulée », (4) tester son existence, (5) le supprimer.",
+"language": "bash",
+"starter": "# (1) Créer le document  →  POST\ncurl -X POST 'localhost:9200/ventes/_doc/transaction_001?pretty' \\\n     -H 'Content-Type: application/json' \\\n     -d '{ \"Produit\":\"Smartphone Galaxy S23\",\"Prix\":799.99,\"Statut\":\"payée\" }'\n\n# (2) Récupérer le document  →  GET\ncurl 'localhost:9200/ventes/[[1]]/transaction_001?pretty'\n\n# (3) Mettre à jour SEULEMENT Statut -> \"annulée\"  (partielle)\ncurl -X [[2]] 'localhost:9200/ventes/_update/transaction_001?pretty' \\\n     -d '{ \"[[3]]\": { \"Statut\":\"annulée\" } }'\n\n# (4) Tester si le document existe  (pas de corps JSON)\ncurl -[[4]] 'localhost:9200/ventes/_doc/transaction_001'\n\n# (5) Supprimer le document  →  DELETE\ncurl -X DELETE 'localhost:9200/ventes/_doc/[[5]]?pretty'",
+"solution": "# (1) Créer le document  →  POST\ncurl -X POST 'localhost:9200/ventes/_doc/transaction_001?pretty' \\\n     -H 'Content-Type: application/json' \\\n     -d '{ \"Produit\":\"Smartphone Galaxy S23\",\"Prix\":799.99,\"Statut\":\"payée\" }'\n\n# (2) Récupérer le document  →  GET\ncurl 'localhost:9200/ventes/_doc/transaction_001?pretty'\n\n# (3) Mettre à jour SEULEMENT Statut -> \"annulée\"  (partielle)\ncurl -X POST 'localhost:9200/ventes/_update/transaction_001?pretty' \\\n     -d '{ \"doc\": { \"Statut\":\"annulée\" } }'\n\n# (4) Tester si le document existe  (pas de corps JSON)\ncurl -I 'localhost:9200/ventes/_doc/transaction_001'\n\n# (5) Supprimer le document  →  DELETE\ncurl -X DELETE 'localhost:9200/ventes/_doc/transaction_001?pretty'",
+"hints": [
+"A partial update uses the verb POST on the endpoint `/_update/<id>`.",
+"Wrap a partial-update body in the key `doc` so the other fields stay untouched.",
+"HEAD sends no JSON body; `curl -I` (or `--head`) returns only the status line."
+],
+"blanks": [
+{
+"answers": [
+"_doc"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"POST"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"doc"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"I",
+"--head"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"transaction_001"
+],
+"regex": "",
+"hint": ""
+}
+],
+"rubric": "1 point par commande complète (méthode + path + corps). La mise à jour doit être partielle via `doc` sans toucher aux autres champs ; HEAD doit être sans corps JSON."
+}
+},
+{
+"id": 1164,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "Pour une mise à jour partielle (un seul champ) sans écraser le document, quelle commande utilise-t-on ?",
+"options": [
+"PUT /ventes/_doc/transaction_001 avec le document complet",
+"POST /ventes/_update/transaction_001 avec { \"doc\": {...} }",
+"GET /ventes/_doc/transaction_001",
+"DELETE /ventes/_doc/transaction_001"
+],
+"correct": [
+1
+],
+"explanation": "POST on `/_update/<id>` with the `doc` key changes only the listed fields. A full PUT would replace the whole document and wipe the other fields — the classic lost-marks mistake.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Que renvoie une requête HEAD sur un document Elasticsearch ?",
+"options": [
+"Un code HTTP et un corps JSON",
+"Uniquement un code HTTP, sans corps JSON",
+"Toujours une erreur 500",
+"Un tableau de tous les documents de l'index"
+],
+"correct": [
+1
+],
+"explanation": "HEAD is for testing existence only: it returns an HTTP status code (200 = exists, 404 = missing) and no JSON body.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Quelle est la différence entre PUT et POST dans l'API REST Elasticsearch ?",
+"options": [
+"POST crée un document ; PUT met à jour ou crée un document",
+"PUT crée un document ; POST met à jour un document",
+"Ils sont exactement identiques",
+"POST supprime, PUT récupère"
+],
+"correct": [
+0
+],
+"explanation": "Per the source: POST = create document, PUT = update or create document. PUT is idempotent (same result on repeat); POST is not necessarily.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Un GET sur un document inexistant renvoie quel code HTTP ?",
+"options": [
+"200",
+"404",
+"201",
+"301"
+],
+"correct": [
+1
+],
+"explanation": "404 Not Found. 200 = OK/found, 201 = Created (from a POST/PUT), 404 = not found.",
+"explanations": [],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1165,
+"component": "exercise",
+"data": {
+"title": "Exercice type examen — créer l'index et mise à jour partielle",
+"statement": "Soit la plateforme de suivi des ventes qui stocke des transactions dans l'index « ventes ».\n\n1. Écrire la commande qui **crée l'index « ventes »** avec **6 Primary Shards** et **3 Replica Shards** par Primary Shard. *(1pt)*\n\n2. Le document `transaction_001` contient `\"Statut\": \"payée\"`. Cette transaction a été annulée. Écrire la requête qui met à jour **uniquement le champ Statut** à « annulée », sans modifier les autres champs du document. *(1pt)*",
+"hints": [
+"The index settings live under `settings`: `number_of_shards` and `number_of_replicas`.",
+"Use `POST /index/_update/<id>` with the `doc` key — not a full PUT — so only Statut changes."
+],
+"correction": "1. `PUT /ventes` avec `settings` : number_of_shards = 6, number_of_replicas = 3.\n\n```\nPUT /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": 6,\n    \"number_of_replicas\": 3\n  }\n}\n```\n(ou `curl -X PUT 'localhost:9200/ventes?pretty' -H 'Content-Type: application/json'` avec ce corps).\n\n2. Mise à jour partielle via `_update` :\n\n```\nPOST /ventes/_update/transaction_001\n{\n  \"doc\": {\n    \"Statut\": \"annulée\"\n  }\n}\n```\n\nLa clé `doc` garantit que seul `Statut` change ; une `PUT` complète aurait remplacé tout le document.",
+"mode": "written",
+"steps": [],
+"minutes": 5,
+"claims": []
+}
+},
+{
+"id": 1166,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**Le plus souvent interrogé aux examens — check-list :**\n- Méthode → rôle : **POST** = créer, **PUT** = mettre à jour *ou* créer, **GET** = récupérer, **HEAD** = tester l'existence, **DELETE** = supprimer.\n- **Mise à jour partielle** → toujours `POST /index/_update/<id>` avec `{ \"doc\": {...} }` (une `PUT` complète remplace tout le document).\n- **HEAD** → code HTTP seul, **pas de corps JSON** (200 = existe / 404 = absent).\n- **Retour** → chaque requête renvoie un code HTTP (200, 201, 404…) + JSON, sauf HEAD.\n- En **Kibana**, on tape ces mêmes requêtes dans l'onglet **Dev Tools**."
+}
+},
+{
+"id": 1167,
+"component": "callout",
+"data": {
+"tone": "warning",
+"text": "**Pièges qui font perdre des points :**\n- Confondre **POST** (créer) et **PUT** (mettre à jour *ou* créer). Pour une mise à jour *partielle*, on utilise `POST /_update` avec `doc` — jamais une `PUT` complète qui écrase les autres champs.\n- Oublier que **HEAD** ne renvoie **aucun corps JSON**, seulement un code HTTP.\n- Confondre **200** (OK), **201** (Created) et **404** (Not Found) : un `GET` sur un document inexistant renvoie **404**.\n- Écrire `PUT` quand l'énoncé dit « mettre à jour uniquement le champ X » : c'est le signal d'une mise à jour **partielle** (`_update` + `doc`)."
+}
+}
+]
+},
+{
+"id": 97,
+"title": "Shards Management and Index Creation",
+"teaches": [],
+"blocks": [
+{
+"id": 1168,
+"component": "terminal",
+"data": {
+"title": "Creating an index with custom shards & checking cluster health",
+"shell": "curl",
+"entries": [
+{
+"command": "curl -X PUT 'localhost:9200/test_shard?pretty' -H 'Content-Type: application/json' -d '{\"settings\":{\"number_of_shards\":3,\"number_of_replicas\":1}}'",
+"output": "{\n  \"acknowledged\" : true,\n  \"shards_acknowledged\" : true,\n  \"index\" : \"test_shard\"\n}",
+"note": "Creates index *test_shard* with 3 primary shards, each having 1 replica. On a single-node cluster the replicas cannot be allocated, so health will be **yellow**."
+},
+{
+"command": "curl -X GET 'localhost:9200/_cluster/health?pretty'",
+"output": "{\n  \"cluster_name\" : \"elasticsearch\",\n  \"status\" : \"yellow\",\n  \"number_of_nodes\" : 1,\n  \"active_primary_shards\" : 3,\n  \"active_shards\" : 3,\n  \"unassigned_shards\" : 3,\n  \"active_shards_percent_as_number\" : 50.0\n}",
+"note": "All 3 primary shards are active (50%), but the 3 replica shards are **unassigned** because there is only one node. Status = *yellow*."
+}
+]
+}
+},
+{
+"id": 1169,
+"component": "table",
+"data": {
+"headers": [
+"Elasticsearch",
+"SQL Database"
+],
+"rows": [
+[
+"Index",
+"Base de données"
+],
+[
+"Documents",
+"Lignes"
+],
+[
+"Champs",
+"Colonnes"
+]
+],
+"caption": "Analogie ES ↔ SQL (0.75 pt à l'examen : compléter le tableau)"
+}
+},
+{
+"id": 1170,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**Facts the exam asks most – retrieve them cold:**\n\n1. **Statut *yellow*** : tous les *primary shards* sont alloués, mais ≥ 1 *replica shard* n'est pas alloué (nœud hors ligne / ressource insuffisante). Le cluster est fonctionnel mais sans redondance complète.\n2. **Réplicas → performances de recherche** : les requêtes de lecture (GET, search) sont réparties sur les primaires **ET** les réplicas (load balancing, parallélisme) ; si un nœud primaire tombe, la lecture continue sur le réplica (disponibilité).\n3. **Kibana** : outil de *visualisation et d'analyse* (dashboards, graphiques, cartes). URL par défaut : **http://localhost:5601** (port **5601**).\n4. **Interagir avec ES depuis Kibana** : onglet **Dev Tools** → console REST (GET, PUT, POST, DELETE).\n5. **Champ *geo_point*** : permet de créer des **cartes interactives** dans Kibana. Vérifier le type : `GET /index/_mapping` ou `GET /index/_field_caps?fields=location`.\n6. **Primary Shard** : partition réelle de l'index (scalabilité). **Replica Shard** : copie complète d'un primaire sur un autre nœud (disponibilité + tolérance aux pannes + répartition des lectures)."
+}
+},
+{
+"id": 1171,
+"component": "fill_blanks",
+"data": {
+"title": "Écrire les commandes ES (6 shards / 3 réplicas + partial update)",
+"language": "json",
+"template": "PUT /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": [[1]],\n    \"number_of_replicas\": [[2]]\n  }\n}\n\nPOST /ventes/_update/[[3]]\n{\n  \"doc\": {\n    \"Statut\": \"[[4]]\"\n  }\n}",
+"blanks": [
+{
+"answers": [
+"6"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"3"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"transaction_001"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"annulée"
+],
+"regex": "",
+"hint": ""
+}
+],
+"explanation": "`PUT /ventes` crée l'index avec les settings indiqués. `POST /ventes/_update/<id>` effectue une **mise à jour partielle** : seul le champ dans `doc` est modifié, les autres restent intacts (une `PUT` complète remplacerait tout le document)."
+}
+},
+{
+"id": 1172,
+"component": "code_exercise",
+"data": {
+"title": "Partial update d'un document Elasticsearch",
+"task": "Le document `transaction_001` dans l'index **ventes** a la valeur `\"Statut\": \"payée\"`. La transaction vient d'être annulée. Écrire la requête REST qui met à jour **uniquement** le champ `Statut` à `\"annulée\"` sans toucher aux autres champs.",
+"language": "json",
+"starter": "POST /ventes/_update/____________\n{\n  \"____________\": {\n    \"Statut\": \"____________\"\n  }\n}",
+"solution": "POST /ventes/_update/transaction_001\n{\n  \"doc\": {\n    \"Statut\": \"annulée\"\n  }\n}",
+"hints": [
+"Le verbe est POST (pas PUT).",
+"Le corps JSON contient la clé `doc` avec le sous-objet à modifier.",
+"L'ID du document se place dans l'URL après `_update/`."
+],
+"blanks": [],
+"rubric": "1 pt : commande correcte (POST, _update, id, clé doc, valeur annulée)."
+}
+},
+{
+"id": 1173,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "Quelle est la différence fondamentale entre un **Primary Shard** et un **Replica Shard** ?",
+"options": [
+"Le primary contient les données ; le replica est une copie complète sur un autre nœud, assurant la disponibilité et la répartition des lectures.",
+"Le primary gère les écritures et le replica gère les lectures exclusivement.",
+"Le primary est un index entier ; le replica est un seul document dupliqué.",
+"Le primary shard ne peut exister que s'il y a au moins 3 nœuds."
+],
+"correct": [
+0
+],
+"explanation": "Le primary shard est la **partition réelle** des données (l'index est découpé en plusieurs pour la scalabilité). Le replica est une **copie complète** de ce primary, placée sur un autre nœud. Les écritures passent toujours par le primaire ; les lectures peuvent être servies par les réplicas (load balancing).",
+"explanations": [
+"",
+"",
+"",
+""
+],
+"multiple": false
+},
+{
+"prompt": "Quelle est la différence entre une **Query String** et une **Query DSL** ?",
+"options": [
+"La Query String est une syntaxe littérale simple (`?q=Statut:payée`) ; la Query DSL est une requête structurée en JSON (bool, term, range, must, should…) permettant des critères complexes et combinables.",
+"La Query String utilise SQL ; la Query DSL utilise MongoDB syntax.",
+"Elles sont identiques, seul le nom change selon la version d'ES.",
+"La Query DSL ne fonctionne que dans Kibana, jamais via l'API REST."
+],
+"correct": [
+0
+],
+"explanation": "La Query String (`q=`) est simple mais limitée. La Query DSL est du JSON hiérarchique : `bool` (must/should/filter), `term`, `match`, `range`, agrégations… Le contexte `filter` est en cache, ce qui améliore les performances.",
+"explanations": [
+"",
+"",
+"",
+""
+],
+"multiple": false
+},
+{
+"prompt": "Quel statut `_cluster/health` signifie que **tous les primaires sont alloués** mais qu'**au moins un réplica ne l'est pas** ?",
+"options": [
+"green",
+"yellow",
+"red",
+"gray"
+],
+"correct": [
+1
+],
+"explanation": "**green** = tous les shards (primaires + réplicas) sont alloués. **yellow** = tous les primaires OK, ≥ 1 réplica non alloué. **red** = au moins un primaire n'est pas alloué (données partiellement indisponibles).",
+"explanations": [
+"",
+"",
+"",
+""
+],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1174,
+"component": "worked_example",
+"data": {
+"title": "Créer une visualisation Pie Chart dans Kibana (index « ventes »)",
+"problem": "Étapes dans Kibana pour créer une visualisation de type **Pie Chart** à partir de l'index « ventes », affichant la répartition du nombre total de transactions par produit. (1 pt)",
+"steps": [
+"1. Ouvrir Kibana → menu **Visualize** → clic sur « Create new visualization ».",
+"2. Choisir le type de visualisation **Pie chart**.",
+"3. Sélectionner la source de données / le motif d'index : **ventes**.",
+"4. Définir le **bucket** : agrégation **Terms** sur le champ **Produit** (chaque produit = une part du camembert).",
+"5. Définir la **métrique** : **Count** (nombre de transactions) → taille de chaque part.",
+"6. Ajuster le titre : « Répartition du nombre de transactions par produit » puis **Save**."
+],
+"answer": "La visualisation affiche un camembert où chaque slice représente un produit et sa proportion est calculée sur le count des documents de l'index `ventes` groupés par `Produit` (agrégation Terms).",
+"claims": []
+}
+},
+{
+"id": 1175,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**Checklist express – les 5 points qui reviennent chaque année :**\n\n| # | Ce qu'on demande | Réponse clé |\n|---|---|---|\n| 1 | Tableau ES ↔ SQL | Index ↔ Base de données, Documents ↔ Lignes, Champs ↔ Colonnes |\n| 2 | Statut *yellow* | Tous primaires alloués, ≥ 1 réplica non alloué |\n| 3 | Utilité des réplicas | Load balancing des lectures + disponibilité (failover) |\n| 4 | Créer un index N shards / M réplicas | `PUT /index {\"settings\":{\"number_of_shards\":N,\"number_of_replicas\":M}}` |\n| 5 | Mettre à jour 1 champ sans toucher aux autres | `POST /index/_update/id {\"doc\":{\"champ\":\"valeur\"}}` |\n\n> **Piège classique** : utiliser `PUT /index/id` (remplace **tout** le document) au lieu de `POST /index/_update/id` (partial update)."
+}
+},
+{
+"id": 1176,
+"component": "terminal",
+"data": {
+"title": "Vérifier le type d'un champ (geo_point) via _mapping",
+"shell": "curl",
+"entries": [
+{
+"command": "curl -X GET 'localhost:9200/trajets_bus/_mapping?pretty'",
+"output": "{\n  \"trajets_bus\" : {\n    \"mappings\" : {\n      \"properties\" : {\n        \"location\" : {\"type\" : \"geo_point\"},\n        \"ligne\" : {\"type\" : \"keyword\"},\n        \"horodatage\" : {\"type\" : \"date\"}\n      }\n    }\n  }\n}",
+"note": "On vérifie que `\"location\" : {\"type\" : \"geo_point\"}`. Sans ce type, Kibana ne proposera pas les visualisations Map."
+},
+{
+"command": "curl -X GET 'localhost:9200/trajets_bus/_field_caps?fields=location&pretty'",
+"output": "{\n  \"trajets_bus\" : {\n    \"fields\" : {\n      \"location\" : {\n        \"geo_point\" : {\"type\" : \"geo_point\"}\n      }\n    }\n  }\n}",
+"note": "Alternative plus ciblée : `_field_caps` ne renvoie que le champ demandé."
+}
+]
+}
+}
+]
+},
+{
+"id": 98,
+"title": "CRUD Operations: PUT, GET, DELETE",
+"teaches": [],
+"blocks": [
+{
+"id": 1185,
+"component": "table",
+"data": {
+"headers": [
+"Opération",
+"Commande",
+"Réponse / indice clé"
+],
+"rows": [
+[
+"Créer un document",
+"PUT /boutique/_doc/1",
+"HTTP 201, \"result\": \"created\", _version 1"
+],
+[
+"Mettre à jour un document (remplacement complet)",
+"PUT /boutique/_doc/1",
+"HTTP 200, \"result\": \"updated\", _version 2"
+],
+[
+"Lire un document",
+"GET /boutique/_doc/1",
+"HTTP 200 : OK — HTTP 404 : NOT FOUND"
+],
+[
+"Lister tous les documents",
+"GET /boutique/_search",
+"HTTP 200"
+],
+[
+"Supprimer un document",
+"DELETE /boutique/_doc/1",
+"\"result\": \"deleted\", _version 3"
+],
+[
+"Supprimer un index",
+"DELETE /boutique/",
+"l'index et tous ses documents disparaissent"
+],
+[
+"Lister les indices",
+"GET /_cat/indices?v",
+"tableau : health, pri, rep, docs.count, store.size"
+],
+[
+"Santé du cluster",
+"GET /_cluster/health?pretty",
+"green / yellow / red"
+]
+],
+"caption": "Tableau de référence CRUD Elasticsearch — les 8 commandes que les examens demandent d'écrire."
+}
+},
+{
+"id": 1186,
+"component": "terminal",
+"data": {
+"title": "Session CRUD : créer, lire, mettre à jour, supprimer",
+"shell": "bash",
+"entries": [
+{
+"command": "PUT /boutique/_doc/1",
+"output": "{\n  \"_index\" : \"boutique\",\n  \"_type\" : \"_doc\",\n  \"_id\" : \"1\",\n  \"_version\" : 1,\n  \"result\" : \"created\"\n}",
+"note": "Création du document id 1. Vérifiez le mot-clé \"created\" et _version 1 dans la réponse."
+},
+{
+"command": "GET /boutique/_doc/1",
+"output": "HTTP 200 — le document est renvoyé.\nHTTP 404 si l'id n'existe pas.",
+"note": "Lecture d'un document par id. Les deux codes à connaître : 200 / 404."
+},
+{
+"command": "GET /boutique/_search",
+"output": "HTTP 200 — liste de tous les documents de l'index.",
+"note": "_search renvoie la liste complète : simple mais coûteux en production, on le verra au bloc warning."
+},
+{
+"command": "PUT /boutique/_doc/1",
+"output": "{\n  \"_version\" : 2,\n  \"result\" : \"updated\"\n}",
+"note": "Même PUT que la création : sur un document existant, le corps REMPLACE tout le document. _version passe à 2, résultat \"updated\"."
+},
+{
+"command": "DELETE /boutique/_doc/1",
+"output": "{\n  \"_id\" : \"1\",\n  \"_version\" : 3,\n  \"result\" : \"deleted\"\n}",
+"note": "Suppression du document. Le résultat \"deleted\" confirme l'opération."
+},
+{
+"command": "DELETE /boutique/",
+"output": "l'index boutique est supprimé avec tous ses documents.",
+"note": "DELETE sans _doc supprime l'index entier. À n'utiliser que si c'est vraiment l'objectif."
+},
+{
+"command": "GET /_cat/indices?v",
+"output": "health status index        pri rep docs.count store.size\ngreen  open  kibaba_sample...  1   0    4675     4.6mb\nyellow open  boutique          1   1       2     16.8kb",
+"note": "Tableau de bord des indices : pri = primary shards, rep = réplicas. yellow ici : un réplica de boutique n'est pas alloué."
+}
+]
+}
+},
+{
+"id": 1187,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "Qu'arrive-t-il si on exécute `PUT /boutique/_doc/1` avec un corps partiel sur un document existant ?",
+"options": [
+"Seuls les champs du corps sont modifiés",
+"Le document entier est remplacé : les champs absents du corps sont perdus",
+"Erreur HTTP 409",
+"Le document est dupliqué"
+],
+"correct": [
+1
+],
+"explanation": "PUT est un remplacement complet (full update) : la page 14 le montre — on renvoie tout le document et le résultat est \"updated\". Pour ne toucher qu'un champ, il faut `POST /index/_update/id` avec \"doc\" (voir le worked example).",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Quel code HTTP renvoie Elasticsearch pour la création d'un document via l'opération `_create` si le document existe déjà ?",
+"options": [
+"200",
+"201",
+"404",
+"409"
+],
+"correct": [
+3
+],
+"explanation": "409 : Document already exists — et UNIQUEMENT pour l'opération de création `_create`. En mémoire : 200 modifié, 201 créé, 409 conflit de création, 404 introuvable.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Le statut `yellow` de `GET /_cluster/health?pretty` signifie :",
+"options": [
+"Toutes les données sont perdues",
+"Tous les shards primaires sont alloués mais au moins un shard réplica n'est pas alloué",
+"Le cluster est entièrement opérationnel avec redondance complète",
+"Aucun index n'est ouvert"
+],
+"correct": [
+1
+],
+"explanation": "yellow = données disponibles (primaires alloués) mais redondance incomplète (un réplica manquant, souvent nœud hors ligne). C'est ce qu'on lit sur la ligne `boutique` du cat indices : pri 1, rep 1, status yellow. Le cluster reste fonctionnel.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Pour mettre à jour UNIQUEMENT le champ Statut d'un document sans toucher aux autres champs, la bonne requête est :",
+"options": [
+"PUT /ventes/_doc/transaction_001",
+"POST /ventes/_update/transaction_001 avec {\"doc\": {...}}",
+"GET /ventes/_update/transaction_001",
+"DELETE /ventes/_doc/transaction_001 puis PUT"
+],
+"correct": [
+1
+],
+"explanation": "C'est la partial update : POST sur l'endpoint _update, corps {\"doc\": {seuls les champs à modifier}}. Le PUT remplacerait tout le document et ferait perdre les autres champs.",
+"explanations": [],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1188,
+"component": "worked_example",
+"data": {
+"title": "Examen passé (Q5.3 + Q5.4) : créer un index avec shards/rélicas, puis partial update",
+"problem": "Soit l'index « ventes » d'une plateforme de suivi des ventes. Le document id `transaction_001` contient : Produit \"Smartphone Galaxy S23\", Prix 799.99, Quantité 2, Date \"2025-11-01\", Client_ID \"usr_12345\", Statut \"payée\".\n1. Écrire la commande permettant de créer un index nommé « ventes » avec 6 Primary Shards et 3 Replica Shards par Primary Shard. (1pt)\n2. Cette transaction a été annulée : écrire la requête permettant de mettre à jour UNIQUEMENT le champ Statut à \"annulée\", sans modifier les autres champs. (1pt)",
+"steps": [
+"**Création de l'index** (barème : 1pt) — les shards et réplicas se définissent dans `settings` à la création (le nombre de primary shards est ensuite figé ; les réplicas restent modifiables via `PUT /ventes/_settings`). Verbe : `PUT`, nom d'index : `/ventes`.",
+"Écrire le corps : `\"settings\": { \"number_of_shards\": 6, \"number_of_replicas\": 3 }`. Attention au sens : `number_of_replicas` est le nombre de copies PAR primary shard (ici 3 × 6 = 18 shards au total).",
+"Vérifier dans Kibana Dev Tools : la réponse doit contenir `\"acknowledged\": true`. Contrôler ensuite avec `GET /_cat/indices?v` : la ligne ventes doit afficher pri = 6, rep = 3.",
+"**Partial update** (barème : 1pt) — le mot-clé dans l'énoncé est « uniquement le champ » → endpoint `_update` avec `doc`, jamais `PUT`.",
+"Construire la requête : `POST /ventes/_update/transaction_001` (POST, pas PUT — PUT est le verbe de la full update) avec le corps `{ \"doc\": { \"Statut\": \"annulée\" } }` : seul Statut apparaît dans doc.",
+"Contrôle : répondre avec `GET /ventes/_doc/transaction_001` — Statut vaut \"annulée\" et Prix, Quantité, Date, Client_ID sont intacts."
+],
+"answer": "1.\n```\nPUT /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": 6,\n    \"number_of_replicas\": 3\n  }\n}\n```\n\n2.\n```\nPOST /ventes/_update/transaction_001\n{\n  \"doc\": {\n    \"Statut\": \"annulée\"\n  }\n}\n```\nLa requête `_update` ne modifie que le champ `Statut` ; une PUT complète aurait remplacé tout le document et fait perdre les autres champs.",
+"claims": []
+}
+},
+{
+"id": 1189,
+"component": "fill_blanks",
+"data": {
+"title": "Drill : compléter les 4 commandes CRUD",
+"language": "",
+"template": "# 1. Créer l'index « ventes » : 6 primary shards, 3 replicas\n[[1]] /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": [[2]],\n    \"number_of_replicas\": 3\n  }\n}\n\n# 2. Lire le document id 1 de l'index boutique\n[[3]] /boutique/_doc/1\n\n# 3. Mettre à jour uniquement Statut du document transaction_001\nPOST /ventes/_update/transaction_001\n{\n  \"doc\": { \"Statut\": \"annulée\" }\n}\n\n# 4. Supprimer l'index boutique entier\n[[4]] /boutique/",
+"blanks": [
+{
+"answers": [
+"PUT"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"6"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"GET"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"DELETE"
+],
+"regex": "",
+"hint": ""
+}
+],
+"explanation": "Verbes à ancrer : PUT = écrire (créer/remplacer), GET = lire, POST = actions partielles comme _update, DELETE = supprimer."
+}
+},
+{
+"id": 1190,
+"component": "code_exercise",
+"data": {
+"title": "Exercice type examen : CRUD sur l'index « ventes »",
+"task": "Dans Kibana Dev Tools, écrivez : (1) la commande qui crée l'index « courses » avec 4 primary shards et 1 replica ; (2) la commande qui crée le document id `c1` ci-dessous dans « courses » ; (3) la commande qui met à jour uniquement `Prix` à `149.99` sans toucher aux autres champs de `c1` ; (4) la commande qui supprime le document `c1`. (5 min — calé sur ~4 pts d'examen.)",
+"language": "json",
+"starter": "/* 1. Créer l'index courses : 4 primary shards, 1 replica */\nTODO\n\n/* 2. Créer le document id c1 dans courses */\nTODO\n{\n  \"Produit\": \"Casque Bluetooth\",\n  \"Prix\": 199.99,\n  \"Statut\": \"payée\"\n}\n\n/* 3. Mettre à jour UNIQUEMENT Prix à 149.99 pour c1 */\nTODO\n{\n  \"TODO\": \"le bon corps pour une mise à jour partielle\"\n}\n\n/* 4. Supprimer le document c1 */\nTODO",
+"solution": "PUT /courses\n{\n  \"settings\": {\n    \"number_of_shards\": 4,\n    \"number_of_replicas\": 1\n  }\n}\n\nPUT /courses/_doc/c1\n{\n  \"Produit\": \"Casque Bluetooth\",\n  \"Prix\": 199.99,\n  \"Statut\": \"payée\"\n}\n\nPOST /courses/_update/c1\n{\n  \"doc\": {\n    \"Prix\": 149.99\n  }\n}\n\nDELETE /courses/_doc/c1",
+"hints": [
+"Création d'un document avec id : PUT /index/_doc/id (page 12).",
+"« Uniquement » dans l'énoncé = partial update : POST + _update + corps {\"doc\": {...}} — jamais de PUT ici.",
+"Suppression : même chemin que la création, avec DELETE."
+],
+"blanks": [],
+"rubric": "1 pt par commande correcte : verbe (PUT/POST/DELETE), chemin exact (_doc/id, _update/id), corps (settings corrects, doc partiel)."
+}
+},
+{
+"id": 1191,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**Ce que les sujets demandent le plus (checklist avant de répondre)**\n- Verbe juste : `PUT` créer / full update, `GET` lire, `POST` partial update et actions, `DELETE` supprimer.\n- « Créer un index avec X primary shards et Y réplicas » → `PUT /index` + `settings.number_of_shards: X` + `number_of_replicas: Y` (réplicas = copies PAR primary shard).\n- « Mettre à jour uniquement un champ » → `POST /index/_update/id` avec `{ \"doc\": {seul ce champ} }` — un PUT perdrait les autres champs.\n- Codes HTTP à citer : 200 modifié, 201 créé, 404 introuvable, 409 création en conflit (`_create`).\n- Santé : `yellow` = tous les primaires alloués, au moins un réplica manquant → cluster fonctionnel sans redondance complète.\n- Vérification systématique : `GET /_cat/indices?v` (colonnes pri / rep) et `GET /_cluster/health?pretty`."
+}
+},
+{
+"id": 1192,
+"component": "callout",
+"data": {
+"tone": "warning",
+"text": "**Pièges qui font perdre des points**\n- `PUT` sur un document existant = remplacement COMPLET : le corps doit contenir tout le document, sinon les champs manquants sont perdus. Ne jamais utiliser PUT pour « juste changer un champ ».\n- `number_of_shards` ne se fixe qu'à la création de l'index : on ne peut pas ajouter de primary shards après coup (`number_of_replicas`, lui, se change à chaud via `PUT /index/_settings`).\n- 409 n'arrive QUE pour l'opération `_create` : un PUT simple sur un id existant réussit (résultat \"updated\", _version incrémentée) — ne pas confondre.\n- `_version` augmente à chaque écriture (1 créé → 2 mis à jour → 3 supprimé) : c'est l'indice le plus rapide pour vérifier que votre commande a bien écrit.\n- `GET /index/_search` renvoie TOUS les documents : correct en TP, mais en production on filtre toujours avec une query — si l'énoncé demande « tous les documents », c'est _search, sinon c'est une query."
+}
+}
+]
+},
+{
+"id": 99,
+"title": "Queries and Query DSL",
+"teaches": [],
+"blocks": [
+{
+"id": 1177,
+"component": "table",
+"data": {
+"headers": [
+"Critère",
+"Query String (`q`)",
+"Query DSL"
+],
+"rows": [
+[
+"Syntaxe",
+"Chaîne littérale dans l'URL : `?q=...`",
+"Corps structuré en JSON"
+],
+[
+"Exemple",
+"`GET /boutique/_search?q=Chopin`",
+"`GET /boutique/_search` + `{\"query\":{...}}`"
+],
+[
+"Expressivité",
+"Recherche simple, large, style naturel",
+"`bool`, `term`, `match`, `range`, `filter` ; imbriquée et combinable"
+],
+[
+"Contrôle",
+"Limité (un seul critère global)",
+"Fin : matching, filtrage, performance"
+],
+[
+"Quand l'utiliser",
+"Recherche exploratoire rapide",
+"Critères précis, complexes, combinables"
+]
+],
+"caption": "Query String (q) vs Query DSL — la distinction qui revient sur les sujets."
+}
+},
+{
+"id": 1178,
+"component": "code",
+"data": {
+"language": "http",
+"code": "# 1) Query String (q) : critère simple dans l'URL\nGET /boutique/_search?q=Chopin\n\n# 2) Query DSL : requête structurée en JSON\nGET /boutique/_search\n{\n  \"query\":{\n    \"match\":{\"titre\" : \"19 Nocturnes\"}\n  }\n}",
+"caption": "Les deux formes de requête vues dans les notes (page 16). À gauche, le paramètre `q` ; à droite, le contexte `query`/`match` du DSL."
+}
+},
+{
+"id": 1179,
+"component": "step_diagram",
+"data": {
+"nodes": {},
+"edges": [],
+"direction": "TD",
+"mermaid": "flowchart TD\n  client[\"Client (curl / Dev Tools Kibana)\"]\n  node[\"Nœud coordonnateur\"]\n  ps[\"Primary Shard\"]\n  rs[\"Replica Shard\"]\n  res[\"Résultats fusionnés\"]\n  client --> node\n  node -->|\"répartition\"| ps\n  node -->|\"répartition\"| rs\n  ps --> res\n  rs --> res",
+"steps": [
+{
+"highlight": [
+"client"
+],
+"edges": [],
+"caption": "Le client envoie `GET /boutique/_search?q=Chopin` (Query String) ou un corps DSL."
+},
+{
+"highlight": [
+"node"
+],
+"edges": [],
+"caption": "Le nœud coordonnateur décompose la requête et la distribue aux shards concernés."
+},
+{
+"highlight": [
+"ps",
+"rs"
+],
+"edges": [],
+"caption": "Chaque shard (primaire ET réplicas) exécute la recherche en parallèle (load balancing)."
+},
+{
+"highlight": [
+"res"
+],
+"edges": [],
+"caption": "Les résultats des shards sont fusionnés puis renvoyés au client."
+}
+],
+"caption": "Trajet d'une requête de recherche dans un cluster Elasticsearch : c'est pourquoi les réplicas accélèrent les lectures."
+}
+},
+{
+"id": 1180,
+"component": "fill_blanks",
+"data": {
+"title": "Compléter une requête Query DSL",
+"language": "json",
+"template": "GET /boutique/_search\n{\n  [[1]]: {\n    [[2]]: { \"titre\": \"19 Nocturnes\" }\n  }\n}",
+"blanks": [
+{
+"answers": [
+"\"query\"",
+"query"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"\"match\"",
+"match"
+],
+"regex": "",
+"hint": ""
+}
+],
+"explanation": "Le contexte externe est `query` (racine de toute requête DSL). La clause interne est la requête `match`, qui teste si le champ analysé `titre` contient « 19 Nocturnes » (correspondance texte, pas une égalité exacte)."
+}
+},
+{
+"id": 1181,
+"component": "code_exercise",
+"data": {
+"title": "Écrire une Query DSL combinée",
+"task": "Écrire la requête Query DSL qui renvoie les documents de l'index `ventes` dont le champ `Statut` vaut « payée » **et** dont le champ `Prix` est strictement inférieur à 500.",
+"language": "json",
+"starter": "GET /ventes/_search\n{\n  \"query\": {\n    \"bool\": {\n      \"must\": [\n        // TODO: clause d'égalité exacte sur Statut\n        // TODO: clause range sur Prix < 500\n      ]\n    }\n  }\n}",
+"solution": "GET /ventes/_search\n{\n  \"query\": {\n    \"bool\": {\n      \"must\": [\n        { \"term\": { \"Statut\": \"payée\" } },\n        { \"range\": { \"Prix\": { \"lt\": 500 } } }\n      ]\n    }\n  }\n}",
+"hints": [
+"Pour l'égalité exacte sur une valeur, préférez `term` (pas `match` qui analyse le texte).",
+"Pour « strictement inférieur à », utilisez `range` avec le modificateur `lt`."
+],
+"blanks": [],
+"rubric": "Structure `bool.must` correcte : 0,5 pt. Les deux clauses exactes (`term` sur `Statut` + `range` `lt` sur `Prix`) : 0,5 pt."
+}
+},
+{
+"id": 1182,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "Quelle requête correspond à `GET /boutique/_search?q=Chopin` ?",
+"options": [
+"une Query DSL",
+"une Query String (q)",
+"un mapping",
+"une mise à jour `_update`"
+],
+"correct": [
+1
+],
+"explanation": "Correct : le critère est écrit de façon littérale dans l'URL via `q`.",
+"explanations": [
+"Le corps JSON structuré serait une Query DSL ; ici seul le paramètre `?q=` est utilisé.",
+"Correct : le critère est écrit de façon littérale dans l'URL via `q`.",
+"`_mapping` décrit le schéma des champs, pas une recherche.",
+"`_update` modifie un document ; ici on recherche."
+],
+"multiple": false
+},
+{
+"prompt": "Dans une requête Query DSL, quel contexte est mis en cache pour améliorer les performances ?",
+"options": [
+"`query`",
+"`filter`",
+"`sort`",
+"`aggs`"
+],
+"correct": [
+1
+],
+"explanation": "Correct : `filter` ne calcule pas de score et son résultat est mis en cache, ce qui accélère le filtrage.",
+"explanations": [
+"Le contexte `query` calcule un score et n'est pas mis en cache de la même façon.",
+"Correct : `filter` ne calcule pas de score et son résultat est mis en cache, ce qui accélère le filtrage.",
+"`sort` trie les résultats, il ne met pas en cache des résultats de filtrage.",
+"`aggs` calcule des agrégations, ce n'est pas un contexte de filtrage caché."
+],
+"multiple": false
+},
+{
+"prompt": "Quelle clause DSL teste si le champ analysé `titre` contient « 19 Nocturnes » ?",
+"options": [
+"`term`",
+"`match`",
+"`range`",
+"`bool`"
+],
+"correct": [
+1
+],
+"explanation": "Correct : `match` analyse la valeur avant de comparer, adapté aux champs texte.",
+"explanations": [
+"`term` cherche une valeur exacte non analysée.",
+"Correct : `match` analyse la valeur avant de comparer, adapté aux champs texte.",
+"`range` compare selon une plage (date, nombre, etc.).",
+"`bool` combine d'autres clauses, il ne teste pas lui-même un champ."
+],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1183,
+"component": "worked_example",
+"data": {
+"title": "Traduire un besoin en Query DSL (pas à pas, façon barème)",
+"problem": "Chercher, dans l'index `boutique`, les documents dont `titre` contient « 19 Nocturnes ». Construire la requête DSL en suivant la logique que le barème note.",
+"steps": [
+"Choisir la méthode et l'index : `GET /boutique/_search` (0,25 pt pour le bon endpoint).",
+"Ouvrir le contexte racine obligatoire `\"query\"` (0,25 pt).",
+"Sélectionner la clause `match`, adaptée à un champ texte analysé (0,25 pt).",
+"Associer le champ `titre` à la valeur « 19 Nocturnes » (0,25 pt)."
+],
+"answer": "GET /boutique/_search\n{\n  \"query\":{\n    \"match\":{\"titre\": \"19 Nocturnes\"}\n  }\n}",
+"claims": []
+}
+},
+{
+"id": 1184,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "Sur les sujets, « différence entre Query String (Q) et Query DSL » revient souvent (~1 pt). Réponse attendue : la **Query String** est une syntaxe simple et littérale dans `?q=...`, limitée ; la **Query DSL** est une notation structurée en JSON (`bool`, `term`, `match`, `range`, `filter`) flexible et expressive. Pièges à ne pas prendre : ne pas confondre le contexte `query` (calcule un score, non caché) et `filter` (pas de score, **mis en cache** → performance) ; utiliser `term` pour l'égalité exacte et `match` pour un champ texte analysé ; oublier le contexte racine `\"query\"` dans le corps JSON."
+}
+}
+]
+},
+{
+"id": 100,
+"title": "Révision : sujets d'examen ElasticSearch",
+"teaches": [],
+"blocks": [
+{
+"id": 1193,
+"component": "table",
+"data": {
+"headers": [
+"Elasticsearch",
+"SQL Database"
+],
+"rows": [
+[
+"Index",
+"Base de données"
+],
+[
+"Documents",
+"Lignes"
+],
+[
+"Champs",
+"Colonnes"
+]
+],
+"caption": "Analogie Elasticsearch ↔ base relationnelle — demandée telle quelle (0,75pt)."
+}
+},
+{
+"id": 1194,
+"component": "callout",
+"data": {
+"tone": "exam",
+"text": "**La checklist du jour d'examen (12,5 pts sur ce type)**\n- Analogie : Index ↔ Base de données · Documents ↔ Lignes · Champs ↔ Colonnes (0,75pt)\n- `yellow` = tous les shards primaires alloués, au moins un réplica non alloué (0,25pt)\n- Réplicas = répartition des lectures entre nœuds + disponibilité (1pt)\n- Kibana : visualisation / dashboards, URL **http://localhost:5601** (port 5601), requêtes REST via l'onglet **Dev Tools** (2pt)\n- `geo_point` → cartes dans Kibana ; vérifier avec `GET /index/_mapping/field/location` (1,5pt)\n- Primary vs replica, query_string vs Query DSL, `PUT` d'index, `_update` partiel, Pie Chart dans Kibana (5pt)"
+}
+},
+{
+"id": 1195,
+"component": "terminal",
+"data": {
+"title": "Session Dev Tools — les commandes exactes du sujet",
+"shell": "bash",
+"entries": [
+{
+"command": "GET /_cluster/health?pretty",
+"output": "\"status\" : \"yellow\"",
+"note": "Le cluster fonctionne : tous les **shards primaires sont alloués**, mais **au moins un shard réplica n'est pas alloué** (nœud hors ligne, manque de ressources). green = tout alloué, red = au moins un primaire manquant."
+},
+{
+"command": "PUT /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": 6,\n    \"number_of_replicas\": 3\n  }\n}",
+"output": "\"acknowledged\" : true",
+"note": "Crée l'index `ventes` : 6 primary shards, **3 réplicas par shard primaire**. En production les réplicas = disponibilité (un nœud tombe, la donnée reste lisible) + partage de la charge de lecture."
+},
+{
+"command": "POST /ventes/_update/transaction_001\n{\n  \"doc\": { \"Statut\": \"annulée\" }\n}",
+"output": "\"result\" : \"updated\"",
+"note": "Mise à jour **partielle** : seul `Statut` change, les autres champs restent intacts. Un `PUT /ventes/_doc/transaction_001` avec le même corps **remplacerait tout le document**."
+},
+{
+"command": "GET /ventes/_mapping/field/location",
+"output": "{ \"ventes\": { \"properties\": { \"location\": { \"type\": \"geo_point\" } } } }",
+"note": "Toujours vérifier le **type du champ** avant de créer une carte Kibana. Variante : `GET /ventes/_field_caps?fields=location`."
+},
+{
+"command": "# Kibana : http://localhost:5601  (port par défaut 5601)",
+"output": "",
+"note": "Kibana = visualisation (dashboards, graphiques, cartes). Onglet **Dev Tools** (menu Management) pour exécuter les requêtes REST Elasticsearch (GET, PUT, POST, DELETE) directement."
+}
+]
+}
+},
+{
+"id": 1196,
+"component": "worked_example",
+"data": {
+"title": "Sujet 25-26 — index « ventes » : création puis mise à jour partielle",
+"problem": "Écrire la commande créant un index nommé « **ventes** » avec **6 Primary Shards** et **3 Replica Shards** par Primary Shard (1pt). La transaction `transaction_001` a été annulée : écrire la requête qui met à jour **uniquement** le champ `Statut` à « annulée », sans modifier les autres champs du document (1pt).",
+"steps": [
+"**Créer l'index** → verbe `PUT` + nom de l'index : `PUT /ventes`.",
+"Corps JSON : `\"settings\" : { \"number_of_shards\": 6, \"number_of_replicas\": 3 }` — les deux valeurs doivent être exactes (replicas = par shard primaire).",
+"**Mise à jour partielle** → verbe `POST` sur le document par ID : `POST /ventes/_update/transaction_001` (et non `PUT`, qui écraserait le document).",
+"Corps `{ \"doc\": { \"Statut\": \"annulée\" } }` : la clé `doc` indique qu'on ne fournit que les champs à modifier ; `Produit`, `Prix`, `Quantité`, `Date`, `Client_ID` restent intacts."
+],
+"answer": "```\nPUT /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": 6,\n    \"number_of_replicas\": 3\n  }\n}\n\nPOST /ventes/_update/transaction_001\n{\n  \"doc\": { \"Statut\": \"annulée\" }\n}\n```",
+"claims": []
+}
+},
+{
+"id": 1197,
+"component": "fill_blanks",
+"data": {
+"title": "Drill — taper les commandes du sujet sans regarder",
+"language": "json",
+"template": "[[1]] /ventes\n{\n  \"settings\": {\n    \"number_of_shards\": [[2]],\n    \"number_of_replicas\": 3\n  }\n}\n\n[[3]] /ventes/_update/transaction_001\n{\n  \"[[4]]\": { \"Statut\": \"annulée\" }\n}",
+"blanks": [
+{
+"answers": [
+"PUT"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"6"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"POST"
+],
+"regex": "",
+"hint": ""
+},
+{
+"answers": [
+"doc"
+],
+"regex": "",
+"hint": ""
+}
+],
+"explanation": "Verbes et corps : `PUT` crée l'index avec ses settings ; `POST` + clé `doc` modifie un seul champ."
+}
+},
+{
+"id": 1198,
+"component": "quiz",
+"data": {
+"questions": [
+{
+"prompt": "Un administrateur exécute `GET /_cluster/health?pretty` et obtient le statut « yellow ». Que signifie-t-il ?",
+"options": [
+"Tous les shards, primaires et réplicas, sont alloués.",
+"Au moins un shard primaire n'est pas alloué ; certaines données sont indisponibles.",
+"Tous les shards primaires sont alloués, mais au moins un shard réplica n'est pas alloué.",
+"Le cluster n'est pas démarré."
+],
+"correct": [
+2
+],
+"explanation": "green = tout est alloué. yellow = les primaires (données) sont tous disponibles mais ≥1 réplica manque — le cluster fonctionne sans redondance complète. red = ≥1 primaire manquant.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Comment les **Replica Shards** améliorent-ils les performances des recherches ?",
+"options": [
+"En répartissant les écritures en parallèle sur tous les nœuds.",
+"En permettant aux requêtes de lecture d'être distribuées entre les primaires et leurs réplicas sur différents nœuds (load balancing, parallélisme), et en garantissant l'accès aux données si un nœud tombe.",
+"En stockant uniquement le mapping et les métadonnées de l'index.",
+"En remplaçant automatiquement le shard primaire après chaque écriture."
+],
+"correct": [
+1
+],
+"explanation": "Lecture : partage de charge + résilience ; les **écritures** restent sur le primaire seul. Rappel d'architecture : le primary shard est une partition des données, le réplica est une copie complète placée sur un autre nœud.",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Quelle est la différence entre une **Query String** et une **Query DSL** ?",
+"options": [
+"Query String = syntaxe simple et littérale (`?q=Statut:payée`), limitée ; Query DSL = syntaxe JSON structurée et hiérarchique (bool, term, match, range, filter, agrégations), plus expressive, le contexte `filter` étant mis en cache.",
+"Query DSL est plus simple que la Query String et ne permet que l'appariement exact.",
+"Les deux sont identiques, seule la casse des clés diffère.",
+"La Query String est du JSON, la Query DSL une ligne de commande."
+],
+"correct": [
+0
+],
+"explanation": "La Query String est un paramètre `q` simple, peu contrôlable. Le DSL est JSON structuré : requêtes combinables, plages, booléennes, filtrage performant (cache du contexte filter).",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Quel onglet de Kibana permet d'interagir directement avec Elasticsearch (requêtes REST) ?",
+"options": [
+"Dashboards",
+"Visualize",
+"Dev Tools",
+"Index Patterns"
+],
+"correct": [
+2
+],
+"explanation": "**Dev Tools** (menu Management) : console où l'on tape directement les requêtes REST Elasticsearch (GET, PUT, POST, DELETE).",
+"explanations": [],
+"multiple": false
+},
+{
+"prompt": "Pour vérifier qu'un champ `location` est bien de type `geo_point` avant de créer une carte, on exécute :",
+"options": [
+"GET /ventes/_doc/location",
+"GET /ventes/_mapping/field/location",
+"PUT /ventes/_mapping",
+"DELETE /ventes/_mapping/field/location"
+],
+"correct": [
+1
+],
+"explanation": "Le **mapping** expose les types des champs : on cherche `\"location\": {\"type\": \"geo_point\"}`. Variante ciblée : `GET /ventes/_field_caps?fields=location`. (`_doc` lit un document, `PUT`/`DELETE` modifient l'index.)",
+"explanations": [],
+"multiple": false
+}
+]
+}
+},
+{
+"id": 1199,
+"component": "algorithm",
+"data": {
+"name": "Créer une Pie Chart dans Kibana",
+"when": "la question demande les étapes à suivre dans Kibana pour créer une visualisation (ex. Pie Chart) à partir d'un index.",
+"inputs": "l'index (ex. « ventes »), le champ du bucket (ex. Produit), la métrique demandée (ex. nombre de transactions)",
+"steps": [
+"Ouvrir Kibana → **Visualizations** → « Create new visualization ».",
+"Choisir le type de visualisation **Pie chart**.",
+"Sélectionner la source de données / le motif d'index **« ventes »**.",
+"Définir le **bucket** : une agrégation **Terms** sur le champ **Produit**.",
+"Définir la **métrique** : **Count** (nombre de documents = nombre de transactions) comme taille des parts.",
+"Poser le titre (« Répartition du nombre total de transactions par produit ») et **enregistrer**."
+],
+"output": "Une pie chart montrant la répartition du nombre total de transactions par produit."
+}
+},
+{
+"id": 1200,
+"component": "exercise",
+"data": {
+"title": "Drill exam-style — champ geo_point",
+"statement": "Vous disposez d'un champ **location** de type **geo_point** contenant les coordonnées GPS des trajets de bus.\n\na) À quoi sert ce champ dans Kibana ? *(0,5pt)*\n\nb) Écrire la (ou les) requête(s) permettant de vérifier qu'il est bien de type `geo_point` avant de créer une carte. *(1pt)*",
+"hints": [
+"Penser au type de visualisation Kibana qui exploite des coordonnées GPS.",
+"La commande de mapping peut être ciblée sur un seul champ : `/_mapping/field/<nom>`."
+],
+"correction": "**a)** Créer des **cartes interactives** / visualisations géospatiales dans Kibana (Map / Tiled Map) pour afficher les trajets de bus, les points GPS et réaliser des analyses géospatiales (densité, zones de trafic).\n\n**b)** \n```\nGET /trajets/_mapping/field/location\n```\nou `GET /trajets/_mapping` ; on vérifie dans la réponse la présence de `\"location\": { \"type\": \"geo_point\" }`. Variante : `GET /trajets/_field_caps?fields=location`.",
+"mode": "written",
+"steps": [],
+"minutes": 5,
+"claims": []
+}
+},
+{
+"id": 1201,
+"component": "callout",
+"data": {
+"tone": "warning",
+"text": "**Pièges qui coûtent des points**\n- `PUT /index/_doc/id` **remplace tout le document** : pour ne changer que `Statut`, il faut `POST /index/_update/id` avec la clé `doc`.\n- `yellow` ≠ `red` : en yellow le cluster fonctionne (primaires alloués) ; en red il manque des données. Ne jamais répondre « le cluster est en échec » pour yellow.\n- `number_of_replicas` = nombre de réplicas **par shard primaire** (ici 3 par shard, soit 18 réplicas au total pour 6 primaires) — le sujet dit « par Primary Shard », ne pas oublier cette précision.\n- Query String vs DSL : c'est le **DSL JSON** qui permet bool / filter / range / agrégations — c'est la distinction attendue quand le sujet oppose les deux.\n- Dans Kibana, la console REST (outil **Console**) se trouve dans **Dev Tools**, et Kibana se lance sur le port **5601** — le port **9200** est l'API REST d'Elasticsearch lui-même."
+}
+}
+]
+}
+]

@@ -84,6 +84,7 @@ def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], wo
     for _ in range(QUEUE_RETRIES):
         try:
             with GATE.lane(live):
+                report("running", True)  # the Run screen shows a step that has the model, not one waiting for a lane
                 structured = getattr(backend, "structured", None)
                 if output_schema is not None and structured is not None:
                     return structured(step, prompt, files, workdir, output_schema)
@@ -93,11 +94,20 @@ def call_backend(backend: Backend, step: str, prompt: str, files: list[Path], wo
     raise StepFailed(f"{step}: no lane after {QUEUE_RETRIES} waits")
 
 
+STEP_MODELS: dict[str, str] = {}  # the owner's per-step choices from Settings (stored in the settings table)
+
+
 def model_for(step: str, attempt: int = 1) -> str:
-    """The model a step runs on: CF_MODEL_<STEP>, else CF_MODEL; one extra attempt after the retries goes to CF_FALLBACK_MODEL."""
+    """The model a step runs on: its Settings choice, else CF_MODEL_<STEP>, else the default (default_model); one extra attempt
+    after the retries goes to CF_FALLBACK_MODEL."""
     if attempt > ATTEMPTS and os.environ.get("CF_FALLBACK_MODEL"):
         return os.environ["CF_FALLBACK_MODEL"]
-    return os.environ.get(f"CF_MODEL_{step.upper()}") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
+    return STEP_MODELS.get(step) or os.environ.get(f"CF_MODEL_{step.upper()}") or default_model()
+
+
+def default_model() -> str:
+    """The model of every step without its own: the Settings default, else CF_MODEL, else DEFAULT_MODEL."""
+    return STEP_MODELS.get("default") or os.environ.get("CF_MODEL") or DEFAULT_MODEL
 
 
 def current_model() -> str | None:
@@ -117,6 +127,9 @@ def render_prompt(step: str, inputs: dict) -> str:
     prompt = (HARNESS_DIR / f"{step}.md").read_text()
     for key, value in inputs.items():
         prompt = prompt.replace("{{" + key + "}}", value if isinstance(value, str) else json.dumps(value, ensure_ascii=False))
+    from .failures import lessons  # the ledger imports HARNESS_DIR from here
+    if rules := lessons(step):
+        prompt += "\n\nLessons from earlier runs:\n" + "\n".join(f"- {r}" for r in rules)
     return re.sub(r"\{\{\w+\}\}", "", prompt)  # an optional input left out renders empty
 
 
@@ -264,6 +277,23 @@ def parse_json(text: str) -> object:
     raise last_error
 
 
+class Stopped(Exception):
+    """The owner stopped the Run: not a StepFailed, so no step catches it and moves on."""
+
+
+STOPPED: set[int] = set()  # Courses whose Run the owner stopped; cleared when the Run ends
+PROCS: dict[int | None, set[subprocess.Popen]] = {}  # course id (None: a live step) -> its model subprocesses running now
+_procs_lock = threading.Lock()
+
+
+def stop_course(cid: int) -> None:
+    """Stops a Course's Run: its model subprocesses are killed and its next model step raises Stopped."""
+    STOPPED.add(cid)
+    with _procs_lock:
+        for proc in PROCS.get(cid, set()):
+            proc.kill()
+
+
 def run_pi_step[T: BaseModel](
     db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, schema: type[T],
     workdir: Path, files: tuple[Path, ...] = (), course_id: int | None = None, live: bool = False,
@@ -275,6 +305,8 @@ def run_pi_step[T: BaseModel](
     activity_id = uuid4().hex
     try:
         for attempt in range(1, ATTEMPTS + 1 + bool(os.environ.get("CF_FALLBACK_MODEL"))):
+            if course_id in STOPPED:
+                raise Stopped("stopped by the owner: Retry resumes from the last finished step")
             raw, start = None, time.monotonic()
             _now.model = model_for(step, attempt)
             if watched is not None:
@@ -324,18 +356,18 @@ def activity(course_id: int) -> dict | None:
     """The newest active model step for the Run screen."""
     with _activity_lock:
         entries = ACTIVITY.get(course_id, {})
-        current = max(entries.values(), key=lambda a: a["started"], default=None)
+        current = max(entries.values(), key=lambda a: (a.get("running", False), a["started"]), default=None)
         return dict(current) if current else None
 
 
-def report(kind: str, delta: str) -> None:
+def report(kind: str, delta: str | bool) -> None:
     """A backend streams what the model is thinking ("thinking") or writing ("output") into this thread's step."""
     cid = getattr(_now, "course_id", None)
     activity_id = getattr(_now, "activity_id", None)
     with _activity_lock:
         a = ACTIVITY.get(cid, {}).get(activity_id) if cid is not None and activity_id else None
     if a is not None:
-        a[kind] = (a[kind] + delta)[-ACTIVITY_TAIL:]
+        a[kind] = delta if kind == "running" else (a[kind] + delta)[-ACTIVITY_TAIL:]
 
 
 def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, workdir: Path,
@@ -417,9 +449,17 @@ class PiBackend:
         lines = []
         for line, event in self._events(step, prompt, files, workdir, schema):
             lines.append(line)
-            if event.get("type") in ("thinking_delta", "text_delta"):
+            if event.get("type") in ("thinking_delta", "text_delta", "toolcall_delta"):  # structured output arrives as a tool call
                 report("thinking" if event["type"] == "thinking_delta" else "output", event.get("delta", ""))
         return assistant_text("".join(lines))
+
+    def models(self) -> list[dict]:
+        """The models pi's configured providers offer, as "provider/model" ids, and whether each takes a thinking level."""
+        out = subprocess.run(["pi", "--list-models"], capture_output=True, text=True, timeout=30).stdout
+        rows = [line.split() for line in out.splitlines()]
+        head = next(r for r in rows if r[:2] == ["provider", "model"])
+        return [{"id": f"{r[0]}/{r[1]}", "thinking": r[head.index("thinking")] == "yes"}
+                for r in rows[rows.index(head) + 1:] if len(r) == len(head)]
 
     def stream(self, step, prompt, files, workdir) -> Iterator[str]:
         for _, d in self._events(step, prompt, files, workdir):
@@ -436,22 +476,22 @@ class PiBackend:
             extension = None
             if output_schema and temp:
                 root = Path(temp.name)
-                agent_dir = root / "agent"
-                agent_dir.mkdir()
-                self._strict_model_config(model, agent_dir)
                 schema_path = root / "schema.json"
                 schema_path.write_text(json.dumps(output_schema, ensure_ascii=False))
                 extension = root / "structured-output.mjs"
                 extension.write_text(STRUCTURED_OUTPUT_EXTENSION)
-                env["PI_CODING_AGENT_DIR"] = str(agent_dir)
                 env["CF_OUTPUT_SCHEMA"] = str(schema_path)
+                env["CF_MIN_WORDS"] = str(MIN_WORDS.get(step, 0))
             stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
             stdin.write(prompt)
             stdin.seek(0)
             with stdin, subprocess.Popen(self._cmd(model, files, extension), cwd=workdir, stdin=stdin,
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
-                timer = threading.Timer(self.timeout, proc.kill)
+                timer = threading.Timer(min(self.timeout, STEP_TIMEOUT.get(step, self.timeout)), proc.kill)
                 timer.start()
+                cid = getattr(_now, "course_id", None)  # a background step's Course, so Stop can kill it
+                with _procs_lock:
+                    PROCS.setdefault(cid, set()).add(proc)
                 try:
                     assert proc.stdout is not None
                     for line in proc.stdout:
@@ -463,31 +503,17 @@ class PiBackend:
                     code = proc.wait()
                 finally:
                     timer.cancel()
+                    with _procs_lock:
+                        PROCS.get(cid, set()).discard(proc)
                 if code != 0:
                     raise StepFailed(f"pi exited {code}: {proc.stderr.read()[-500:] if proc.stderr else ''}")
         finally:
             if temp:
                 temp.cleanup()
 
-    def _strict_model_config(self, model: str, agent_dir: Path) -> None:
-        """Give the confirmed Qwen endpoint's strict tool support to this Pi subprocess only."""
-        source_dir = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent"))
-        source = source_dir / "models.json"
-        config = json.loads(source.read_text()) if source.exists() else {"providers": {}}
-        if "qwen3.8-27b" in model.lower():
-            provider_id, model_id = model.split("/", 1)
-            model_id = model_id.split(":", 1)[0]
-            provider = config.get("providers", {}).get(provider_id)
-            if provider:
-                provider.setdefault("compat", {})["supportsStrictMode"] = True
-                for entry in provider.get("models", []):
-                    if entry.get("id") == model_id:
-                        entry.setdefault("compat", {})["supportsStrictMode"] = True
-        (agent_dir / "models.json").write_text(json.dumps(config, ensure_ascii=False))
-
 
 def assistant_text(jsonl: str) -> str:
-    text = ""
+    text, error = "", None
     for line in jsonl.splitlines():
         try:
             ev = json.loads(line)
@@ -495,17 +521,53 @@ def assistant_text(jsonl: str) -> str:
             continue
         msg = ev.get("message") or {}
         if ev.get("type") == "message_end" and msg.get("role") == "assistant":
+            error = msg.get("errorMessage") or "model error" if msg.get("stopReason") == "error" else None
             content = msg.get("content", [])
             calls = [p for p in content if p.get("type") == "toolCall" and p.get("name") == "cf_return_result"]
             if calls:
                 text = json.dumps(calls[-1].get("arguments", {}), ensure_ascii=False)
             else:
                 text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
+        elif ev.get("type") == "tool_execution_end" and ev.get("toolName") == "cf_return_result" and not ev.get("isError"):
+            if "result" in ((ev.get("result") or {}).get("details") or {}):  # the arguments after prepareArguments
+                text = json.dumps(ev["result"]["details"]["result"], ensure_ascii=False)
+    if error:  # pi exits 0 when the model server refuses a request; the reason is only in the event
+        raise StepFailed(f"model server: {error}"[:2000])
     return text
 
 
+# A page read takes 71 s at most when it succeeds (traces since 2026-11-09); past that it is looping on "&nbsp;" and the
+# 900 s default wasted 10 minutes of GPU before the retry.
+STEP_TIMEOUT = {"read_page": 180}
+# A write_section stub ("test", one Block) ended the pi session through the terminating tool: 19 of them in the traces, after
+# 2-14 minutes each. The tool now refuses a result under this many words and the model goes on in the same session.
+MIN_WORDS = {"write_section": 25}
+
 STRUCTURED_OUTPUT_EXTENSION = '''
 import { readFileSync } from "node:fs";
+
+const LATEX = new Set(__LATEX_WORDS__);
+
+// LaTeX in a stringified argument (a lone \\alpha, a raw newline) breaks JSON.parse: escape those inside strings and parse again
+function lenient(s) {
+  let out = "", inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (!inStr) { inStr = c === '"'; out += c; continue; }
+    if (c === "\\\\") {
+      const word = /^[A-Za-z]+/.exec(s.slice(i + 1))?.[0];
+      if (word && LATEX.has(word)) { out += "\\\\\\\\"; continue; }  // \\frac, \\nabla: LaTeX, not the escapes \\f, \\n
+      const ok = /^(u[0-9a-fA-F]{4}|["\\\\/bfnrt])/.exec(s.slice(i + 1, i + 6));
+      out += ok ? c + ok[1] : "\\\\\\\\";
+      if (ok) i += ok[1].length;
+    } else if (c === '"') { inStr = false; out += c; }
+    else out += c < " " ? "\\\\u" + c.charCodeAt(0).toString(16).padStart(4, "0") : c;
+  }
+  return JSON.parse(out);
+}
+
+const words = (v) => typeof v === "string" ? v.split(/\\s+/).filter(Boolean).length
+  : v && typeof v === "object" ? Object.values(v).reduce((n, x) => n + words(x), 0) : 0;
 
 export default function (pi) {
   const schema = JSON.parse(readFileSync(process.env.CF_OUTPUT_SCHEMA, "utf8"));
@@ -519,9 +581,23 @@ export default function (pi) {
     // Use strict sampling where this schema fits Pi's strict subset. Generic Block data
     // falls back to normal function arguments, which are still returned as JSON.
     constrainedSampling: { type: "json_schema", strict: "prefer" },
-    async execute(_id, params) {
-      return { content: [{ type: "text", text: "Result accepted." }], details: {}, terminate: true };
+    // Qwen sometimes sends an array or object argument as a JSON string ("blocks": "[...]"); parse it before validation
+    prepareArguments(args) {
+      if (!args || typeof args !== "object") return args;
+      const out = { ...args };
+      for (const [k, v] of Object.entries(out)) {
+        if (typeof v === "string" && schema.properties?.[k]?.type !== "string" && /^\\s*[\\[{]/.test(v)) {
+          try { out[k] = JSON.parse(v); } catch { try { out[k] = lenient(v); } catch {} }
+        }
+      }
+      return out;
+    },
+    async execute(_id, params) {  // details carry the prepared arguments: the assistant message keeps the raw ones
+      const min = Number(process.env.CF_MIN_WORDS || 0), n = words(params);
+      if (n < min)  // a probe ("test") or a first Block alone: refused without ending the session, so the work done so far is kept
+        throw new Error(`Rejected: ${n} words is a placeholder, not the result. The tool works; call it once with the complete result.`);
+      return { content: [{ type: "text", text: "Result accepted." }], details: { result: params }, terminate: true };
     },
   });
 }
-'''
+'''.replace("__LATEX_WORDS__", json.dumps(sorted(LATEX_WORDS)))

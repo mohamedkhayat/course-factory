@@ -1,5 +1,7 @@
 """Import, page reading and Role proposals: everything before the found Approval Gate."""
 
+import hashlib
+import json
 import shutil
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -19,9 +21,18 @@ def is_material(rel: Path) -> bool:
     return not any(part.startswith(".") or part in JUNK_DIRS for part in rel.parts)
 
 
+class PageFigure(BaseModel):
+    """A figure's structure, so a redraw can keep it: what it shows, what contains what, and the labelled links."""
+    kind: str = ""
+    entities: list[str] = []
+    contains: list[list[str]] = []  # [holder, part] pairs; lenient so one odd entry doesn't fail the page
+    relations: list[list[str]] = []
+
+
 class PageReading(BaseModel):
     text: str
     readable: bool
+    figures: list[PageFigure] = []
 
 
 class RoleProposal(BaseModel):
@@ -45,8 +56,8 @@ def import_sources(ctx: Ctx, cid: int) -> None:
         pages = len(pdfium.PdfDocument(str(f))) if f.suffix.lower() == ".pdf" else 0
         role = "data" if f.suffix.lower() in DATA_SUFFIXES else None
         # data files have no pages to read, so their Role is known without the model
-        db.execute("INSERT OR IGNORE INTO sources (course_id, name, path, pages, role) VALUES (?,?,?,?,?)",
-                   (cid, rel.as_posix(), str(dest / rel), pages, role))
+        db.execute("INSERT OR IGNORE INTO sources (course_id, name, path, pages, role, sha256) VALUES (?,?,?,?,?,?)",
+                   (cid, rel.as_posix(), str(dest / rel), pages, role, hashlib.sha256(f.read_bytes()).hexdigest()))
 
 def read_pages(ctx: Ctx, cid: int) -> None:
     db, backend = ctx.db, ctx.backend
@@ -62,8 +73,9 @@ def read_pages(ctx: Ctx, cid: int) -> None:
             for future in done:
                 n, img = pending.pop(future)
                 reading = future.result()
-                db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable) VALUES (?,?,?,?,?)",
-                           (src["id"], n, str(img), reading.text, int(reading.readable)))
+                db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable, figures) VALUES (?,?,?,?,?,?)",
+                           (src["id"], n, str(img), reading.text, int(reading.readable),
+                            json.dumps([f.model_dump() for f in reading.figures], ensure_ascii=False)))
 
         with ThreadPoolExecutor(max_workers=MODEL_LANES) as pool:
             try:

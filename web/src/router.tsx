@@ -12,6 +12,7 @@ import { Exams, ExamMode } from "./routes/exams";
 import { Cards, Focus } from "./routes/practice";
 import { Labs, LabView } from "./routes/labs";
 import { ComponentsPage } from "./routes/components";
+import { CheatSheetPage, CramPage, Mixed } from "./routes/cram";
 
 function ThemeToggle() {
   const [theme, setTheme] = useState(document.documentElement.dataset.theme ?? "desk");
@@ -29,7 +30,7 @@ function ThemeToggle() {
   );
 }
 
-const NAV = [["read", "Read"], ["exams", "Exams"], ["cards", "Cards"], ["labs", "Labs"], ["focus", "Focus"], ["review", "Review"]] as const;
+const NAV = [["read", "Read"], ["exams", "Exams"], ["cards", "Cards"], ["sheet", "Cheat Sheet"], ["labs", "Labs"], ["focus", "Focus"], ["review", "Review"]] as const;
 
 function CourseNav() {
   const { cid } = useParams({ strict: false }) as { cid?: string };
@@ -38,9 +39,9 @@ function CourseNav() {
   return (
     <>
       <span className="text-border">/</span>
-      <Link to="/c/$cid" params={{ cid }} className="truncate font-medium">{course?.name ?? "…"}</Link>
-      <nav className="ml-4 flex gap-1 overflow-x-auto">
-        {NAV.map(([to, label]) => (
+      <Link to="/c/$cid" params={{ cid }} className="max-w-[10rem] shrink-0 truncate font-medium">{course?.name ?? "…"}</Link>
+      <nav className="ml-2 flex min-w-0 gap-1 overflow-x-auto sm:ml-4">
+        {(course?.goal === "cram" ? [["cram", "Cram"] as const, ...NAV] : NAV).map(([to, label]) => (
           <Link key={to} to={`/c/$cid/${to}`} params={{ cid }}
                 className="rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
                 activeProps={{ className: "bg-accent !text-foreground" }}>{label}</Link>
@@ -53,8 +54,11 @@ function CourseNav() {
 function Shell() {
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-30 flex h-12 items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur">
-        <Link to="/" className="font-display text-[0.95rem] font-semibold tracking-tight">course-factory</Link>
+      <header className="sticky top-0 z-30 flex h-12 print:hidden items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur">
+        <Link to="/" className="flex items-center gap-2 font-display text-[0.95rem] font-semibold tracking-tight">
+          <svg viewBox="0 0 24 24" className="size-5 text-primary" aria-hidden><rect x="3" y="4" width="13" height="16" rx="1.5" fill="currentColor" opacity=".35" /><rect x="7" y="2" width="13" height="16" rx="1.5" fill="currentColor" /><path d="M10 7h7M10 10.5h7M10 14h4" stroke="var(--background)" strokeWidth="1.4" strokeLinecap="round" /></svg>
+          <span className="hidden sm:inline">course-factory</span>
+        </Link>
         <CourseNav />
         <span className="ml-auto flex items-center gap-1">
           <Link to="/components" className={cn("rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground")}
@@ -79,6 +83,7 @@ export const router = createRouter({
     r("/c/$cid/exams", Exams), r("/c/$cid/exams/$eid", ExamMode),
     r("/c/$cid/cards", Cards), r("/c/$cid/focus", Focus),
     r("/c/$cid/labs", Labs), r("/c/$cid/labs/$lid", LabView),
+    r("/c/$cid/cram", CramPage), r("/c/$cid/sheet", CheatSheetPage), r("/c/$cid/mixed", Mixed),
   ]),
 });
 

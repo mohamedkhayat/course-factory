@@ -46,15 +46,25 @@ export function Cards() {
   const card = due[0];
   return (
     <Page title="Cards">
-      {!isLoading && !card && <p className="text-muted-foreground">No Card is due. Mistakes in quizzes and exams become Cards.</p>}
+      {!isLoading && !card && (
+        <div className="index-card rounded-sm px-8 pb-10 pt-4">
+          <p className="h-9 text-xs leading-9 text-muted-foreground">All caught up</p>
+          <p className="mt-6 font-display text-xl">No Card is due.</p>
+          <p className="mt-1 leading-[1.75rem] text-muted-foreground">Mistakes in quizzes and exams become Cards, and come back here when they are due.</p>
+        </div>
+      )}
       {card && (
         <div>
-          <p className="tabular mb-3 text-sm text-muted-foreground">{due.length} due</p>
-          <div className="rounded-md border border-border bg-card px-6 py-8">
-            <div className="prose-cf"><Md>{card.front}</Md></div>
-            {shown && <div className="prose-cf mt-6 border-t border-border pt-6"><Md>{card.back}</Md></div>}
+          <div className="index-card relative min-h-64 rounded-sm px-8 pb-8 pt-4 sm:px-10">
+            <p className="tabular flex h-9 items-center justify-between text-xs text-muted-foreground">
+              <span>{shown ? "Answer" : "Question"}</span><span>{due.length} due</span>
+            </p>
+            <div className="prose-cf mt-6 leading-[1.75rem]"><Md>{card.front}</Md></div>
+            {shown && <div className="prose-cf mt-6 border-t border-dashed border-input pt-6 leading-[1.75rem]"><Md>{card.back}</Md></div>}
           </div>
-          <div className="mt-4">
+          <div className="mx-auto h-1.5 w-[97%] rounded-b-sm bg-card shadow-[var(--lift)]" aria-hidden />
+          {due.length > 2 && <div className="mx-auto h-1.5 w-[94%] rounded-b-sm bg-card shadow-[var(--lift)]" aria-hidden />}
+          <div className="mt-6">
             {!shown ? <Button onClick={() => setShown(true)}>Show the answer</Button> : (
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {RATINGS.map((r) => (
@@ -75,11 +85,11 @@ export function Cards() {
 
 type Stats = { daily_goal: number; today_sessions: number; streak: number; heatmap: Record<string, number>; exam_countdown_days?: number | null };
 
-function Heatmap({ heat }: { heat: Record<string, number> }) {
-  const days = Array.from({ length: 7 * 18 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (7 * 18 - 1 - i)); return d.toLocaleDateString("sv"); });
+export function Heatmap({ heat, weeks = 18 }: { heat: Record<string, number>; weeks?: number }) {
+  const days = Array.from({ length: 7 * weeks }, (_, i) => { const d = new Date(); d.setDate(d.getDate() - (7 * weeks - 1 - i)); return d.toLocaleDateString("sv"); });
   const level = (m = 0) => (m === 0 ? "bg-muted" : m < 25 ? "bg-primary/30" : m < 60 ? "bg-primary/60" : "bg-primary");
   return (
-    <div className="grid grid-flow-col grid-rows-7 gap-[3px] overflow-x-auto" role="img" aria-label="Minutes studied per day, last 18 weeks">
+    <div className="grid grid-flow-col grid-rows-7 gap-[3px] overflow-x-auto" role="img" aria-label={`Minutes studied per day, last ${weeks} weeks`}>
       {days.map((d) => <span key={d} title={`${d}: ${heat[d] ?? 0} min`} className={cn("size-3 rounded-[2px]", level(heat[d]))} />)}
     </div>
   );

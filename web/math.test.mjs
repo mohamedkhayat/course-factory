@@ -17,3 +17,19 @@ test("gradient descent on a bowl walks to its minimum; Newton gets there in one 
   assert.ok(Math.abs(nt[1][0]) < 1e-9 && Math.abs(nt[1][1]) < 1e-9);
   assert.ok(optimizerPath("x**2", "gradient", [1, 0], 5, 100).length < 101); // diverges: stops early
 });
+
+test("a plot expression is shown as a formula", async () => {
+  const { exprTex } = await import("./src/lib/math.ts");
+  assert.equal(exprTex("1/sqrt(2*pi)*exp(-x**2/2)"), "\\frac{1}{\\sqrt{2 \\pi}} \\exp\\left(\\frac{-{ x}^{2}}{2}\\right)");
+  assert.equal(exprTex("2*3"), "2\\cdot3");  // a product of numbers keeps its dot
+});
+
+test("a worked example fades from the last step back to the first", async () => {
+  const { fadedSteps, lastStage } = await import("./src/lib/cram.ts");
+  assert.deepEqual(fadedSteps(4, 0), []);
+  assert.deepEqual(fadedSteps(4, 1), [3]);
+  assert.deepEqual(fadedSteps(4, 2), [1, 2, 3]);
+  assert.deepEqual(fadedSteps(1, 2), [0]);
+  assert.equal(lastStage(4), 2);
+  assert.equal(lastStage(1), 1);
+});

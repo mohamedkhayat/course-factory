@@ -230,3 +230,25 @@ def test_run_shows_each_folder_with_its_sources_and_pages_read(client, material)
     assert set(folders) == {"", "tp"}
     assert folders["tp"]["sources"] == [{"name": "tp/TP1.pdf", "pages": 3, "read": 3}]
     assert (folders[""]["pages"], folders[""]["read"], len(folders[""]["sources"])) == (4, 4, 4)
+
+
+def test_stopping_a_run_ends_it_as_stopped_and_retry_resumes(client, material, model):
+    from course_factory.pi_step import StepFailed, _now, stop_course
+
+    roles = model.handlers["propose_roles"]
+
+    def stopped_midway(prompt, files):
+        if model.stop:
+            model.stop = False
+            stop_course(_now.course_id)  # what POST /run/stop does while the step's subprocess runs: it is killed
+            raise StepFailed("pi exited -9")
+        return roles(prompt, files)
+
+    model.stop = True
+    model.handlers["propose_roles"] = stopped_midway
+    cid = start(client, material)
+    run = client.get(f"/api/courses/{cid}/run").json()
+    assert run["status"] == "failed" and "Stopped" in run["error"]
+    assert client.post(f"/api/courses/{cid}/run/stop").status_code == 409  # nothing executing to stop
+    assert client.post(f"/api/courses/{cid}/run/retry").status_code == 200
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "found"

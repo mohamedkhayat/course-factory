@@ -1,8 +1,10 @@
 import datetime as dt
+import sqlite3
 
 import pytest
 
 from course_factory import learner
+from conftest import make_pdf
 from test_chapters import chapters, generate
 
 
@@ -36,11 +38,15 @@ def test_place_is_remembered_and_reading_unlocks_cards(client, material, model, 
     assert due[0]["front"].startswith("**Definition**") and "oui" in due[1]["back"]
 
 
-def test_citation_opens_the_source_page(client, material, model):
+def test_citation_opens_the_source_page(client, material, model, data_dir):
     cid, _ = published(client, material, model)
     r = client.get(f"/api/courses/{cid}/sources/cours.pdf/pages/1")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content[:4] == b"\x89PNG"
     assert client.get(f"/api/courses/{cid}/sources/cours.pdf/pages/9").status_code == 404
+    with sqlite3.connect(data_dir / "course-factory.db") as db:  # a Source in a subfolder
+        db.execute("UPDATE sources SET name='chap1/cours.pdf' WHERE course_id=? AND name='cours.pdf'", (cid,))
+    r = client.get(f"/api/courses/{cid}/sources/chap1%2Fcours.pdf/pages/1")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
 
 
 def test_flagging_a_block(client, material, model):
@@ -54,7 +60,7 @@ def test_flagging_a_block(client, material, model):
 
 def test_quiz_feedback_mistakes_and_stats(client, material, model):
     cid, sections = published(client, material, model)
-    quiz = sections[0]["blocks"][1]
+    quiz = sections[0]["blocks"][2]
     url = f"/api/courses/{cid}/blocks/{quiz['id']}"
     r = client.post(f"{url}/answers", json={"question": 0, "chosen": [1]}).json()
     assert r == {"correct": False, "correct_options": [0], "explanation": "Par définition."}
@@ -126,7 +132,7 @@ def test_focus_session_counts_active_time_and_only_with_an_action(client, materi
     assert client.post(f"/api/focus/{s['id']}/tick", json={"active_seconds": 120}).json()["active_seconds"] == 120
     assert client.post(f"/api/focus/{s['id']}/tick", json={"active_seconds": 900}).json()["active_seconds"] == 300  # capped
     client.put(f"/api/courses/{cid}/place", json={"section_id": sections[0]["id"]})
-    client.post(f"/api/courses/{cid}/blocks/{sections[0]['blocks'][1]['id']}/answers", json={"question": 0, "chosen": [0]})
+    client.post(f"/api/courses/{cid}/blocks/{sections[0]['blocks'][2]['id']}/answers", json={"question": 0, "chosen": [0]})
     done = client.post(f"/api/focus/{s['id']}/end").json()
     assert done["counts"] and done["sections_read"] == 1 and done["quiz"] == {"correct": 1, "total": 1}
     assert client.post(f"/api/focus/{s['id']}/tick", json={"active_seconds": 1}).status_code == 409
@@ -170,7 +176,7 @@ def test_a_code_answer_is_graded_with_feedback_and_a_hint(client, material, mode
     assert "COPY . ." in prompt and "CMD [" in prompt  # the learner's code and the reference solution
     assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/grade", json={"code": "x"}).status_code == 422
     assert client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"}).status_code == 200
-    assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/self-mark", json={"mark": "got"}).status_code == 422
+    assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/self-mark", json={"mark": "got"}).status_code == 422  # not an exercise
 
 
 def test_a_code_hint_comes_from_the_tutor_and_a_missed_hand_exercise_comes_back_as_a_card(client, material, model):
@@ -190,3 +196,95 @@ def test_a_code_hint_comes_from_the_tutor_and_a_missed_hand_exercise_comes_back_
     assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "block_id": hand["id"]}).status_code == 422
     client.post(f"/api/courses/{cid}/blocks/{hand['id']}/self-mark", json={"mark": "missed"})
     assert hand["id"] in [c["block_id"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]
+
+
+def test_deleting_a_course_removes_it_and_leaves_the_folder(client, material, model, data_dir, clock):
+    cid, sections = published(client, material, model)
+    client.put(f"/api/courses/{cid}/place", json={"section_id": sections[0]["id"]})
+    focus = client.post("/api/focus", json={"course_id": cid}).json()
+    old_traces = {t["id"] for t in client.get(f"/api/courses/{cid}/traces").json()}
+    assert old_traces and client.get(f"/api/courses/{cid}/cards/due").json()
+    assert (data_dir / "courses" / str(cid)).exists()
+
+    assert client.delete(f"/api/courses/{cid}").status_code == 204
+    assert client.get(f"/api/courses/{cid}").status_code == 404
+    assert client.get("/api/courses").json() == []
+    assert not (data_dir / "courses" / str(cid)).exists()
+    assert (material / "cours.pdf").exists()  # the owner's folder is never touched
+    assert client.delete(f"/api/courses/{cid}").status_code == 404
+
+    # SQLite reuses the id: the next Course must not inherit the old one's Run, Traces or place
+    again = client.post("/api/courses", json={"name": "Encore", "folder": str(material)}).json()["id"]
+    assert again == cid
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
+    assert not old_traces & {t["id"] for t in client.get(f"/api/courses/{cid}/traces").json()}
+    assert client.get(f"/api/courses/{cid}/place").json()["section_id"] is None
+    assert client.post(f"/api/focus/{focus['id']}/end").status_code == 200  # the Focus Session outlived its Course
+
+
+def test_export_is_one_html_file_with_published_content_and_answers(client, material, model, tmp_path, monkeypatch):
+    from course_factory import app as appm
+    import json
+    viewer = tmp_path / "export.html"
+    viewer.write_text('<script id="cf-course" type="application/json"><!--CF_COURSE--></script>')
+    monkeypatch.setattr(appm, "EXPORT_VIEWER", viewer)
+    cid, sections = published(client, material, model)
+    r = client.get(f"/api/courses/{cid}/export")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    data = r.text.removeprefix('<script id="cf-course" type="application/json">').removesuffix("</script>")
+    assert "<" not in data  # nothing in the data can close its tag
+    payload = json.loads(data)
+    assert [s["id"] for ch in payload["chapters"] for s in ch["sections"]] == [s["id"] for s in sections]
+    quiz = next(b for ch in payload["chapters"] for s in ch["sections"] for b in s["blocks"] if b["component"] == "quiz")
+    assert "correct" in quiz["data"]["questions"][0]  # checked in the file, without the server
+    assert all("model_answer" in q for e in payload["exams"] for q in e["questions"])
+    assert payload["cheatsheet"]["items"][0]["kind"] == "definition"  # the Cheat Sheet travels with it
+    monkeypatch.setattr(appm, "EXPORT_VIEWER", tmp_path / "missing.html")
+    assert client.get(f"/api/courses/{cid}/export").status_code == 503
+
+
+def test_a_written_answer_is_typed_or_uploaded_kept_and_graded_against_the_steps(client, material, model, tmp_path):
+    from test_grading import png
+    cid = generate(client, material, model, blocks=[HAND, CODE_EXERCISE])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    hand, code = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"]
+    url = f"/api/courses/{cid}/blocks/{hand['id']}/written"
+    assert client.get(url).json() == {"text": "", "files": 0, "grade": None, "subject": "mixed"}
+    assert client.post(f"{url}/grade").status_code == 422  # nothing to grade yet
+    client.put(url, json={"text": "On pose $\\phi(\\rho)$."})
+    assert client.post(f"{url}/files", files={"file": ("ink.png", png(), "image/png")}).json()["files"] == 1
+    assert client.get(f"{url}/files/0").status_code == 200
+    huge = tmp_path / "huge.pdf"
+    make_pdf(huge, 41)  # every page would become a PNG on disk
+    assert client.post(f"{url}/files", files={"file": ("huge.pdf", huge.read_bytes(), "application/pdf")}).status_code == 413
+    assert client.get(url).json()["text"] == "On pose $\\phi(\\rho)$."  # kept for next time
+    grade = client.post(f"{url}/grade").json()["grade"]
+    # the steps are the Marking scheme, one point each; the fake gives the first (clamped to 1) and misses the second
+    assert [(s["step"], s["awarded"]) for s in grade["steps"]] == [("Poser", 1), ("Dériver", 0)] and grade["max"] == 2
+    assert "(1 images)" in grade["transcription"]
+    answer = [p for s, p in model.prompts if s == "grade_answer"][-1]
+    assert "On pose" in answer and "(1 images)" in answer and "$\\rho^* = 1/2$" in answer  # typed + transcribed, the correction as model answer
+    assert hand["id"] not in [c["block_id"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]  # half marks: not a miss
+    assert client.delete(f"{url}/files").json()["files"] == 0
+    assert client.get(f"/api/courses/{cid}/blocks/{code['id']}/written").status_code == 422
+
+
+EXPLAIN = {"component": "explain_back", "origin": "model_added", "citations": [], "data": {
+    "concept": "pas fixe", "prompt": "Pourquoi un pas trop grand diverge-t-il ?", "rubric": ["Dépasse le minimum", "L'écart grandit"],
+    "model_answer": "Chaque itération saute au-delà du minimum."}}
+
+
+def test_an_explain_back_is_graded_on_its_rubric_or_self_marked_and_a_miss_comes_back(client, material, model):
+    cid = generate(client, material, model, blocks=[EXPLAIN])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    block = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"][0]
+    url = f"/api/courses/{cid}/blocks/{block['id']}/written"
+    client.put(url, json={"text": "Le pas saute le minimum."})
+    grade = client.post(f"{url}/grade").json()["grade"]
+    assert [(s["step"], s["awarded"]) for s in grade["steps"]] == [("Dépasse le minimum", 1), ("L'écart grandit", 0)]
+    assert "Chaque itération saute" in [p for s, p in model.prompts if s == "grade_answer"][-1]  # the model answer
+    assert client.post(f"/api/courses/{cid}/blocks/{block['id']}/self-mark", json={"mark": "missed"}).status_code == 200
+    due = [c for c in client.get(f"/api/courses/{cid}/cards/due").json() if c["block_id"] == block["id"]]
+    assert due and "Pourquoi" in due[0]["front"]

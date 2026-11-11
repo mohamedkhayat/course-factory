@@ -1,13 +1,14 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, ListChecks, MessageSquareText, Sparkles, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { get, pageUrl, send, type Block, type Citation } from "@/lib/api";
+import { exported, get, pageUrl, send, type Block, type Citation } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { fadedSteps, lastStage, LIKELIHOOD } from "@/lib/cram";
 import { Md, MdLine, Tex } from "./md";
 import { Explorer, Plot } from "./plot";
-import { CodeExercise, FillBlanks, HandCorrection, Terminal } from "./practice";
+import { CodeExercise, FillBlanks, HandCorrection, Terminal, WrittenAnswer } from "./practice";
 import { OptimizerAnimation, SurfacePlot } from "./surface";
 
 type P<T = any> = { data: T; cid: number; block: Block };
@@ -33,17 +34,58 @@ function TheoremBox({ data }: P) {
   );
 }
 
+/** Study the steps, then practise: the last step is hidden, then every step after the first (faded examples). */
 function WorkedExample({ data }: P) {
+  const [stage, setStage] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const steps: string[] = data.steps;
+  const hidden = new Set(fadedSteps(steps.length, stage));
+  const next = (got: boolean) => { setRevealed(false); if (got) setStage(stage >= lastStage(steps.length) ? 0 : stage + 1); };
   return (
     <div>
-      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
+      <h4 className="flex items-baseline justify-between gap-3 font-medium"><MdLine>{data.title}</MdLine>
+        {stage === 0 && steps.length > 0 && <Button size="sm" variant="outline" className="shrink-0 font-normal" onClick={() => setStage(1)}>Practise it</Button>}
+      </h4>
       <Md>{data.problem}</Md>
       <ol className="mt-2 space-y-1 border-l border-border pl-4">
-        {data.steps.map((s: string, i: number) => <li key={i} className="flex gap-3"><span className="tabular pt-1 text-sm text-muted-foreground">{i + 1}</span><Md>{s}</Md></li>)}
+        {steps.map((s, i) => (
+          <li key={i} className="flex gap-3"><span className="tabular pt-1 text-sm text-muted-foreground">{i + 1}</span>
+            {hidden.has(i) && !revealed ? <span className="my-1 flex-1 rounded border border-dashed border-input px-3 py-1 text-sm text-muted-foreground">Your turn: write this step on paper</span>
+              : <div className={cn(hidden.has(i) && "rounded bg-ok/10 px-2")}><Md>{s}</Md></div>}
+          </li>
+        ))}
       </ol>
+      {stage > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+          {!revealed ? <Button size="sm" onClick={() => setRevealed(true)}>Show the hidden step{hidden.size > 1 ? "s" : ""}</Button> : (
+            <>
+              <span className="text-muted-foreground">Did yours match?</span>
+              <Button size="sm" variant="secondary" onClick={() => next(true)}>{stage >= lastStage(steps.length) ? "Yes, done" : "Yes, hide more"}</Button>
+              <Button size="sm" variant="outline" onClick={() => next(false)}>Not yet, again</Button>
+            </>
+          )}
+          <button type="button" className="ml-auto text-muted-foreground hover:text-foreground" onClick={() => { setStage(0); setRevealed(false); }}>Show all</button>
+        </div>
+      )}
       <Reveal label="Answer"><Md>{data.answer}</Md></Reveal>
     </div>
   );
+}
+
+/** A time limit, as in the exam: counts down once started. */
+function ExerciseTimer({ minutes }: { minutes: number }) {
+  const [end, setEnd] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (end === null) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [end]);
+  if (end === null) return <Button size="sm" variant="outline" onClick={() => { setEnd(Date.now() + minutes * 60_000); setNow(Date.now()); }}>
+    <Timer className="size-3.5" />Time it: {minutes} min</Button>;
+  const left = Math.max(0, Math.round((end - now) / 1000));
+  return <span role="timer" className={cn("tabular inline-flex items-center gap-1 rounded-md px-2 py-1 font-mono text-sm", left ? "bg-muted" : "bg-destructive/12 text-destructive")}>
+    <Timer className="size-3.5" />{left ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "Time's up: in the exam you'd move on"}</span>;
 }
 
 function Exercise({ data, cid, block }: P) {
@@ -55,11 +97,13 @@ function Exercise({ data, cid, block }: P) {
       {data.hints.slice(0, shown).map((h: string, i: number) => (
         <div key={i} className="mt-2 flex gap-2 text-sm"><Lightbulb className="mt-1 size-4 text-warn" /><Md>{h}</Md></div>
       ))}
-      <div className="mt-3 flex gap-2">
+      <div className="mt-3 flex flex-wrap gap-2">
+        {(block.cram?.minutes || data.minutes) ? <ExerciseTimer minutes={block.cram?.minutes || data.minutes} /> : null}
         {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}
       </div>
-      {data.mode === "hand" ? <HandCorrection steps={data.steps ?? []} correction={data.correction} cid={cid} block={block} />
-        : <Reveal label="Correction"><Md>{data.correction}</Md></Reveal>}
+      <WrittenAnswer cid={cid} block={block} />
+      <HandCorrection steps={data.mode === "hand" ? data.steps ?? [] : []} correction={data.correction} cid={cid} block={block}
+                      intro="Answer above, then grade it or compare it with the correction yourself." />
     </div>
   );
 }
@@ -74,7 +118,9 @@ function Quiz({ data, cid, block }: P) {
   if (!q) return <p className="font-medium">Score: {score} / {data.questions.length} <Button size="sm" variant="ghost" onClick={() => { setI(0); setScore(0); }}>Again</Button></p>;
   const toggle = (k: number) => !result && setChosen(q.multiple ? (chosen.includes(k) ? chosen.filter((c) => c !== k) : [...chosen, k]) : [k]);
   const submit = async () => {
-    const r = await send<typeof result>(`/api/courses/${cid}/blocks/${block.id}/answers`, { question: i, chosen });
+    const r = exported  // a standalone export checks locally; the app records answers so mistakes and Cards follow
+      ? { correct: [...new Set(chosen)].sort().join() === [...new Set<number>(q.correct)].sort().join(), correct_options: q.correct, explanation: q.explanation }
+      : await send<typeof result>(`/api/courses/${cid}/blocks/${block.id}/answers`, { question: i, chosen });
     setResult(r);
     if (r?.correct) setScore(score + 1);
   };
@@ -145,10 +191,66 @@ function Callout({ data }: P) {
   );
 }
 
+/** The idea in plain words before the formal statement; an analogy shows where it stops being true. */
+function Intuition({ data }: P<{ idea: string; analogy: string; limits: string }>) {
+  return (
+    <div className="flex gap-3 rounded-md bg-primary/6 px-4 py-3">
+      <Sparkles className="mt-1 size-4 shrink-0 text-primary" aria-hidden />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold">Intuition</p>
+        <Md>{data.idea}</Md>
+        {data.analogy && <div className="mt-2 border-l-2 border-primary/40 pl-3"><p className="text-sm text-muted-foreground">Comme…</p><Md>{data.analogy}</Md></div>}
+        {data.limits && <div className="mt-2 text-sm"><span className="font-medium">Où l'image s'arrête : </span><Md className="inline-block">{data.limits}</Md></div>}
+      </div>
+    </div>
+  );
+}
+
+/** A common wrong belief, why it fails, and the correct idea: the plan's main misconception, named and fixed. */
+function Misconception({ data }: P<{ belief: string; why_wrong: string; correct: string }>) {
+  return (
+    <div className="rounded-md border border-border px-4 py-3">
+      <p className="flex items-start gap-2"><X className="mt-1 size-4 shrink-0 text-destructive" aria-hidden />
+        <span className="min-w-0"><span className="text-sm font-semibold">Idée fausse : </span><Md className="inline-block [&_p]:my-0">{data.belief}</Md></span></p>
+      <div className="mt-2 pl-6 text-sm text-muted-foreground"><Md>{data.why_wrong}</Md></div>
+      <p className="mt-2 flex items-start gap-2 rounded-md bg-ok/10 px-2 py-1.5"><Check className="mt-1 size-4 shrink-0 text-ok" aria-hidden />
+        <span className="min-w-0"><span className="text-sm font-semibold">En réalité : </span><Md className="inline-block [&_p]:my-0">{data.correct}</Md></span></p>
+    </div>
+  );
+}
+
+/** The Section's last Block: what to keep, and what the learner can now do. */
+function Recap({ data }: P<{ takeaways: string[]; can_do: string[] }>) {
+  return (
+    <div className="rounded-md border-t-2 border-foreground/25 bg-muted/40 px-5 py-4">
+      <p className="flex items-center gap-2 font-semibold"><ListChecks className="size-4" aria-hidden />À retenir</p>
+      <ul className="mt-2 list-disc space-y-1 pl-5">{data.takeaways.map((t, i) => <li key={i}><Md className="[&_p]:my-0">{t}</Md></li>)}</ul>
+      {!!data.can_do?.length && <>
+        <p className="mt-3 text-sm font-medium">Vous savez maintenant</p>
+        <ul className="mt-1 space-y-1 text-sm">{data.can_do.map((t, i) => <li key={i} className="flex gap-2"><Check className="mt-1 size-3.5 shrink-0 text-ok" aria-hidden /><MdLine>{t}</MdLine></li>)}</ul>
+      </>}
+    </div>
+  );
+}
+
+/** The learner explains a Concept in their own words: graded on the rubric's points like a written exercise, or self-marked. */
+function ExplainBack({ data, cid, block }: P<{ concept: string; prompt: string; rubric: string[]; model_answer: string }>) {
+  return (
+    <div>
+      <h4 className="flex items-center gap-2 font-medium"><MessageSquareText className="size-4 text-primary" aria-hidden />Expliquez avec vos mots : {data.concept}</h4>
+      <Md>{data.prompt}</Md>
+      <WrittenAnswer cid={cid} block={block} />
+      <HandCorrection steps={data.rubric} correction={data.model_answer} cid={cid} block={block}
+                      intro="Explain it above, then grade it, or compare it point by point with what a good explanation says." />
+    </div>
+  );
+}
+
 function Algorithm({ data }: P) {
   return (
     <div className="rounded-md border border-border px-5 py-4">
       <p className="font-semibold">Algorithme — <MdLine>{data.name}</MdLine></p>
+      {data.when && <div className="mt-1 text-sm"><span className="text-muted-foreground">Quand l'utiliser : </span><Md className="inline-block">{data.when}</Md></div>}
       <div className="mt-1 text-sm"><span className="text-muted-foreground">Entrée : </span><Md className="inline-block">{data.inputs}</Md></div>
       <ol className="my-2 space-y-1">
         {data.steps.map((s: string, i: number) => <li key={i} className="flex gap-3"><span className="tabular pt-1 font-mono text-xs text-muted-foreground">{String(i + 1).padStart(2, "0")}</span><Md>{s}</Md></li>)}
@@ -183,6 +285,22 @@ function IterationTable({ data }: P) {
   );
 }
 
+/** The house diagram look, light and dark (Mermaid needs hex, not the app's oklch tokens). Okabe-Ito accents stay
+ *  readable to colour-blind readers, and every class has a second cue: key is bold, muted dashed, warn thick and italic. */
+const MERMAID_LOOK = {
+  light: { bg: "#faf8f3", fg: "#2b2622", node: "#f1ede5", line: "#8a8278", key: "#23395b", soft: "#7a736b", warn: "#d55e00" },
+  dark: { bg: "#0f1724", fg: "#dfe8ef", node: "#1b2536", line: "#6b7a90", key: "#5fd0e6", soft: "#8593a8", warn: "#e69f00" },
+};
+
+function themed(src: string, dark: boolean) {
+  const c = MERMAID_LOOK[dark ? "dark" : "light"];
+  if (!/^\s*(flowchart|graph)\b/.test(src)) return src;
+  const defs = [`classDef key stroke:${c.key},stroke-width:2.5px,font-weight:bold`,
+    `classDef muted stroke:${c.soft},stroke-dasharray:4 3,color:${c.soft}`,
+    `classDef warn stroke:${c.warn},stroke-width:3px,font-style:italic`];
+  return src + "\n" + defs.filter((d) => !new RegExp(`classDef ${d.split(" ")[1]}\\b`).test(src)).join("\n");
+}
+
 /** Mermaid's SVG for a diagram source: null while rendering, "" when it does not render. */
 function useMermaid(src: string) {
   const id = "m" + useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -190,9 +308,15 @@ function useMermaid(src: string) {
   const dark = document.documentElement.dataset.theme === "instrument";
   useEffect(() => {
     import("mermaid").then(({ default: mermaid }) => {
-      mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "neutral", securityLevel: "strict" });
-      // mermaid renders math only between $$; the model writes single $
-      return mermaid.render(id, src.replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, "$$$$$1$$$$"));
+      const c = MERMAID_LOOK[dark ? "dark" : "light"];
+      mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "base", themeVariables: {
+        darkMode: dark, background: c.bg, fontFamily: "inherit", fontSize: "15px", primaryColor: c.node, primaryTextColor: c.fg,
+        primaryBorderColor: c.line, secondaryColor: c.bg, tertiaryColor: c.bg, lineColor: c.line, textColor: c.fg,
+        clusterBkg: c.bg, clusterBorder: c.line, edgeLabelBackground: c.bg, noteBkgColor: c.node, noteTextColor: c.fg } });
+      // mermaid renders math only between $$; the model writes single $. It drops a line break before math and
+      // trims the spaces around it, so words run into the formula: those become #nbsp;.
+      return mermaid.render(id, themed(src, dark).replace(/(?<!\$)\$([^$\n]+?)\$(?!\$)/g, (_, m) => `$$${m}$$`)
+        .replace(/(?:<br\s*\/?>| )(?=\$\$)|(?<=\$\$) /g, "#nbsp;"));
     }).then((r) => setSvg(r.svg)).catch(() => setSvg(""));
   }, [src, id, dark]);
   return svg;
@@ -220,7 +344,7 @@ function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]
   const [n, setN] = useState(0);
   useEffect(() => {
     const nodes = box.current?.querySelectorAll<SVGGElement>("g.node, g.cluster");
-    const lit = new Set(data.steps[n].highlight);
+    const lit = new Set(Array.isArray(data.steps[n].highlight) ? data.steps[n].highlight : []);
     nodes?.forEach((g) => {
       const name = g.dataset.id ?? g.id.replace(/^flowchart-/, "").replace(/-\d+$/, "");
       g.style.transition = "opacity 300ms";
@@ -275,7 +399,8 @@ export function CustomComponent({ block, comp, height = 160 }: { block: { data: 
   const ref = useRef<HTMLIFrameElement>(null);
   const live = comp && (comp.status === "approved" || comp.status === "preview");
   const { data: code } = useQuery({ queryKey: ["bundle", comp?.id], enabled: !!live, staleTime: Infinity,
-    queryFn: () => fetch(`/api/components/${comp!.id}/bundle.js`).then((r) => r.text()) });
+    queryFn: () => exported ? exported.components.find((c) => c.name === comp!.name)!.bundle
+      : fetch(`/api/components/${comp!.id}/bundle.js`).then((r) => r.text()) });
   const [h, setH] = useState(height);
   useEffect(() => {
     const on = (e: MessageEvent) => { if (e.source === ref.current?.contentWindow && e.data?.height) setH(Math.min(1200, e.data.height + 8)); };
@@ -298,14 +423,35 @@ const RENDER: Record<string, (p: P) => React.ReactNode> = {
   table: ({ data }) => <Table headers={data.headers} rows={data.rows} caption={data.caption} />, code: Code,
   prose: ({ data }) => <Md>{data.markdown}</Md>, fill_blanks: FillBlanks, code_exercise: CodeExercise, terminal: Terminal,
   surface_plot: ({ data }) => <SurfacePlot data={data} />, optimizer_animation: ({ data }) => <OptimizerAnimation data={data} />,
-  step_diagram: StepDiagram,
+  step_diagram: StepDiagram, intuition: Intuition, misconception: Misconception, recap: Recap, explain_back: ExplainBack,
 };
 
+const PRACTICE = new Set(["quiz", "fill_blanks", "code_exercise", "exercise", "explain_back", "recap"]);  // progression.PRACTICE, and the recap
+export type Style = "simpler" | "example" | "analogy" | "deeper";
+const STYLES: [Style, string][] = [["simpler", "Simpler"], ["example", "With an example"], ["analogy", "With an analogy"], ["deeper", "Go deeper"]];
+
 export function useComponents() {
-  return useQuery({ queryKey: ["components"], queryFn: () => get<Comp[]>("/api/components") }).data ?? [];
+  return useQuery({ queryKey: ["components"], queryFn: () => exported
+    ? exported.components.map((c, id) => ({ id, name: c.name, status: "approved", reviewed: true }))
+    : get<Comp[]>("/api/components") }).data ?? [];
+}
+
+/** A Block whose data its renderer can't handle (a flagged one, say) shows a note instead of taking the page down. */
+class BlockBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(e: unknown) { return { error: String(e) }; }
+  render() {
+    return this.state.error
+      ? <p role="alert" className="rounded-md border border-destructive/40 p-3 text-sm text-destructive">This Block can't be shown: {this.state.error}</p>
+      : this.props.children;
+  }
 }
 
 export function BlockBody({ block, cid }: { block: Block; cid: number }) {
+  return <BlockBoundary key={JSON.stringify(block.data).length}><BlockRender block={block} cid={cid} /></BlockBoundary>;
+}
+
+function BlockRender({ block, cid }: { block: Block; cid: number }) {
   const comps = useComponents();
   const R = RENDER[block.component];
   if (R) return <R data={block.data} cid={cid} block={block} />;
@@ -331,9 +477,15 @@ export function PageViewer({ cid, cite, onClose }: { cid: number; cite: Citation
 }
 
 /** A Block as the learner sees it: content, then its Citations and origin, and a way to flag it. */
-export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number; onCite: (c: Citation) => void }) {
+export function ReaderBlock({ block, cid, onCite, onExplain }: {
+  block: Block; cid: number; onCite: (c: Citation) => void; onExplain?: (block_id: number, style: Style, label: string) => void;
+}) {
+  const [explaining, setExplaining] = useState(false);
   const [flagging, setFlagging] = useState(false);
   const [flagged, setFlagged] = useState(false);
+  const [compare, setCompare] = useState(false);
+  const slides = block.component === "diagram" || block.component === "step_diagram"
+    ? [...new Map(block.citations.map((c) => [`${c.source}#${c.page}`, c])).values()].filter((c) => pageUrl(cid, c.source, c.page)) : [];
   const flag = async (reason: "wrong" | "unclear") => {
     await send(`/api/courses/${cid}/blocks/${block.id}/flags`, { reason });
     setFlagged(true);
@@ -341,14 +493,49 @@ export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number;
   };
   return (
     <section className="group/block relative" data-block={block.id}>
+      {block.cram?.likelihood && (
+        <p className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className={cn("rounded-full px-2 py-0.5 font-medium", LIKELIHOOD[block.cram.likelihood].cls)}>{LIKELIHOOD[block.cram.likelihood].label}</span>
+          {block.cram.questions.map((q) => <span key={q.id} className="tabular text-muted-foreground">{q.exam} · {q.points} pts</span>)}
+        </p>
+      )}
       <BlockBody block={block} cid={cid} />
+      {compare && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {slides.map((c) => (
+            <figure key={`${c.source}#${c.page}`}>
+              <button type="button" onClick={() => onCite(c)} aria-label={`Open ${c.source} page ${c.page}`} className="block w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <img src={pageUrl(cid, c.source, c.page)} alt={`${c.source} page ${c.page}`} loading="lazy" className="w-full cursor-zoom-in rounded-md border border-border" /></button>
+              <figcaption className="mt-1 text-xs text-muted-foreground">{c.source}, p. {c.page}</figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+      {block.flags.filter((f) => f.startsWith("source error: ")).map((f) => (
+        <p key={f} className="mt-2 rounded-md border-l-2 border-warn bg-warn/10 px-3 py-2 text-sm">
+          <span className="font-medium">The source has a slip here: </span><MdLine>{f.slice("source error: ".length)}</MdLine>
+        </p>
+      ))}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground opacity-80 transition-opacity group-hover/block:opacity-100">
         {block.citations.map((c, i) => (
           <button key={i} type="button" onClick={() => onCite(c)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
             <BookOpen className="size-3" />{c.source} p.{c.page}
           </button>
         ))}
+        {slides.length > 0 && (
+          <button type="button" aria-expanded={compare} onClick={() => setCompare(!compare)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
+            {compare ? "Hide the slide" : "Compare with the slide"}</button>
+        )}
         <span>{block.origin === "from_source" ? "From source" : "Model-added"}</span>
+        {onExplain && !PRACTICE.has(block.component) && (explaining ? (
+          <span role="group" aria-label="Explain this differently" className="flex flex-wrap items-center gap-1">
+            {STYLES.map(([s, l]) => <Button key={s} size="sm" variant="ghost" className="h-6 px-2 text-xs"
+              onClick={() => { setExplaining(false); onExplain(block.id, s, `Explain this ${block.component.replaceAll("_", " ")} differently: ${l.toLowerCase()}`); }}>{l}</Button>)}
+          </span>
+        ) : (
+          <button type="button" onClick={() => setExplaining(true)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
+            <Sparkles className="size-3" />Explain differently</button>
+        ))}
         <span className="ml-auto flex items-center gap-1">
           {flagged ? <span className="text-warn">Flagged, thanks</span> : flagging ? (
             <>

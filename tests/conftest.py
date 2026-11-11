@@ -43,11 +43,14 @@ class FakeModel:
             "propose_roles": self._roles,
             "propose_outline": lambda prompt, files: {"chapters": [
                 {"title": "Convexité", "sections": [
-                    {"title": "Ensembles convexes", "pages": [{"source": "cours.pdf", "page": 1}, {"source": "nope.pdf", "page": 1}]}]},
+                    {"title": "Ensembles convexes", "pages": [{"source": "cours.pdf", "page": 1}, {"source": "nope.pdf", "page": 1}],
+                     "teaches": ["ensemble convexe"]}]},
                 {"title": "Méthodes de descente", "sections": [
-                    {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}]},
+                    {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}],
+                     "teaches": ["gradient"]},
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
             "write_section": self._section,
+            "plan_chapter": self._plan,
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
             "lab_tutor": lambda prompt, files: f"Look at what `f` returns. ({len(files)} plots seen)",
             "tutor": lambda prompt, files: "Une fonction est « convexe » si... [cours.pdf p.1] [made_up.pdf p.2]",
@@ -66,6 +69,7 @@ class FakeModel:
                      "scheme": [{"step": "Hessienne", "points": 4}, {"step": "Conclusion", "points": 2}]},
                     {"statement": "Calculer $x_1$.", "points": 14, "model_answer": "$x_1 = 0.5$", "scheme": None,
                      "chapter": "Méthodes de descente"}]},
+            "classify_questions": self._classify,
             "write_mock_exam": lambda prompt, files: {
                 "title": "Examen blanc " + prompt.split("Mock exam number ", 1)[1].split(" ", 1)[0], "duration_min": 90,
                 "chapters": ["Méthodes de descente"], "questions": [
@@ -90,11 +94,35 @@ class FakeModel:
 
     def _section(self, prompt, files):
         page = self.pages_of(prompt)[0]
+        teaches = json.loads(prompt.split("This Section teaches: ", 1)[1].split("\n", 1)[0])
         return {"blocks": [
+            {"component": "prose", "origin": "model_added", "data": {"markdown": f"Cette Section présente {', '.join(teaches)}, par exemple sur $x^2$."}},
             {"component": "theorem_box", "origin": "from_source", "citations": [{"source": page["source"], "page": page["page"]}],
              "data": {"kind": "definition", "title": self.section_of(prompt), "statement": "Un ensemble est convexe si..."}},
             {"component": "quiz", "origin": "model_added", "data": {"questions": [
                 {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}]}
+
+    @staticmethod
+    def _plan(prompt, files):
+        """One remember objective per Section, practised by a quiz, tagged with every Question Type."""
+        types = json.loads(prompt.split("(exact names): ", 1)[1].split("\n", 1)[0] or "[]")
+        sections = json.loads(prompt.split("SECTIONS:", 1)[1].split("\n", 1)[0])
+        return {"overview": "Ce chapitre part d'une idée simple et complète, puis chaque Section y ajoute une pièce : "
+                            + ", puis ".join(s["title"] for s in sections) + ".",
+                "sections": [{"title": s["title"], "objectives": [{"id": "o1", "level": "remember", "text": "State it.",
+                                                                   "concepts": [], "exam_types": types}],
+                              "misconceptions": [{"id": "m1", "text": "Confuses it with its converse."}],
+                              "practice": [{"objective": "o1", "kind": "retrieval", "component": "quiz"}]} for s in sections]}
+
+    @staticmethod
+    def _classify(prompt, files):
+        """One Question Type per Chapter named in the questions."""
+        qs = json.loads(prompt.split("QUESTIONS:", 1)[1])
+        types: dict = {}
+        for q in qs:
+            types.setdefault(q["chapter"], []).append(q["id"])
+        return {"types": [{"name": f"Type {ch}", "trigger": f"asks about {ch}", "chapter": ch, "template": "1. Poser\n2. Conclure",
+                           "questions": ids} for ch, ids in types.items()]}
 
     def _roles(self, prompt, files):
         roles = {"TD1.pdf": ("exercise sheet", "TD1_corrige.pdf"), "TD1_corrige.pdf": ("correction", None),
@@ -110,6 +138,10 @@ class FakeModel:
         out = self.handlers[step](prompt, files)
         return out if isinstance(out, str) else json.dumps(out)
 
+
+    @staticmethod
+    def models():
+        return [{"id": "llama-swap/big", "thinking": True}, {"id": "llama-swap/small", "thinking": False}]
 
     def stream(self, step, prompt, files, workdir):
         text = self(step, prompt, files, workdir)
@@ -151,6 +183,13 @@ def material(tmp_path):
 @pytest.fixture
 def model():
     return FakeModel()
+
+
+@pytest.fixture(autouse=True)
+def stub_sections(monkeypatch):
+    """Test Sections are a Block or two of stub text; the placeholder guard has its own test."""
+    from course_factory import chapters
+    monkeypatch.setattr(chapters, "MIN_SECTION_WORDS", 0)
 
 
 @pytest.fixture

@@ -5,6 +5,8 @@ import katex from "katex";
 const dom = new JSDOM("<!doctype html><body></body>");
 globalThis.window = dom.window;
 globalThis.document = dom.window.document;
+// Mermaid sanitizes labels holding HTML (<br/>) with DOMPurify, which needs the DOM classes (Element, Node...) as globals.
+for (const k of Object.getOwnPropertyNames(dom.window)) if (/^[A-Z]/.test(k) && !(k in globalThis)) globalThis[k] = dom.window[k];
 const { default: mermaid } = await import("mermaid");
 
 let input = "";

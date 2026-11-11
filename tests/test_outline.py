@@ -70,3 +70,71 @@ def test_goal_can_be_switched_after_found_gate(client, material, model):
     assert client.patch(f"/api/courses/{cid}", json={"goal": "cram"}).status_code == 422
     r = client.patch(f"/api/courses/{cid}", json={"goal": "cram", "exam_date": "2027-01-20"})
     assert r.json()["goal"] == "cram" and r.json()["exam_date"] == "2027-01-20"
+
+
+def test_an_outline_that_stops_before_some_course_notes_is_retried_naming_them(client, material, model):
+    from conftest import make_pdf
+    make_pdf(material / "cours2.pdf", 1)
+    full = model.handlers["propose_outline"]
+    prompts = []
+
+    def stops_early(prompt, files):
+        prompts.append(prompt)
+        plan = full(prompt, files)
+        if "RETRY FEEDBACK" in prompt:
+            plan["chapters"].append({"title": "Newton", "sections": [{"title": "Newton", "pages": [{"source": "cours2.pdf", "page": 1}], "teaches": ["Newton"]}]})
+        return plan
+    model.handlers["propose_outline"] = stops_early
+    cid = to_outline_gate(client, material, model)
+    assert "cours2.pdf" in prompts[1].split("RETRY FEEDBACK", 1)[1]
+    assert [c["title"] for c in client.get(f"/api/courses/{cid}/outline").json()["chapters"]][-1] == "Newton"
+
+
+def test_an_uncited_page_of_the_notes_joins_the_section_citing_the_page_before_it(client, material, model):
+    """Course 6: the outline cited no Section for the definition of a norm (chap1 pp5-6), real content; the Quasi-Newton
+    pages marked "[hors programme]" stay out, and so does a title page."""
+    from conftest import make_pdf
+    make_pdf(material / "cours.pdf", 5)
+    texts = {3: "Définition d'une norme : une application N de E dans R+ telle que... " * 8,
+             4: "Quasi-Newton [hors programme] : BFGS met à jour une approximation de la hessienne... " * 8, 5: "Fin"}
+    model.handlers["read_page"] = lambda prompt, files: {
+        "text": next((t for n, t in texts.items() if f"SOURCE: cours.pdf, page {n}" in prompt), "page"), "readable": True}
+    cid = to_outline_gate(client, material, model)
+    pages = {s["title"]: s["pages"] for c in client.get(f"/api/courses/{cid}/outline").json()["chapters"] for s in c["sections"]}
+    assert pages["Gradient"] == [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 3}]
+    assert pages["Ensembles convexes"] == [{"source": "cours.pdf", "page": 1}]
+
+
+def test_a_section_teaching_no_concept_is_sent_back_unless_it_is_for_practice(client, material, model):
+    """Courses 2, 3 and 5 were outlined with no Concepts: every progression check then passed without checking anything."""
+    full, prompts = model.handlers["propose_outline"], []
+
+    def no_concepts(prompt, files):
+        prompts.append(prompt)
+        plan = full(prompt, files)
+        if "RETRY FEEDBACK" not in prompt:
+            plan["chapters"][1]["sections"][0]["teaches"] = []
+        return plan
+    model.handlers["propose_outline"] = no_concepts
+    to_outline_gate(client, material, model)
+    feedback = prompts[1].split("RETRY FEEDBACK", 1)[1]
+    assert '["Gradient"]' in feedback and "Exercices" not in feedback.split("teaches", 2)[1]
+
+
+def test_concepts_are_named_for_an_outline_made_before_them_without_touching_it(client, material, model, data_dir):
+    """Courses 2, 3 and 5: teaches=[] everywhere and no Chapter plan. Backfilled, their Chapters regenerate with both."""
+    import json
+    from course_factory import db as dbm
+    from course_factory.context import Ctx
+    from course_factory.outline import backfill_concepts
+    cid = to_outline_gate(client, material, model)
+    db = dbm.connect(data_dir / "course-factory.db")
+    db.execute("UPDATE sections SET teaches='[]'")
+    before = [tuple(r) for r in db.execute("SELECT id, chapter_id, position, title, pages FROM sections ORDER BY id")]
+    model.handlers["name_concepts"] = lambda prompt, files: {"chapters": [
+        {"title": ch["title"], "sections": [{"title": s["title"], "teaches": [f"idée de {s['title']}", "gradient"]} for s in ch["sections"]]}
+        for ch in json.loads(prompt.split("OUTLINE (each Section with the start of the pages it is built from):\n", 1)[1])]}
+    backfill_concepts(Ctx(db, model, data_dir, None), cid)  # type: ignore[arg-type]
+    assert [tuple(r) for r in db.execute("SELECT id, chapter_id, position, title, pages FROM sections ORDER BY id")] == before
+    teaches = [json.loads(r[0]) for r in db.execute("SELECT teaches FROM sections ORDER BY id")]
+    assert teaches == [["idée de Ensembles convexes", "gradient"], ["idée de Gradient"], ["idée de Exercices"]]  # once each

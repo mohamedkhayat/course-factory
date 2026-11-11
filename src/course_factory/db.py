@@ -54,7 +54,15 @@ def connect(path: Path) -> sqlite3.Connection:
     for table, column in [("questions", "chapter_id INTEGER"), ("traces", "duration_ms INTEGER"),
                           ("traces", "checks TEXT"), ("traces", "model TEXT"),
                           ("courses", "subject TEXT NOT NULL DEFAULT 'mixed'"),
-                          ("sections", "generation_status TEXT NOT NULL DEFAULT 'planned'")]:
+                          ("sections", "generation_status TEXT NOT NULL DEFAULT 'planned'"),
+                          ("questions", "question_type_id INTEGER"), ("chapters", "profile TEXT"),
+                          ("blocks", "exam_types TEXT NOT NULL DEFAULT '[]'"), ("blocks", "previous TEXT"),
+                          ("blocks", "review_queue INTEGER NOT NULL DEFAULT 0"),
+                          ("courses", "hours_per_day REAL NOT NULL DEFAULT 2"), ("courses", "auto_resolve INTEGER NOT NULL DEFAULT 0"), ("sources", "sha256 TEXT"),
+                          ("exams", "cohort TEXT"), ("exams", "in_scope INTEGER NOT NULL DEFAULT 1"),
+                          ("sections", "teaches TEXT NOT NULL DEFAULT '[]'"), ("blocks", "tests TEXT NOT NULL DEFAULT '[]'"),
+                          ("chapters", "plan TEXT"), ("courses", "language TEXT NOT NULL DEFAULT 'mixed'"),
+                          ("pages", "figures TEXT")]:
         try:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
         except sqlite3.OperationalError:
@@ -110,6 +118,10 @@ CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE, position INTEGER NOT NULL,
   statement TEXT NOT NULL, points REAL NOT NULL, model_answer TEXT NOT NULL, scheme TEXT, flags TEXT NOT NULL DEFAULT '[]',
   chapter_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS question_types (
+  id INTEGER PRIMARY KEY, course_id INTEGER NOT NULL REFERENCES courses(id), name TEXT NOT NULL, trigger TEXT NOT NULL DEFAULT '',
+  template TEXT NOT NULL DEFAULT '', chapter_id INTEGER, UNIQUE (course_id, name)
 );
 CREATE TABLE IF NOT EXISTS copies (
   id INTEGER PRIMARY KEY, exam_id INTEGER NOT NULL REFERENCES exams(id), started_at TEXT NOT NULL, deadline TEXT NOT NULL,

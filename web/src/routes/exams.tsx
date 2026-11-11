@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, Eraser, PenLine, Upload } from "lucide-react";
+import { Camera, Eraser, FileText, PenLine, Upload } from "lucide-react";
 import { Md } from "@/components/md";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
 import { useCid } from "./run";
 
-type ExamItem = { id: number; kind: "past_paper" | "mock"; title: string; duration_min: number; chapters: number[] };
+type ExamItem = { id: number; kind: "past_paper" | "mock"; title: string; duration_min: number; chapters: number[]; cohort?: string | null; in_scope?: boolean };
 type Question = { id: number; position: number; statement: string; points: number; model_answer?: string; scheme?: { step: string; points: number }[] | null };
 type Exam = ExamItem & { total_points: number; questions: Question[] };
 type Step = { step: string; points: number; awarded: number; comment: string; page: { source: string; page: number } | null };
@@ -23,22 +23,50 @@ export function Exams() {
   const nav = useNavigate();
   const { data: exams = [] } = useQuery({ queryKey: ["exams", cid], queryFn: () => get<ExamItem[]>(`/api/courses/${cid}/exams`) });
   const { data: history = [] } = useQuery({ queryKey: ["copies", cid], queryFn: () => get<{ id: number; exam_id: number; exam: string; handed_in_at: string; total: number; max: number }[]>(`/api/courses/${cid}/copies`) });
+  const qc = useQueryClient();
+  const scope = useMutation({
+    mutationFn: (e: ExamItem) => send(`/api/courses/${cid}/exams/${e.id}/scope`, { in_scope: !e.in_scope }, "PUT"),
+    onSuccess: () => qc.invalidateQueries(),
+  });
   const start = useMutation({
     mutationFn: (eid: number) => send<Copy>(`/api/courses/${cid}/exams/${eid}/copies`),
     onSuccess: (c) => nav({ to: "/c/$cid/exams/$eid", params: { cid: String(cid), eid: String(c.exam_id) }, search: { copy: c.id } as never }),
   });
   return (
     <Page title="Exams">
-      <ul className="divide-y divide-border border-y border-border">
-        {exams.map((e) => (
-          <li key={e.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-            <span>
-              <span className="font-medium">{e.title}</span>
-              <span className="ml-2 text-sm text-muted-foreground">{e.kind === "mock" ? "Mock exam" : "Past paper"} · <span className="tabular">{e.duration_min} min</span></span>
-            </span>
-            <Button size="sm" onClick={() => start.mutate(e.id)} disabled={start.isPending}>Sit it</Button>
-          </li>
-        ))}
+      {!exams.length && <p className="text-muted-foreground">No Exam in this Course yet.</p>}
+      <ul className="space-y-3">
+        {exams.map((e) => {
+          const copies = history.filter((h) => h.exam_id === e.id);
+          const best = copies.reduce<number | null>((m, h) => Math.max(m ?? 0, h.max ? h.total / h.max : 0), null);
+          const Icon = e.kind === "mock" ? PenLine : FileText;
+          return (
+            <li key={e.id} className="flex flex-wrap items-center gap-4 rounded-lg border border-border bg-card px-5 py-4">
+              <span className={cn("grid size-10 shrink-0 place-items-center rounded-md", e.kind === "mock" ? "bg-primary/10 text-primary" : "bg-warn/15 text-warn")}>
+                <Icon className="size-5" aria-hidden />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium leading-snug">{e.title}</span>
+                <span className="tabular mt-0.5 block text-sm text-muted-foreground">
+                  {e.kind === "mock" ? "Mock exam" : "Past paper"}{e.cohort ? ` · year ${e.cohort}` : ""} · {e.duration_min} min{e.chapters.length ? ` · ${e.chapters.length} Chapter${e.chapters.length === 1 ? "" : "s"}` : ""}
+                  {best != null && <> · best <span className={cn("font-medium", best >= 0.5 ? "text-ok" : "text-destructive")}>{Math.round(best * 100)}%</span></>}
+                </span>
+              </span>
+              {e.kind === "past_paper" && (
+                <span className="flex items-center gap-2">
+                  {!e.in_scope && <Badge variant="outline" title="Set for another cohort: practice only, it does not weigh the Course">Another cohort · practice only</Badge>}
+                  <Button size="sm" variant="ghost" onClick={() => scope.mutate(e)} disabled={scope.isPending}
+                    title="Whether this paper counts toward Exam Weight, Question Types and Exam Likelihood">
+                    {e.in_scope ? "Not my exam" : "Count it"}
+                  </Button>
+                </span>
+              )}
+              <Button size="sm" variant={copies.length ? "outline" : "default"} onClick={() => start.mutate(e.id)} disabled={start.isPending}>
+                {copies.length ? "Sit it again" : "Sit it"}
+              </Button>
+            </li>
+          );
+        })}
       </ul>
       {start.error && <p className="mt-2 text-sm text-destructive">{errText(start.error)}</p>}
       {history.length > 0 && (

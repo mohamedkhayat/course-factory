@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, BookOpen, Check, ClipboardList, FlaskConical, Folder, Layers, Loader2, Merge, Pause, Scissors, SplitSquareVertical, Timer, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUp, BookOpen, Play, Check, ClipboardList, Download, FlaskConical, Folder, Layers, Loader2, Merge, Pause, Scissors, SplitSquareVertical, Timer, TriangleAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -9,10 +9,10 @@ import { PageViewer } from "@/components/blocks";
 import { Md } from "@/components/md";
 import { duration, get, pageUrl, readEvents, send, type Citation, type Course, type Gpu } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { errText, Page } from "./home";
+import { Cover, courseHue, DeleteCourse, errText, Page } from "./home";
 
 type Step = { name: string; label: string; gate: boolean; state: "done" | "current" | "waiting" };
-type Activity = { step: string; attempt: number; elapsed: number; thinking: string; output: string; inputs: Record<string, string> };
+type Activity = { step: string; attempt: number; elapsed: number; thinking: string; output: string; running?: boolean; inputs: Record<string, string> };
 type Run = { status: string; gate: string | null; error: string | null; next?: string[]; pages_read: number; pages_total: number;
   seconds_left?: number | null; time_left?: { stage: string; left: number; seconds: number | null }[]; gpu?: Gpu | null; pipeline: Step[]; active: boolean; activity: Activity | null; progress?: RunProgressTree };
 type PSection = { title: string; state: "waiting" | "writing" | "checking" | "repairing" | "judging" | "done" | "flagged" | "skipped"; blocks: number; flagged: number };
@@ -57,7 +57,7 @@ export function streamedText(raw: string): string {
   try { return JSON.parse(`"${body}"`) as string; } catch { return body.replaceAll("\\n", "\n"); }
 }
 
-function Tail({ label, live, children, text }: { label: string; live: boolean; text: string; children: React.ReactNode }) {
+function Tail({ label, live, children, text, waiting, className }: { label: string; live: boolean; text: string; waiting: string; className?: string; children: React.ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);  // follow new text unless the reader scrolled up
   useEffect(() => { if (box.current && pinned.current) box.current.scrollTop = box.current.scrollHeight; }, [text]);
@@ -66,8 +66,12 @@ function Tail({ label, live, children, text }: { label: string; live: boolean; t
       <p className="mb-1.5 flex items-center gap-2 text-xs font-medium text-muted-foreground">{label}
         {live && <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />}</p>
       <div ref={box} onScroll={(e) => { const el = e.currentTarget; pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24; }}
-           className="h-48 overflow-y-auto overscroll-contain rounded-md bg-muted/50 px-4 py-3">
-        {text ? children : <span className="text-sm text-muted-foreground">Waiting for the model…</span>}
+           className={cn("overflow-y-auto overscroll-contain rounded-md px-4 py-3", className ?? "h-48 bg-muted/50")}>
+        {text ? children : (
+          <div className="ruled-wait h-full min-h-24 pt-1 text-sm leading-[1.6rem] text-muted-foreground">
+            <span className="animate-pulse">{waiting}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -84,28 +88,40 @@ function Now({ cid, a }: { cid: number; a: Activity }) {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 className="flex items-center gap-2 text-lg"><Loader2 className="size-4 animate-spin text-primary" aria-hidden />{stepName(a.step)}</h2>
         {page && <span className="min-w-0 truncate text-sm text-muted-foreground">{page.source}, page {page.page}</span>}
-        <span className="tabular ml-auto text-xs text-muted-foreground">{a.elapsed} s{a.attempt > 1 && ` · attempt ${a.attempt} of 3`}</span>
+        <span className="tabular ml-auto flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground"><Timer className="size-3" aria-hidden />{a.elapsed} s{a.attempt > 1 && ` · attempt ${a.attempt} of 3`}</span>
       </div>
       {detail.map(([k, v]) => <p key={k} className="mt-1 truncate text-sm text-muted-foreground"><span className="capitalize">{k.replaceAll("_", " ")}</span>: {v}</p>)}
-      <div className={cn("mt-3 grid gap-4", page && "sm:grid-cols-[11rem_minmax(0,1fr)]")}>
-        {page && (
-          <div className="grid aspect-[1/1.414] w-36 place-items-center self-start rounded-sm bg-muted text-xs text-muted-foreground sm:w-full">
-            <span className="col-start-1 row-start-1">Page {page.page}</span>
-            <img key={`${page.source}-${page.page}`} src={pageUrl(cid, page.source, page.page)} alt={`${page.source}, page ${page.page}`}
-                 onError={(e) => { e.currentTarget.hidden = true; }}
-                 className="col-start-1 row-start-1 size-full rounded-sm bg-white object-contain shadow-[0_1px_3px_oklch(0_0_0/0.18)]" />
+      {page ? (
+        <div className="mt-4 grid gap-5 sm:grid-cols-[13rem_minmax(0,1fr)]">
+          <figure className="w-40 self-start sm:w-full">
+            <div className="scan grid aspect-[1/1.414] place-items-center rounded-sm bg-card text-xs text-muted-foreground shadow-[var(--lift)]">
+              <span className="col-start-1 row-start-1">Page {page.page}</span>
+              <img key={`${page.source}-${page.page}`} src={pageUrl(cid, page.source, page.page)} alt={`${page.source}, page ${page.page}`}
+                   onError={(e) => { e.currentTarget.hidden = true; }}
+                   className="col-start-1 row-start-1 size-full rounded-sm bg-white object-contain" />
+            </div>
+            <figcaption className="mt-2 text-center text-xs text-muted-foreground">The original</figcaption>
+          </figure>
+          <Tail label="Transcription" text={a.output} live={!!a.output} waiting="The model writes the page out here once it has looked at it."
+                className="h-[22rem] border border-border bg-card shadow-[var(--lift)] sm:px-6 sm:py-5">
+            <Md className="prose-cf !text-[0.95rem]">{streamedText(a.output)}</Md>
+          </Tail>
+          <div className="sm:col-span-2">
+            <Tail label="Thinking" text={a.thinking} live={!a.output} waiting="Looking at the page…" className="h-28 bg-muted/50">
+              <p className="max-w-[75ch] whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">{a.thinking}</p>
+            </Tail>
           </div>
-        )}
-        <div className="min-w-0 space-y-4">
-          <Tail label="Thinking" text={a.thinking} live={!a.output}>
+        </div>
+      ) : (
+        <div className="mt-3 min-w-0 space-y-4">
+          <Tail label="Thinking" text={a.thinking} live={!a.output} waiting={a.running ? "Reading the prompt…" : "Queued: both model lanes are busy with other Sections."}>
             <p className="max-w-[75ch] whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{a.thinking}</p>
           </Tail>
-          <Tail label={a.step === "read_page" ? "Transcription" : "Output"} text={a.output} live={!!a.output}>
-            {a.step === "read_page" ? <Md className="prose-cf !text-[0.95rem]">{streamedText(a.output)}</Md>
-              : <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{a.output}</pre>}
+          <Tail label="Output" text={a.output} live={!!a.output} waiting="The answer appears here as the model writes it.">
+            <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed">{a.output}</pre>
           </Tail>
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -266,6 +282,7 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
   const a = run.activity;
   const now = a?.inputs.source && a.inputs.page ? { source: a.inputs.source, page: Number(a.inputs.page) } : null;
   const at = run.pipeline.findIndex((p) => p.state === "current");
+  const stop = useMutation({ mutationFn: () => send(`/api/courses/${cid}/run/stop`) });
   return (
     <div className="mb-12 grid gap-x-10 gap-y-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
       <ol className="hidden self-start lg:sticky lg:top-6 lg:block" aria-label="Pipeline">
@@ -291,7 +308,17 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
       </ol>
       <div className="min-w-0 space-y-10" aria-live="polite">
         <header className="space-y-3">
-          <h2 className="text-2xl">{at >= 0 ? run.pipeline[at].label : "Starting"}</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-2xl">{at >= 0 ? run.pipeline[at].label : "Starting"}</h2>
+            {live && (
+              <Button size="sm" variant="outline" onClick={() => stop.mutate()} disabled={stop.isPending || stop.isSuccess}
+                      title="Stops the model now. Finished steps are kept; Retry resumes from the last one.">
+                {stop.isPending || stop.isSuccess ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <X className="size-4" aria-hidden />}
+                {stop.isPending || stop.isSuccess ? "Stopping…" : "Stop the Run"}
+              </Button>
+            )}
+          </div>
+          {!!stop.error && <p className="text-sm text-destructive">{errText(stop.error)}</p>}
           <div className="space-y-2">
             {run.pages_total > 0 && <Progress value={100 * (run.progress?.fraction ?? run.pages_read / run.pages_total)} aria-label="Overall progress" />}
             <p className="tabular flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
@@ -362,12 +389,13 @@ function FoundGate({ cid }: { cid: number }) {
   const { data } = useQuery({ queryKey: ["found", cid], queryFn: () => get<{ sources: Source[]; unreadable_pages: { source: string; page: number }[] }>(`/api/courses/${cid}/found`) });
   const [goal, setGoal] = useState<"cram" | "deep">("deep");
   const [date, setDate] = useState("");
+  const [language, setLanguage] = useState<Language>("mixed");
   const edit = useMutation({
     mutationFn: ({ id, body }: { id: number; body: object }) => send(`/api/courses/${cid}/sources/${id}`, body, "PATCH"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["found", cid] }),
   });
   const approve = useMutation({
-    mutationFn: () => send(`/api/courses/${cid}/gates/found`, { goal, exam_date: date || null }),
+    mutationFn: () => send(`/api/courses/${cid}/gates/found`, { goal, exam_date: date || null, language }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["run", cid] }),
   });
   if (!data) return null;
@@ -422,6 +450,7 @@ function FoundGate({ cid }: { cid: number }) {
         <label className="flex items-center gap-3 text-sm">Exam date
           <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-44" required={goal === "cram"} />
         </label>
+        <LanguagePicker value={language} onChange={setLanguage} />
       </fieldset>
       {approve.error && <p className="mt-2 text-sm text-destructive">{errText(approve.error)}</p>}
       <Button className="mt-4" disabled={approve.isPending || (goal === "cram" && !date)} onClick={() => approve.mutate()}>
@@ -432,8 +461,10 @@ function FoundGate({ cid }: { cid: number }) {
   );
 }
 
-type OSection = { id: number; title: string; pages: { source: string; page: number }[] };
-type OChapter = { id: number; title: string; priority: string; sections: OSection[] };
+type OSection = { id: number; title: string; pages: { source: string; page: number }[]; teaches?: string[] };
+type OChapter = { id: number; title: string; priority: string; profile?: string | null; sections: OSection[] };
+/** How a Chapter is crammed: worked problems, memorisation, or commands and code. */
+const PROFILES = [["problem", "Problems"], ["recall", "Recall"], ["hands_on", "Hands-on"]] as const;
 let tempId = -1; // ids for Chapters and Sections made by a split, until the outline is saved
 
 /** Pure outline edits at Chapter and Section level; each returns a new outline. */
@@ -496,6 +527,12 @@ function OutlineGate({ cid }: { cid: number }) {
                           className={cn("px-2 py-1 text-xs capitalize first:rounded-l-md last:rounded-r-md", c.priority === p ? "bg-primary text-primary-foreground" : "hover:bg-accent")}>{p}</button>
                 ))}
               </div>
+              <div className="flex rounded-md border border-border" role="radiogroup" aria-label="Cram style" title="How this Chapter is crammed: worked problems, memorisation, or commands and code">
+                {PROFILES.map(([p, label]) => (
+                  <button key={p} type="button" role="radio" aria-checked={c.profile === p} onClick={() => set(i, { profile: p })}
+                          className={cn("px-2 py-1 text-xs first:rounded-l-md last:rounded-r-md", c.profile === p ? "bg-secondary text-secondary-foreground ring-1 ring-primary" : "hover:bg-accent")}>{label}</button>
+                ))}
+              </div>
               <Icon label="Move up" disabled={i === 0} onClick={() => setDraft(edits.moveChapter(draft, i, -1))}><ArrowUp className="size-4" /></Icon>
               <Icon label="Move down" disabled={i === last} onClick={() => setDraft(edits.moveChapter(draft, i, 1))}><ArrowDown className="size-4" /></Icon>
               <Icon label="Merge with the next Chapter" disabled={i === last} onClick={() => setDraft(edits.mergeChapter(draft, i))}><Merge className="size-4" /></Icon>
@@ -512,6 +549,10 @@ function OutlineGate({ cid }: { cid: number }) {
                   <Icon label="Merge with the next Section" disabled={j === c.sections.length - 1} onClick={() => setDraft(edits.mergeSection(draft, i, j))}><Merge className="size-3.5" /></Icon>
                   <Icon label="Start a new Chapter here" disabled={j === 0} onClick={() => setDraft(edits.splitChapter(draft, i, j))}><SplitSquareVertical className="size-3.5" /></Icon>
                   <Icon label="Remove Section" onClick={() => setDraft(edits.section(draft, i, (ss) => ss.filter((_, k) => k !== j)))}><X className="size-3.5" /></Icon>
+                  <Input key={(s.teaches ?? []).join(",")} defaultValue={(s.teaches ?? []).join(", ")} placeholder="Concepts it teaches, comma-separated"
+                    title="Practice only tests Concepts taught by its own Section or an earlier one"
+                    onBlur={(e) => setDraft(edits.section(draft, i, (ss) => ss.map((x, k) => k === j ? { ...x, teaches: e.target.value.split(",").map((t) => t.trim()).filter(Boolean) } : x)))}
+                    className="h-7 basis-full text-xs text-muted-foreground" aria-label={`Chapter ${i + 1} Section ${j + 1} Concepts`} />
                 </li>
               ))}
             </ol>
@@ -519,6 +560,7 @@ function OutlineGate({ cid }: { cid: number }) {
         ))}
       </ol>
       {(save.error || approve.error) && <p className="mt-2 text-sm text-destructive">{errText(save.error ?? approve.error)}</p>}
+      <div className="mt-4"><AutoResolveToggle cid={cid} /></div>
       <div className="mt-4 flex gap-2">
         {dirty ? <Button onClick={() => save.mutate(draft)} disabled={save.isPending}>Save changes</Button>
           : <Button onClick={() => approve.mutate()} disabled={approve.isPending}>Approve, write the Chapters</Button>}
@@ -528,11 +570,122 @@ function OutlineGate({ cid }: { cid: number }) {
   );
 }
 
-const STUDY = [
-  ["read", "Read", BookOpen, "Chapters with sources, tutor and quizzes"], ["exams", "Exams", ClipboardList, "Past papers and Mock exams"],
-  ["cards", "Cards", Layers, "Spaced review of what you got wrong"], ["labs", "Labs", FlaskConical, "Notebook steps with Checks"],
-  ["focus", "Focus", Timer, "Timer, streak and daily goal"],
-] as const;
+type TocChapter = { id: number; title: string; priority: string; exam_weight: number; status: string; sections: { id: number; title: string }[] };
+
+const daysTo = (date: string | null) => (date ? Math.round((new Date(date + "T00:00").getTime() - new Date().setHours(0, 0, 0, 0)) / 86_400_000) : null);
+
+/** The Course's name on its cover colour, with its Goal and exam date. */
+function CourseHead({ course, chapters }: { course: Course; chapters?: number }) {
+  const days = daysTo(course.exam_date);
+  return (
+    <header className="mb-8 flex items-center gap-5" style={{ "--hue": courseHue(course.id) } as React.CSSProperties}>
+      <Cover id={course.id} name={course.name} className="size-16 rounded-lg text-[2rem] shadow-[var(--lift)]" />
+      <div className="min-w-0">
+        <h1 className="truncate font-display text-3xl font-semibold tracking-tight sm:text-4xl">{course.name}</h1>
+        <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm text-muted-foreground">
+          {course.goal && <span>{course.goal === "cram" ? "Cram for the exam" : "Learn it deeply"}</span>}
+          {chapters != null && <span className="tabular">{chapters} Chapter{chapters === 1 ? "" : "s"}</span>}
+          {course.exam_date && days != null && (
+            <span className="tabular">Exam {new Date(course.exam_date + "T00:00").toLocaleDateString(undefined, { day: "numeric", month: "long" })}
+              {days >= 0 && <> · <span className={cn("font-medium", days <= 14 ? "text-foreground mark" : "")}>{days === 0 ? "today" : `in ${days} day${days === 1 ? "" : "s"}`}</span></>}</span>
+          )}
+        </p>
+      </div>
+    </header>
+  );
+}
+
+/** A finished (or publishing) Course: its Chapters to read, and the study tools beside them. */
+function Overview({ cid, course, full }: { cid: number; course: Course; full: boolean }) {
+  const { data: outline } = useQuery({ queryKey: ["outline", cid], queryFn: () => get<{ chapters: TocChapter[] }>(`/api/courses/${cid}/outline`) });
+  const { data: place } = useQuery({ queryKey: ["place", cid], queryFn: () => get<{ section_id: number | null; read: number[] }>(`/api/courses/${cid}/place`) });
+  const { data: cards } = useQuery({ queryKey: ["cards", cid], queryFn: () => get<unknown[]>(`/api/courses/${cid}/cards/due`) });
+  const { data: exams } = useQuery({ queryKey: ["exams", cid], queryFn: () => get<{ kind: string }[]>(`/api/courses/${cid}/exams`) });
+  const { data: labs } = useQuery({ queryKey: ["labs", cid], queryFn: () => get<{ steps: number; passed: number }[]>(`/api/courses/${cid}/labs`) });
+  const chapters = (outline?.chapters ?? []).filter((c) => c.priority !== "skip");
+  const read = new Set(place?.read ?? []);
+  const maxWeight = Math.max(0.0001, ...chapters.map((c) => c.exam_weight));
+  const current = chapters.flatMap((c) => c.sections.map((s) => ({ ...s, chapter: c }))).find((s) => s.id === place?.section_id);
+  const labSteps = labs?.reduce((n, l) => n + l.steps, 0) ?? 0, labPassed = labs?.reduce((n, l) => n + l.passed, 0) ?? 0;
+  const tools = [
+    ["read", "Read", BookOpen, current ? "Pick up where you left off" : "Start at Chapter 1", null],
+    ["cards", "Cards", Layers, cards?.length ? "Due for review" : "None due", cards?.length ?? null],
+    ["exams", "Exams", ClipboardList, exams ? `${exams.filter((e) => e.kind !== "mock").length} past, ${exams.filter((e) => e.kind === "mock").length} mock` : "…", exams?.length ?? null],
+    ["labs", "Labs", FlaskConical, labs?.length ? `${labPassed} of ${labSteps} Steps done` : "None in this Course", labs?.length ?? null],
+    ["focus", "Focus", Timer, "Timer and daily goal", null],
+  ] as const;
+  return (
+    <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_19rem]" style={{ "--hue": courseHue(cid) } as React.CSSProperties}>
+      <div className="min-w-0">
+        {current && (
+          <Link to="/c/$cid/read" params={{ cid: String(cid) }}
+                className="lift group mb-8 flex items-center gap-4 rounded-lg border border-border bg-card p-5 hover:border-transparent">
+            <span className="cover grid size-11 shrink-0 place-items-center rounded-full"><Play className="ml-0.5 size-4 fill-current" aria-hidden /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm text-muted-foreground">Continue reading · {current.chapter.title}</span>
+              <span className="block truncate font-display text-lg font-semibold">{current.title}</span>
+            </span>
+            <ArrowRight className="size-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+          </Link>
+        )}
+        <h2 className="mb-3 font-display text-lg font-semibold">Chapters</h2>
+        {!outline ? <div className="h-48 animate-pulse rounded-lg bg-muted" /> : (
+          <ol className="divide-y divide-border border-y border-border">
+            {chapters.map((c, i) => {
+              const done = c.sections.filter((s) => read.has(s.id)).length;
+              const published = c.status === "published";
+              const body = (
+                <>
+                  <span className="tabular w-8 shrink-0 pt-0.5 font-display text-2xl font-semibold text-muted-foreground/60 group-hover:cover-ink">{i + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium leading-snug">{c.title.replace(/^Chapitre\s+\d+\s*[—:–-]\s*/i, "")}</span>
+                    <span className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">
+                      <span className="flex gap-0.5" aria-label={`${done} of ${c.sections.length} Sections read`}>
+                        {c.sections.map((s) => <span key={s.id} className={cn("h-1.5 w-3 rounded-full", read.has(s.id) ? "cover" : "bg-muted")} />)}
+                      </span>
+                      <span className="tabular">{done} / {c.sections.length} read</span>
+                      {!published && <span className="rounded bg-muted px-1.5 py-0.5">Not published yet</span>}
+                      {c.priority !== "normal" && <span className="rounded bg-muted px-1.5 py-0.5 capitalize">{c.priority}</span>}
+                    </span>
+                  </span>
+                  {c.exam_weight > 0 && (
+                    <span className="hidden w-24 shrink-0 sm:block" title={`Exam Weight ${Math.round(c.exam_weight * 100)}%`}>
+                      <span className="block text-right text-xs text-muted-foreground tabular">{Math.round(c.exam_weight * 100)}% of the exam</span>
+                      <span className="mt-1.5 block h-1.5 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full bg-warn" style={{ width: `${(100 * c.exam_weight) / maxWeight}%` }} /></span>
+                    </span>
+                  )}
+                </>
+              );
+              return (
+                <li key={c.id}>
+                  {published ? <Link to="/c/$cid/read" params={{ cid: String(cid) }} className="group flex items-start gap-4 py-4 transition-colors hover:bg-accent/40">{body}</Link>
+                    : <div className="flex items-start gap-4 py-4 opacity-70">{body}</div>}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+        {full && <Search cid={cid} />}
+      </div>
+      <aside className="space-y-8">
+        <nav aria-label="Study" className="overflow-hidden rounded-lg border border-border bg-card">
+          <ul className="divide-y divide-border">
+            {tools.map(([to, label, Icon, hint, count]) => (
+              <li key={to}>
+                <Link to={`/c/$cid/${to}`} params={{ cid: String(cid) }} className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/60">
+                  <span className="cover-wash cover-ink grid size-8 shrink-0 place-items-center rounded-md"><Icon className="size-4" aria-hidden /></span>
+                  <span className="min-w-0 flex-1"><span className="block text-sm font-medium">{label}</span><span className="block truncate text-xs text-muted-foreground">{hint}</span></span>
+                  {count != null && count > 0 && <span className="tabular rounded-full bg-muted px-2 py-0.5 text-xs font-medium">{count}</span>}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        {full && <Settings cid={cid} course={course} />}
+      </aside>
+    </div>
+  );
+}
 
 /** Search the Course's material; a hit opens its page. */
 function Search({ cid }: { cid: number }) {
@@ -542,6 +695,7 @@ function Search({ cid }: { cid: number }) {
     queryFn: () => get<{ source: string; page: number; text: string }[]>(`/api/courses/${cid}/search?q=${encodeURIComponent(query)}`) });
   return (
     <section className="mt-10">
+      <h2 className="mb-3 font-display text-lg font-semibold">Search the material</h2>
       <form role="search" onSubmit={(e) => { e.preventDefault(); setQuery(q.trim()); }} className="flex gap-2">
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search the course material, e.g. condition d'Armijo" aria-label="Search the course material" />
         <Button type="submit" variant="outline" disabled={!q.trim()}>Search</Button>
@@ -561,28 +715,106 @@ function Search({ cid }: { cid: number }) {
 }
 
 /** Switch the Goal later, and add a PDF of your own notes as a Source. */
+/** Per-Run option: the local model resolves each Chapter's flags as soon as it is written, so Review shows cleaner Chapters. */
+function AutoResolveToggle({ cid }: { cid: number }) {
+  const qc = useQueryClient();
+  const { data: course } = useQuery({ queryKey: ["course", String(cid)], queryFn: () => get<Course>(`/api/courses/${cid}`) });
+  const set = useMutation({ mutationFn: (on: boolean) => send(`/api/courses/${cid}/auto-resolve`, { on }, "PUT"),
+    onSuccess: (c) => qc.setQueryData(["course", String(cid)], c) });
+  return (
+    <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
+      <input type="checkbox" className="size-4 accent-primary" checked={!!course?.auto_resolve} disabled={!course || set.isPending}
+             onChange={(e) => set.mutate(e.target.checked)} />
+      Auto-resolve flagged Blocks before review
+    </label>
+  );
+}
+
+type RefreshDiff = { new: string[]; changed: string[]; removed: string[]; sections: { id: number; title: string; chapter: string }[];
+  edited_sections: { id: number; title: string; chapter: string }[];
+  last: { state: "running" | "done" | "failed"; error?: string; result?: { regenerated: number[]; kept: number[]; changed_pages: [string, number][] } } | null };
+
+/** Refresh Sources: shows what changed in the folder first, then redoes only that. */
+function RefreshSources({ cid }: { cid: number }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [edited, setEdited] = useState<"keep" | "regenerate" | "notes">("keep");
+  const { data, refetch, isFetching } = useQuery({ queryKey: ["refresh", cid], enabled: open, queryFn: () => get<RefreshDiff>(`/api/courses/${cid}/refresh`),
+    refetchInterval: (q) => (q.state.data?.last?.state === "running" ? 3000 : false) });
+  const start = useMutation({ mutationFn: () => send(`/api/courses/${cid}/refresh`, { edited }), onSuccess: () => { refetch(); qc.invalidateQueries({ queryKey: ["run", cid] }); } });
+  if (!open) return <Button size="sm" variant="outline" onClick={() => setOpen(true)}>Refresh Sources…</Button>;
+  if (!data) return <p className="text-muted-foreground">Comparing the folder with what was imported…</p>;
+  const nothing = !data.new.length && !data.changed.length && !data.removed.length;
+  const list = (label: string, xs: string[]) => xs.length > 0 && <p><span className="font-medium">{label}:</span> {xs.join(", ")}</p>;
+  return (
+    <div className="space-y-2 rounded-md border border-border px-4 py-3">
+      {data.last?.state === "running" && <p>Refreshing on the GPU: re-reading the changed pages, then rewriting their Sections…</p>}
+      {data.last?.state === "failed" && <p className="text-destructive">The last Refresh failed: {data.last.error}</p>}
+      {data.last?.state === "done" && data.last.result && <p className="text-ok">Refreshed: {data.last.result.changed_pages.length} changed pages, {data.last.result.regenerated.length} Sections rewritten
+        {data.last.result.kept.length ? `, ${data.last.result.kept.length} edited ones kept` : ""}. They wait in Review.</p>}
+      {nothing ? <p className="text-muted-foreground">Nothing changed in the folder.</p> : (
+        <>
+          {list("New", data.new)}{list("Changed", data.changed)}{list("Removed (they will be excluded, not deleted)", data.removed)}
+          {data.sections.length > 0 && <p className="text-muted-foreground">Sections citing these files: {data.sections.map((s) => s.title).join(", ")}. Only those whose pages actually changed are rewritten.</p>}
+          {data.edited_sections.length > 0 && (
+            <fieldset className="space-y-1">
+              <legend>You edited {data.edited_sections.map((s) => s.title).join(", ")} by hand. For those:</legend>
+              {([["keep", "Keep my version"], ["regenerate", "Rewrite them"], ["notes", "Rewrite them, keeping my edits as notes"]] as const).map(([v, label]) => (
+                <label key={v} className="flex items-center gap-2"><input type="radio" name="edited" className="accent-primary" checked={edited === v} onChange={() => setEdited(v)} />{label}</label>
+              ))}
+            </fieldset>
+          )}
+          <Button size="sm" disabled={start.isPending || data.last?.state === "running"} onClick={() => start.mutate()}>Refresh now</Button>
+        </>
+      )}
+      {start.error && <p className="text-destructive">{errText(start.error)}</p>}
+      <Button size="sm" variant="ghost" disabled={isFetching} onClick={() => refetch()}>Check again</Button>
+    </div>
+  );
+}
+
+type Language = "mixed" | "en" | "fr";
+const LANGUAGES: [Language, string][] = [["mixed", "French course material, English explanations"], ["fr", "All in French"], ["en", "All in English"]];
+
+function LanguagePicker({ value, onChange }: { value: Language; onChange: (l: Language) => void }) {
+  return (
+    <label className="flex flex-wrap items-center gap-3 text-sm">Language
+      <select value={value} onChange={(e) => onChange(e.target.value as Language)} className="h-8 rounded-md border border-input bg-background px-2">
+        {LANGUAGES.map(([l, label]) => <option key={l} value={l}>{label}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function Settings({ cid, course }: { cid: number; course: Course }) {
   const qc = useQueryClient();
   const [date, setDate] = useState(course.exam_date ?? "");
   const goal = useMutation({
-    mutationFn: (g: "cram" | "deep") => send(`/api/courses/${cid}`, { goal: g, exam_date: date || null }, "PATCH"),
+    mutationFn: ({ g, d, l }: { g: "cram" | "deep"; d: string; l?: Language }) => send(`/api/courses/${cid}`, { goal: g, exam_date: d || null, language: l }, "PATCH"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["course", String(cid)] }),
   });
   const upload = useMutation({ mutationFn: (f: File) => { const d = new FormData(); d.append("file", f); return send(`/api/courses/${cid}/sources`, d); } });
   return (
-    <section className="mt-10 space-y-4 border-t border-border pt-6 text-sm">
-      <div className="flex flex-wrap items-center gap-3">
-        <span>Goal: <span className="font-medium">{course.goal === "cram" ? "cram for an exam" : "understand deeply"}</span></span>
-        <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-8 w-40" aria-label="Exam date" />
+    <section className="space-y-4 text-sm">
+      <h2 className="font-display text-lg font-semibold">This Course</h2>
+      <p>Goal: <span className="font-medium">{course.goal === "cram" ? "cram for an exam" : "understand deeply"}</span></p>
+      <div className="flex flex-wrap items-center gap-2">
+        {/* a date on its own saves too; Cram cannot lose its date */}
+        <Input type="date" value={date} className="h-8 w-40" aria-label="Exam date"
+               onChange={(e) => { setDate(e.target.value); if (e.target.value || course.goal !== "cram") goal.mutate({ g: course.goal === "cram" ? "cram" : "deep", d: e.target.value }); }} />
         <Button size="sm" variant="outline" disabled={goal.isPending || (course.goal === "deep" && !date)}
-                onClick={() => goal.mutate(course.goal === "cram" ? "deep" : "cram")}>{course.goal === "cram" ? "Switch to deep" : "Switch to cram"}</Button>
+                onClick={() => goal.mutate({ g: course.goal === "cram" ? "deep" : "cram", d: date })}>{course.goal === "cram" ? "Switch to deep" : "Switch to cram"}</Button>
       </div>
+      <LanguagePicker value={course.language} onChange={(l) => goal.mutate({ g: course.goal === "cram" ? "cram" : "deep", d: date, l })} />
+      <p className="text-xs text-muted-foreground">Applies to what is written from now on.</p>
       {goal.error && <p className="text-destructive">{errText(goal.error)}</p>}
+      <div><AutoResolveToggle cid={cid} /></div>
+      <RefreshSources cid={cid} />
       <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-input px-3 py-1.5 hover:bg-accent">
         Add my notes (PDF)
         <input type="file" accept="application/pdf" className="sr-only" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }} />
       </label>
-      {upload.isSuccess && <span className="ml-3 text-ok">Added. It's being read and indexed.</span>}
+      {upload.isSuccess && <p className="text-ok">Added. It's being read and indexed.</p>}
       {upload.error && <p className="text-destructive">{errText(upload.error)}</p>}
     </section>
   );
@@ -594,34 +826,31 @@ export function Run() {
   const { data: course } = useQuery({ queryKey: ["course", String(cid)], queryFn: () => get<Course>(`/api/courses/${cid}`) });
   const { data: run } = useRun(cid);
   const retry = useMutation({ mutationFn: () => send(`/api/courses/${cid}/run/retry`), onSuccess: () => qc.invalidateQueries({ queryKey: ["run", cid] }) });
+  const study = !!run && (run.status === "done" || run.status === "running" || run.gate === "chapter_review") && run.gate !== "found" && run.gate !== "outline";
   if (!run) return <Page><div className="h-8 w-48 animate-pulse rounded bg-muted" /><div className="mt-6 h-64 animate-pulse rounded-lg bg-muted" /></Page>;
   return (
-    <Page title={course?.name} wide={run.gate === "found" || (!run.gate && run.status !== "done")}>
+    <Page wide={run.gate === "found" || (!run.gate && run.status !== "done") || study}>
+      {course && <CourseHead course={course} />}
       {run.gate ? <PipelineStrip pipeline={run.pipeline} /> : run.status !== "done" && (
         <RunProgress cid={cid} run={run} onRetry={() => retry.mutate()} retrying={retry.isPending} retryError={retry.error} />
       )}
       {run.gate === "found" && <FoundGate cid={cid} />}
       {run.gate === "outline" && <OutlineGate cid={cid} />}
       {run.gate === "chapter_review" && (
-        <div className="mb-8 rounded-md border border-border px-4 py-3">
-          <p className="font-medium">The Chapters are written and wait for your review</p>
-          <p className="mt-1 text-sm text-muted-foreground">Publishing the last one finishes the Run. Published Chapters can be read already.</p>
-          <Link to="/c/$cid/review" params={{ cid: String(cid) }} className="mt-3 inline-block"><Button size="sm">Review Chapters</Button></Link>
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-border bg-card px-5 py-4" style={{ "--hue": courseHue(cid) } as React.CSSProperties}>
+          <div>
+            <p className="font-medium">The Chapters are written and wait for your review</p>
+            <p className="mt-1 text-sm text-muted-foreground">Publishing the last one finishes the Run. Published Chapters can be read already.</p>
+          </div>
+          <Link to="/c/$cid/review" params={{ cid: String(cid) }}><Button>Review Chapters</Button></Link>
         </div>
       )}
-      {(run.status === "done" || run.status === "running" || run.gate === "chapter_review") && run.gate !== "found" && run.gate !== "outline" && (
-        <ul className="grid gap-3 sm:grid-cols-2">
-          {STUDY.map(([to, label, Icon, hint]) => (
-            <li key={to}>
-              <Link to={`/c/$cid/${to}`} params={{ cid: String(cid) }} className="flex gap-3 rounded-md border border-border p-4 hover:bg-accent">
-                <Icon className="mt-0.5 size-5 text-primary" /><span><span className="block font-medium">{label}</span><span className="text-sm text-muted-foreground">{hint}</span></span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-      {(run.status === "done" || run.gate === "chapter_review") && <Search cid={cid} />}
-      {(run.status === "done" || run.gate === "chapter_review") && course && <Settings cid={cid} course={course} />}
+      {study && course && <Overview cid={cid} course={course} full={run.status === "done" || run.gate === "chapter_review"} />}
+      {course && <div className="mt-14 flex justify-end gap-2 border-t border-border pt-4">
+        <Button asChild variant="ghost" size="sm" className="text-muted-foreground" title="One HTML file that opens offline: published Chapters, quizzes, exercises and Exams with answers, no tutor or grading">
+          <a href={`/api/courses/${cid}/export`} download><Download className="size-4" />Export Course</a>
+        </Button>
+        <DeleteCourse cid={cid} name={course.name} busy={run.active} /></div>}
     </Page>
   );
 }

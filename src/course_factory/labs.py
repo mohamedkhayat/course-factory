@@ -10,7 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from .chapters import LANGUAGE_RULE, page_texts
+from .chapters import language_rule, page_texts
 from .context import Ctx
 from .kernels import Kernel
 from .learner import record
@@ -95,7 +95,7 @@ def build_labs(ctx: Ctx, cid: int) -> None:
             nb = nbformat.read(src["path"], as_version=4)
             pages = [{"source": src["name"], "page": 0, "text": "\n\n".join(f"[{c.cell_type}]\n{c.source}" for c in nb.cells)}]
         plan = run_pi_step(db, ctx.backend, "build_lab", {"lab_source": pages, "data_files": data_files, "chapters": titles,
-                                                          "language": LANGUAGE_RULE}, LabPlan, ctx.course_dir(cid), course_id=cid)
+                                                          "language": language_rule(db, cid)}, LabPlan, ctx.course_dir(cid), course_id=cid)
         build_trace, proofs = last_trace_id(), []
         workdir, data_dir = lab_dirs(ctx, cid, f"proof-{src['id']}")
         key = f"proof-{cid}-{src['id']}"

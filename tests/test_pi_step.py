@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from pydantic import BaseModel
@@ -59,6 +60,43 @@ def test_assistant_text_reads_pi_json_events():
         {"type": "agent_settled"},
     ]
     assert assistant_text("\n".join(map(json.dumps, events))) == '{"ok": true}'
+
+
+def test_an_array_sent_as_a_json_string_is_parsed_before_validation(tmp_path):
+    """Qwen sends "blocks": "[...]"; the extension parses it and the prepared arguments are what the step reads."""
+    import shutil
+    import subprocess
+    from course_factory.pi_step import STRUCTURED_OUTPUT_EXTENSION
+    if not shutil.which("node"):
+        pytest.skip("node is not installed")
+    (tmp_path / "ext.mjs").write_text(STRUCTURED_OUTPUT_EXTENSION)
+    (tmp_path / "schema.json").write_text(json.dumps({"properties": {"blocks": {"type": "array"}, "title": {"type": "string"}}}))
+    (tmp_path / "run.mjs").write_text(
+        'const ext = (await import("./ext.mjs")).default; let tool; ext({ registerTool: (t) => (tool = t) });'
+        'const args = tool.prepareArguments({ blocks: \'[{"a": 1}]\', title: "[not json]" });'
+        'console.log(JSON.stringify((await tool.execute("id", args)).details.result));'
+        # the write_section failure: unescaped LaTeX and a raw newline in the string, which coercion then wrapped as ["[...]"]
+        'console.log(JSON.stringify(tool.prepareArguments({ blocks: String.raw`[{"t": "$\\alpha + \\\\beta$ \\"q\\" \\u00e9`'
+        ' + "\\n" + String.raw`x"}]` })));'
+        # trace 422: \frac and \nabla start like the JSON escapes \f and \n; once strict parsing failed they are LaTeX
+        r'console.log(JSON.stringify(tool.prepareArguments({ blocks: String.raw`[{"t": "$\frac{\partial f}{\partial x_n}$, $\nabla f \in \mathbb{R}^n$"}]` })));'
+        # trace 2171: the stub that used to end the session
+        'process.env.CF_MIN_WORDS = "25"; try { await tool.execute("id", {blocks: [{component: "callout", data: {text: "test", tone: "tip"}}], proposals: []});'
+        ' console.log("accepted") } catch (e) { console.log(e.message) }')
+    out = subprocess.run(["node", "run.mjs"], cwd=tmp_path, capture_output=True, text=True, check=True,
+                         env={**os.environ, "CF_OUTPUT_SCHEMA": str(tmp_path / "schema.json")}).stdout.splitlines()
+    prepared = json.loads(out[0])
+    assert prepared == {"blocks": [{"a": 1}], "title": "[not json]"}
+    assert json.loads(out[1]) == {"blocks": [{"t": '$\\alpha + \\beta$ "q" é\nx'}]}
+    assert json.loads(out[2]) == {"blocks": [{"t": "$\\frac{\\partial f}{\\partial x_n}$, $\\nabla f \\in \\mathbb{R}^n$"}]}
+    assert out[3].startswith("Rejected: 3 words")
+    events = [
+        {"type": "message_end", "message": {"role": "assistant", "content": [
+            {"type": "toolCall", "name": "cf_return_result", "arguments": {"blocks": '[{"a": 1}]', "title": "[not json]"}}]}},
+        {"type": "tool_execution_end", "toolName": "cf_return_result", "isError": False,
+         "result": {"content": [], "details": {"result": prepared}}},
+    ]
+    assert json.loads(assistant_text("\n".join(map(json.dumps, events)))) == prepared
 
 
 def test_backend_failure_is_traced_and_retried(conn, tmp_path):
@@ -162,3 +200,35 @@ def test_without_a_fallback_model_a_step_gets_its_usual_attempts(conn, tmp_path)
     with pytest.raises(StepFailed):
         run_pi_step(conn, answers("{}", "{}", "{}", '{"text": "x", "readable": true}'), "read_page", {"source": "a.pdf", "page": "1"}, Reading, tmp_path)
     assert conn.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 3
+
+
+def test_assistant_text_raises_the_model_servers_error():
+    refused = {"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "error",
+                                                  "errorMessage": "400: strict_tools_not_supported"}}
+    with pytest.raises(StepFailed, match="strict_tools_not_supported"):
+        assistant_text(json.dumps(refused))
+
+
+def test_a_step_model_set_in_settings_is_used_and_kept(client, monkeypatch):
+    from course_factory.pi_step import STEP_MODELS, model_for
+    monkeypatch.setenv("CF_MODEL_REPAIR_BLOCK", "env-model")
+    assert model_for("repair_block") == "env-model"
+    steps = {s["step"]: s for s in client.put("/api/models", json={"step": "repair_block", "model": "m:low"}).json()["steps"]}
+    assert steps["repair_block"] == {"step": "repair_block", "model": "m:low", "from": "settings"} and model_for("repair_block") == "m:low"
+    assert client.put("/api/models", json={"step": "nope", "model": "x"}).status_code == 422
+    client.put("/api/models", json={"step": "repair_block"})
+    assert model_for("repair_block") == "env-model" and "repair_block" not in STEP_MODELS
+
+
+def test_a_default_model_set_in_settings_runs_every_step_without_its_own(client, monkeypatch):
+    from course_factory.pi_step import model_for
+    monkeypatch.setenv("CF_MODEL", "env-default")
+    monkeypatch.setenv("CF_MODEL_READ_PAGE", "env-reader")
+    assert client.get("/api/models/available").json() == [{"id": "llama-swap/big", "thinking": True}, {"id": "llama-swap/small", "thinking": False}]
+    got = client.put("/api/models", json={"step": "default", "model": "llama-swap/big:high"}).json()
+    assert got["default"] == "llama-swap/big:high" and got["default_from"] == "settings"
+    assert model_for("write_section") == "llama-swap/big:high" and model_for("read_page") == "env-reader"  # a step's own env still wins
+    client.put("/api/models", json={"step": "write_section", "model": "llama-swap/small"})
+    assert model_for("write_section") == "llama-swap/small"
+    assert client.put("/api/models", json={"step": "default"}).json()["default"] == "env-default"
+    client.put("/api/models", json={"step": "write_section"})

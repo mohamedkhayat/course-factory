@@ -119,3 +119,77 @@ def test_step_retries_on_queue_timeout_then_fails(monkeypatch, tmp_path):
     assert started.wait(1)
     threading.Timer(0.12, stop.set).start()  # frees the lane after a couple of timeouts
     assert pi_step.call_backend(answer("ok"), "s", "p", [], tmp_path, live=False) == "ok"
+
+
+def ask(client, cid, question, **body):
+    return events(client.post(f"/api/courses/{cid}/tutor", json={"question": question, **body}))[-1][1]
+
+
+def test_conversations_are_listed_per_section_reopened_and_deleted(client, material, model):
+    cid, sections = published(client, material, model)
+    a = ask(client, cid, "convexe ?", section_id=sections[0]["id"])["conversation_id"]
+    b = ask(client, cid, "gradient ?", section_id=sections[1]["id"])["conversation_id"]
+    listed = client.get(f"/api/courses/{cid}/tutor").json()
+    assert [(c["id"], c["question"], c["section_id"]) for c in listed] == [(b, "gradient ?", sections[1]["id"]), (a, "convexe ?", sections[0]["id"])]
+    assert [c["id"] for c in client.get(f"/api/courses/{cid}/tutor", params={"section_id": sections[0]["id"]}).json()] == [a]
+    ask(client, cid, "et ensuite ?", conversation_id=a)
+    assert "convexe ?" in [p for s, p in model.prompts if s == "tutor"][-1]
+    assert client.delete(f"/api/courses/{cid}/tutor/{a}").status_code == 204
+    assert client.get(f"/api/courses/{cid}/tutor/{a}").status_code == 404
+    assert [c["id"] for c in client.get(f"/api/courses/{cid}/tutor").json()] == [b]
+
+
+NEW = {"component": "theorem_box", "origin": "model_added", "data": {"kind": "definition", "title": "Point stationnaire",
+                                                                      "statement": "Un point où le gradient s'annule."}}
+
+
+def proposing(model, proposal):
+    model.handlers["tutor"] = lambda prompt, files: "Voici un bloc.\n\n```proposal\n" + json.dumps(proposal) + "\n```"
+
+
+def blocks_of(client, cid, sid):
+    return next(s for ch in client.get(f"/api/courses/{cid}/reader").json() for s in ch["sections"] if s["id"] == sid)["blocks"]
+
+
+def test_a_tutor_proposal_is_checked_then_added_or_replaced_on_accept(client, material, model):
+    cid, sections = published(client, material, model)
+    sid = sections[0]["id"]
+    first, *rest = blocks_of(client, cid, sid)
+    proposing(model, {"action": "add", "after_block_id": first["id"], "block": NEW})
+    done = ask(client, cid, "ajoute un bloc", section_id=sid)
+    prompt = next(p for s, p in model.prompts if s == "tutor")
+    assert f"[{first['id']}] {first['component']}:" in prompt and "- theorem_box {" in prompt  # its Blocks and the Catalogue
+    assert done["proposal"]["block"]["component"] == "theorem_box" and done["proposal"]["flags"]["errors"] == []
+    added = client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").json()
+    assert [b["id"] for b in blocks_of(client, cid, sid)] == [first["id"], added["id"], *(b["id"] for b in rest)]
+    assert client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").status_code == 409  # once only
+    assert any(t["owner_action"] == "accepted_proposal" for t in client.get(f"/api/courses/{cid}/traces").json())
+    proposing(model, {"action": "replace", "block_id": first["id"], "block": NEW | {"data": NEW["data"] | {"title": "Remplacé"}}})
+    done = ask(client, cid, "remplace le premier bloc", section_id=sid)
+    client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept")
+    assert blocks_of(client, cid, sid)[0]["id"] == first["id"] and blocks_of(client, cid, sid)[0]["data"]["title"] == "Remplacé"
+
+
+def test_a_proposal_failing_the_checks_cannot_be_accepted(client, material, model):
+    cid, sections = published(client, material, model)
+    proposing(model, {"action": "add", "block": {"component": "theorem_box", "origin": "model_added", "data": {"kind": "definition"}}})
+    done = ask(client, cid, "ajoute un bloc", section_id=sections[0]["id"])
+    assert done["proposal"]["flags"]["errors"]
+    assert client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").status_code == 409
+    assert len(blocks_of(client, cid, sections[0]["id"])) == len(sections[0]["blocks"])
+
+
+def test_explain_this_differently_asks_the_tutor_about_one_block_citing_only_the_section_pages(client, material, model):
+    cid, sections = published(client, material, model)
+    sid = sections[0]["id"]
+    block = blocks_of(client, cid, sid)[0]
+    done = ask(client, cid, "Explain this differently: simpler", section_id=sid, block_id=block["id"], style="simpler")
+    prompt = [p for s, p in model.prompts if s == "tutor"][-1]
+    assert "more simply" in prompt and f"The Block ({block['component']})" in prompt
+    assert done["citations"] == [{"source": "cours.pdf", "page": 1}]  # the Section's page; no search passages
+    other = blocks_of(client, cid, sections[1]["id"])[0]
+    r = client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "section_id": sid, "block_id": other["id"], "style": "deeper"})
+    assert r.status_code == 404
+    assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "section_id": sid, "block_id": block["id"],
+                                                          "style": "louder"}).status_code == 422
+    assert client.get(f"/api/courses/{cid}/tutor/{done['conversation_id']}").json()[0]["text"] == "Explain this differently: simpler"

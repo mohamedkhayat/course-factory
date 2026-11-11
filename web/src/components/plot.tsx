@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { compileExpr, plotVariable } from "@/lib/math";
+import { compileExpr, exprTex, plotVariable } from "@/lib/math";
 import { Md, MdLine } from "./md";
 
 const W = 560, H = 300, PAD = 32;
@@ -53,7 +53,7 @@ export function Plot({ data }: { data: { title?: string; functions: { expr: stri
   const fns = data.functions.flatMap((fn) => {
     const variable = plotVariable(fn.expr);
     const f = compileExpr(fn.expr);
-    return f ? [{ f: (x: number) => f({ [variable]: x }), label: fn.label || fn.expr }] : [];
+    return f ? [{ f: (x: number) => f({ [variable]: x }), label: fn.label || `$${exprTex(fn.expr)}$` }] : [];
   });
   return (
     <div>

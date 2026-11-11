@@ -1,7 +1,10 @@
-import { Fragment, useState } from "react";
-import { Check, Lightbulb, X } from "lucide-react";
+import { Fragment, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, Lightbulb, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { readEvents, send, type Block } from "@/lib/api";
+import { exported, get, readEvents, send, type Block, type Gpu } from "@/lib/api";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./code-editor";
 import { Md, MdLine } from "./md";
@@ -70,11 +73,30 @@ const Solution = ({ code }: { code: string }) => (
 /** Code with blanks is checked by match, like fill_blanks; free-form code goes to the model grader. */
 export function CodeExercise(props: P<CodeData>) {
   const { data } = props;
-  if (!data.blanks?.length) return <FreeCode {...props} />;
+  if (!data.blanks?.length) return exported ? <ExportedCode data={data} /> : <FreeCode {...props} />;
   return (
     <div>
       <Md>{data.task}</Md>
       <FillBlanks {...props} data={{ title: data.title, language: data.language || "text", template: data.starter, blanks: data.blanks, explanation: "" }} />
+      <Solution code={data.solution} />
+    </div>
+  );
+}
+
+/** In a standalone export there is no grader: the learner writes code, uses the written hints, and compares with the solution. */
+function ExportedCode({ data }: { data: CodeData }) {
+  const [code, setCode] = useState(data.starter);
+  const [shown, setShown] = useState(0);
+  return (
+    <div>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
+      <Md>{data.task}</Md>
+      <CodeEditor value={code} onChange={setCode} onRun={() => {}} label={`${data.language} answer`} language={data.language} />
+      {data.hints.slice(0, shown).map((h, i) => <div key={i} className="mt-2 flex gap-2 text-sm"><Lightbulb className="mt-1 size-4 shrink-0 text-warn" /><Md>{h}</Md></div>)}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}
+        <Button size="sm" variant="ghost" onClick={() => setCode(data.starter)}>Reset</Button>
+      </div>
       <Solution code={data.solution} />
     </div>
   );
@@ -140,15 +162,97 @@ function FreeCode({ data, cid, block }: P<CodeData>) {
   );
 }
 
+type Written = { text: string; files: number; subject: string;
+  grade: { total: number; max: number; transcription: string; steps: { step: string; points: number; awarded: number; comment: string }[] } | null };
+
+/** The learner's answer to an exercise: typed (Markdown and $LaTeX$, with a preview) or uploaded (photos or a tablet PDF),
+ * kept per Block, and graded against the exercise's steps. Opens on Upload for a theoretical Course, Type otherwise. */
+export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
+  const url = `/api/courses/${cid}/blocks/${block.id}/written`;
+  const qc = useQueryClient();
+  const { data: w } = useQuery({ queryKey: ["written", block.id], queryFn: () => get<Written>(url), enabled: !exported });
+  const { data: sys } = useQuery({ queryKey: ["system"], queryFn: () => get<{ model: string | null; gpu: Gpu | null }>("/api/system"), enabled: !exported });
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"" | "upload" | "grade">("");
+  const [error, setError] = useState("");
+  const value = text ?? w?.text ?? "";
+  useEffect(() => {  // saved as you type
+    if (text === null || exported) return;
+    const t = setTimeout(() => send<Written>(url, { text }, "PUT").then((r) => qc.setQueryData(["written", block.id], r)).catch(() => {}), 600);
+    return () => clearTimeout(t);
+  }, [text]);
+  const act = async (kind: "upload" | "grade", call: () => Promise<Written>) => {
+    setBusy(kind);
+    setError("");
+    try { qc.setQueryData(["written", block.id], await call()); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(""); }
+  };
+  const uploadFiles = (files: FileList | null) => act("upload", async () => {
+    let r = w as Written;
+    for (const f of Array.from(files ?? [])) { const body = new FormData(); body.append("file", f); r = await send<Written>(`${url}/files`, body); }
+    return r;
+  });
+  const why = sys && !sys.model ? "No model is set up to grade it" : !value.trim() && !w?.files ? "Type or upload an answer first" : "";
+  if (exported) return <Textarea className="mt-3" rows={6} aria-label="Your answer" placeholder="Write your answer here…" />;
+  if (!w) return null;
+  return (
+    <div className="mt-3">
+      <Tabs defaultValue={w.subject === "theoretical" ? "upload" : "type"}>
+        <TabsList><TabsTrigger value="type">Type</TabsTrigger><TabsTrigger value="upload">Upload{w.files ? ` (${w.files})` : ""}</TabsTrigger></TabsList>
+        <TabsContent value="type">
+          <Textarea rows={6} aria-label="Your answer" placeholder="Write your answer: Markdown, and $math$ in LaTeX…" value={value} onChange={(e) => setText(e.target.value)} />
+          {/\$/.test(value) && <div className="mt-2 rounded-md border border-dashed border-border px-3 py-1 text-sm"><Md>{value}</Md></div>}
+        </TabsContent>
+        <TabsContent value="upload" className="space-y-2">
+          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-input px-3 py-4 text-sm text-muted-foreground hover:bg-accent">
+            <Upload className="size-4" aria-hidden />{busy === "upload" ? "Uploading…" : "Photos of your paper, tablet ink as an image, or a PDF"}
+            <input type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf" className="sr-only" onChange={(e) => uploadFiles(e.target.files)} />
+          </label>
+          {w.files > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {Array.from({ length: w.files }, (_, i) => <a key={i} href={`${url}/files/${i}`} target="_blank" rel="noreferrer">
+                <img src={`${url}/files/${i}`} alt={`Page ${i + 1} of your answer`} className="h-20 rounded border border-border object-cover" /></a>)}
+              <Button size="sm" variant="ghost" onClick={() => act("upload", () => send<Written>(`${url}/files`, undefined, "DELETE"))}>Remove</Button>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="secondary" disabled={!!busy || !!why}
+                title={why || undefined}
+                onClick={() => act("grade", async () => { if (text !== null) await send(url, { text: value }, "PUT"); return send<Written>(`${url}/grade`); })}>
+          {busy === "grade" ? "Grading…" : w.grade ? "Grade it again" : "Grade it"}</Button>
+        {why && !busy && <span className="text-sm text-muted-foreground">{why}</span>}
+        {!why && (sys?.gpu?.util ?? 0) >= 90 && <span className="text-sm text-muted-foreground">The GPU is busy: grading waits for a free lane.</span>}
+        {error && <span role="alert" className="text-sm text-destructive">{error}</span>}
+      </div>
+      {w.grade && (
+        <div role="status" className="mt-2 space-y-1 rounded-md bg-muted/60 px-3 py-2 text-sm">
+          <p className="font-medium tabular">{w.grade.total} / {w.grade.max}</p>
+          {w.grade.steps.map((s, i) => (
+            <div key={i} className="flex gap-2">
+              {s.awarded >= s.points ? <Check className="mt-0.5 size-4 shrink-0 text-ok" /> : <X className="mt-0.5 size-4 shrink-0 text-destructive" />}
+              <span><MdLine>{s.step}</MdLine>: <span className="text-muted-foreground">{s.comment}</span></span>
+            </div>
+          ))}
+          {w.grade.transcription && <details><summary className="cursor-pointer text-muted-foreground">What the model read</summary><Md>{w.grade.transcription}</Md></details>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Work on paper, then reveal the correction one step at a time and mark yourself. */
-export function HandCorrection({ steps, correction, cid, block }: { steps: string[]; correction: string; cid: number; block: Block }) {
+export function HandCorrection({ steps, correction, cid, block, intro = "Work it on paper first, then compare step by step." }:
+  { steps: string[]; correction: string; cid: number; block: Block; intro?: string }) {
   const [n, setN] = useState(0);
   const [mark, setMark] = useState<string | null>(null);
   const done = n > steps.length;
-  const rate = (m: string) => { setMark(m); send(`/api/courses/${cid}/blocks/${block.id}/self-mark`, { mark: m }).catch(() => {}); };
+  const rate = (m: string) => { setMark(m); if (!exported) send(`/api/courses/${cid}/blocks/${block.id}/self-mark`, { mark: m }).catch(() => {}); };
   return (
     <div className="mt-3 space-y-2">
-      {n === 0 && <p className="text-sm text-muted-foreground">Work it on paper first, then compare step by step.</p>}
+      {n === 0 && <p className="text-sm text-muted-foreground">{intro}</p>}
       {steps.slice(0, n).map((s, i) => <div key={i} className="flex gap-3 border-l border-border pl-3"><span className="tabular text-sm text-muted-foreground">{i + 1}</span><Md>{s}</Md></div>)}
       {done && <div className="rounded-md bg-muted/60 px-3 py-2"><Md>{correction}</Md></div>}
       {!done ? <Button size="sm" variant="outline" onClick={() => setN(n + 1)}>{n < steps.length ? `Show step ${n + 1} of ${steps.length}` : "Show the answer"}</Button>
@@ -169,7 +273,7 @@ export function Terminal({ data }: P<{ title: string; shell: string; entries: { 
       <div className="overflow-x-auto rounded-md bg-[#16181d] px-4 py-3 font-mono text-[0.85rem] leading-relaxed text-[#e6e6e6]">
         {data.entries.slice(0, n).map((e, i) => (
           <div key={i} className={cn(i > 0 && "mt-3")}>
-            <div><span className="select-none text-[#7ee787]">{prompt} </span>{e.command}</div>
+            <div className="whitespace-pre-wrap"><span className="select-none text-[#7ee787]">{prompt} </span>{e.command}</div>
             {e.output && <pre className="whitespace-pre-wrap text-[#a8b0bd]">{e.output}</pre>}
           </div>
         ))}

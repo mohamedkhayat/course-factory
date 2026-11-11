@@ -32,6 +32,15 @@ export function compileExpr(expr: string): ((scope: Record<string, number>) => n
   }
 }
 
+/** A sympy-syntax expression as LaTeX, so it shows as a formula and not as code. */
+export function exprTex(expr: string): string {
+  try {
+    return parse(expr.replaceAll("**", "^")).toTex({ parenthesis: "auto", implicit: "hide" }).replace(/\\cdot(?=[\\a-zA-Z{])/g, " ");  // "2 \pi", not "2·π"
+  } catch {
+    return `\\text{${expr}}`;
+  }
+}
+
 export type Method = "gradient" | "momentum" | "newton";
 
 /** The points an optimiser visits on f(x, y); it stops early when it diverges. */

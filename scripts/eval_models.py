@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from course_factory import db as dbm
-from course_factory.chapters import LANGUAGE_RULE, GroundingBatch, SectionDraft, catalogue_text, checked_blocks, page_texts, source_pages
+from course_factory.chapters import GroundingBatch, language_rule, SectionDraft, catalogue_text, checked_blocks, page_texts, source_pages, words
 from course_factory.checks import check_blocks
 from course_factory.components import schemas
 from course_factory.context import Ctx
@@ -43,8 +43,10 @@ def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
         try:
             draft = run_pi_step(db, ctx.backend, "write_section", {
                 "goal": goal, "priority": sec["priority"], "chapter": sec["chapter"], "section": sec["title"],
-                "pages": pages, "catalogue": catalogue, "language": LANGUAGE_RULE,
-                "subject": db.execute("SELECT subject FROM courses WHERE id=?", (cid,)).fetchone()["subject"]}, SectionDraft, work, course_id=cid)
+                "pages": pages, "catalogue": catalogue, "language": language_rule(db, cid),
+                "subject": db.execute("SELECT subject FROM courses WHERE id=?", (cid,)).fetchone()["subject"],
+                "owner_notes": "none", "taught_before": [], "teaches": json.loads(sec["teaches"]), "plan": "none", "gaps": "none",
+                "chapter_map": "none", "cram": "none"}, SectionDraft, work, course_id=cid)
         except StepFailed:
             row["sections failed"] += 1
             continue
@@ -55,6 +57,8 @@ def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
         row["still flagged"] += sum(bool(f["errors"]) for f in flags)
         row["from source"] += sum(b["origin"] == "from_source" for b in blocks)
         used.update(b["component"] for b in blocks)
+        for b in blocks:  # how much of the Section explains, against how much asks
+            row["practice words" if b["component"] in PRACTICE else "teaching words"] += words(b["data"])
         kinds = {b["component"] for b in blocks}
         row["sections with a visual and practice"] += bool(kinds & VISUAL and kinds & PRACTICE)
     for (out,) in db.execute("SELECT output FROM traces WHERE id > ? AND step='judge_grounding' AND error IS NULL", (before,)):

@@ -2,10 +2,12 @@
 sympy-verified claims. Also computes the numbers the app owns (Iteration Table rows)."""
 
 import ast
+import collections
 import json
 import jsonschema
 import re
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +17,8 @@ from sympy.parsing.sympy_parser import parse_expr, standard_transformations, imp
 
 from .catalogue import CATALOGUE, BlockDraft, validate_data
 from .pi_step import LATEX_WORDS
+
+DIAGRAMS = ("diagram", "step_diagram")  # the Components drawn in Mermaid
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 MATH_RE = re.compile(r"\$\$(.+?)\$\$|\$(.+?)\$", re.S)
@@ -48,7 +52,7 @@ def math_in(data, path: str = "") -> list[tuple[str, bool]]:
 def render_errors(blocks: list[dict]) -> dict[int, list[str]]:
     """KaTeX and Mermaid parse every Block's math and diagrams in one node call."""
     math = [{"id": i, "tex": t, "display": d} for i, b in enumerate(blocks) for t, d in math_in(b["data"])]
-    diagrams = [{"id": i, "src": b["data"]["mermaid"]} for i, b in enumerate(blocks) if b["component"] in ("diagram", "step_diagram")]
+    diagrams = [{"id": i, "src": b["data"]["mermaid"]} for i, b in enumerate(blocks) if b["component"] in DIAGRAMS]
     if not math and not diagrams:
         return {}
     out = subprocess.run(["node", str(WEB_DIR / "scripts" / "check-render.mjs")], input=json.dumps({"math": math, "mermaid": diagrams}),
@@ -75,7 +79,66 @@ def quiz_errors(data: dict) -> list[str]:
             errs.append(f"question {n}: single-choice must have exactly one correct option")
         if not q["explanation"].strip():
             errs.append(f"question {n}: explanation is empty")
+        if any(CATCH_ALL.search(o) for o in opts):
+            errs.append(f"question {n}: \"all/none of the above\" is a cue, not a mistake: make every wrong option a real misconception")
     return errs
+
+
+CATCH_ALL = re.compile(r"\b(all|none) of the above\b|toutes les r[ée]ponses|aucune (de ces|des) r[ée]ponses", re.I)
+LABEL = re.compile(r'\["?([^\]"]*)"?\]|\("?([^)"]*)"?\)|\{"?([^}"]*)"?\}')
+
+
+FIGURE_KEPT = 0.6  # share of a cited figure's entities a diagram redrawing it must keep
+
+
+def figure_warnings(src: str, pages: list[dict]) -> list[str] | None:
+    """For a diagram citing pages read with figures: what of the figures it drops (entities, containment).
+    None when no cited page has a figure, so there is nothing to compare."""
+    figures = [f for p in pages for f in p.get("figures") or []]
+    if not figures:
+        return None
+    labels = " ".join(t for m in re.findall(r'"([^"]*)"', src) + [next((g for g in m if g), "") for m in LABEL.findall(src)]
+                      for t in [m] if t).lower()
+    found = lambda e: re.search(r"(?<!\w)" + re.escape(e.lower().strip()) + r"(?!\w)", labels)
+    out = []
+    entities = list(dict.fromkeys(e for f in figures for e in f.get("entities", []) if e.strip()))
+    missing = [e for e in entities if not found(e)]
+    if entities and len(missing) > (1 - FIGURE_KEPT) * len(entities):
+        out.append(f"the cited figure shows {len(entities)} things, the diagram keeps {len(entities) - len(missing)}; "
+                   f"missing {', '.join(missing[:12])}")
+    holders = list(dict.fromkeys(c[0] for f in figures for c in f.get("contains", []) if len(c) == 2))
+    if holders and not re.search(r"(?m)^\s*subgraph\b", src):
+        out.append(f"the figure puts things inside {', '.join(holders[:6])}; draw each as a subgraph holding its parts, not a flat chain")
+    return ["figure fidelity: " + "; ".join(out)] if out else []
+
+
+def block_warnings(block: dict, pages: Sequence[dict] = ()) -> list[str]:
+    """Item-writing and readability heuristics: shown on the Block, never block it. `pages`: the Block's cited pages."""
+    data, out = block["data"], []
+    if block["component"] == "quiz":
+        qs = [q for q in data.get("questions", []) if len(q["options"]) > 1 and len(q["correct"]) == 1]
+        longest = [len(q["options"][q["correct"][0]]) > max(len(o) for i, o in enumerate(q["options"]) if i != q["correct"][0])
+                   for q in qs]
+        if len(longest) >= 3 and all(longest):
+            out.append("quiz cue: the right option is the longest in every question; make wrong options as long and as specific")
+    if block["component"] in DIAGRAMS and re.match(r"\s*(flowchart|graph)\b", src := data.get("mermaid", "")):
+        body = src.split("\n", 1)[-1]
+        ids = flow_nodes(src)
+        fidelity = figure_warnings(src, list(pages))
+        out += fidelity or []
+        # a step_diagram already shows it a stage at a time; a faithful redraw of a figure is as big as the figure
+        if len(ids) > 9 and block["component"] == "diagram" and fidelity is None:
+            out.append(f"diagram size: {len(ids)} nodes; keep to 9 at most, split it or walk it as a step_diagram")
+        long = [t for t in (next(g for g in m if g) for m in LABEL.findall(body) if any(m))
+                if len(re.findall(r"[^\W\d_]{2,}", re.sub(r"\$[^$]*\$|<[^>]+>", " ", t))) > 6]  # words, not symbols
+        if long:
+            out.append(f"diagram size: labels of 2-4 words read at a glance; shorten {long[0]!r} and put the detail in the text")
+    if block["component"] == "theorem_box" and data.get("kind") == "definition":
+        terms = list(dict.fromkeys(t.strip() for t in re.findall(r"\*\*([^*\n]{1,40}?)(?::\*\*|\*\*\s*:)", data.get("statement", ""))))
+        if len(terms) >= 3:
+            out.append(f"definition cram: one definition defines {', '.join(terms)}; give each term its own theorem_box, "
+                       "with its own why-it-matters line")
+    return out
 
 
 FLOAT_TOLERANCE = 1e-4  # relative: decimals in a worked example are already rounded
@@ -163,6 +226,8 @@ OUTSIDE_MATH = [
     (re.compile(r"\\q?quad\s*"), " "),
 ]
 MERMAID_LIST = re.compile(r'(["|]\s*)(\d+\.|[-+*])(?=\s)')  # a label starting like a Markdown list fails to render
+MERMAID_MATH = re.compile(r"\$[^$\n]+\$")
+MERMAID_PARENS = re.compile(r'(\b\w+)\[(?!["(\[/\\])([^\]"\n]*[()][^\]"\n]*)\]')  # A[Uvicorn (ASGI)] fails; A[(db)] is a cylinder
 LIST_FIELDS = {"steps", "hints"}
 
 
@@ -187,10 +252,30 @@ def heal_text(data, key: str = ""):
     if not isinstance(data, str):
         return data
     if key == "mermaid":
+        data = MERMAID_MATH.sub(lambda m: re.sub(r"\\\\(?=[A-Za-z])", r"\\", m[0]), data)  # "\\geq" escaped twice: a line break, then "geq"
+        data = MERMAID_PARENS.sub(r'\1["\2"]', data)
         return MERMAID_LIST.sub(lambda m: m[1] + (m[2][:-1] + "#46;" if m[2].endswith(".") else f"#{ord(m[2])};"), data)
     if key == "latex":
         return TEXT_FIXES[2][0].sub(TEXT_FIXES[2][1], data)
     return data if key in NOT_MARKDOWN else heal_markdown(data)
+
+
+ASCII_MATH = re.compile(r"\bsqrt\(|\bexp\(|(?<!\*\*)[\w)]\*\*(?:[\d(]|[A-Za-z](?!\w|\*\*))|\w\^\(")  # x**2, e**x; not **D**éveloppeurs or Gi**t**H (bold)
+CODE_SPAN = re.compile(r"```.*?```|`[^`]*`", re.S)
+# shortcut: assumes French/English courses; a course taught in Chinese, Japanese or Korean would need this off
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
+
+
+def ascii_math_errors(data, key: str = "") -> list[str]:
+    """Formulas written as code (sqrt(n), e^(iu.X)) outside $…$: they show as plain text, not as math."""
+    if isinstance(data, dict):
+        return [e for k, v in data.items() if k != "claims" for e in ascii_math_errors(v, k)]  # claims are sympy syntax
+    if isinstance(data, list):
+        return [e for v in data for e in ascii_math_errors(v, key)]
+    if not isinstance(data, str) or (key in NOT_MARKDOWN and key != "mermaid"):
+        return []
+    m = ASCII_MATH.search(CODE_SPAN.sub("", MATH_SPAN.sub("", data)))
+    return [f"{key or 'text'} writes a formula as code near {m.group()!r}: write it as LaTeX inside $…$ (e.g. $\\sqrt{{n}}$, $e^{{iuX}}$)"] if m else []
 
 
 def iteration_rows(data: dict) -> list[dict]:
@@ -233,6 +318,7 @@ def expr_errors(component: str, data: dict) -> list[str]:
 DOCKER_INSTRUCTIONS = {"FROM", "RUN", "CMD", "LABEL", "MAINTAINER", "EXPOSE", "ENV", "ADD", "COPY", "ENTRYPOINT", "VOLUME", "USER",
                        "WORKDIR", "ARG", "ONBUILD", "STOPSIGNAL", "HEALTHCHECK", "SHELL"}
 GAP = re.compile(r"\[\[(\d+)\]\]")
+CONSOLE_REQUEST = re.compile(r"^(?:GET|PUT|POST|DELETE|HEAD|PATCH) /\S*[ \t]*$", re.M)
 
 
 def syntax_errors(language: str, src: str) -> list[str]:
@@ -244,7 +330,9 @@ def syntax_errors(language: str, src: str) -> list[str]:
         elif lang in ("yaml", "yml"):
             list(yaml.safe_load_all(src))
         elif lang == "json":
-            json.loads(src)
+            for body in CONSOLE_REQUEST.split(src):  # Elasticsearch/Kibana console: "PUT /index" lines, each followed by JSON
+                if body.strip():
+                    json.loads(body)
         elif lang == "dockerfile":
             for line in re.sub(r"\\\n", " ", src).splitlines():  # continuation lines join their instruction
                 word = line.split(maxsplit=1)[0] if line.strip() and not line.lstrip().startswith("#") else None
@@ -287,7 +375,28 @@ def blank_errors(blanks: list[dict], template: str, language: str) -> list[str]:
 
 def mermaid_ids(src: str) -> str:
     """The Mermaid source with labels removed, so only node ids and edges are left."""
-    return re.sub(r'"[^"]*"|\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|', " ", src)
+    unquoted = re.sub(r'"[^"]*"', '""', src)  # first: a quoted label may hold brackets ("collect() [ACTION]")
+    return re.sub(r'\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|', " ", unquoted).replace('""', " ")
+
+
+EDGE = re.compile(r"([\w-]+)\s*(?:-\.+->|--+>|==+>|---)\s*(?=([\w-]+))")
+FAN_OUT = re.compile(r"r[ée]pli[cq]|broadcast|diffus|workers?\b|esclaves?\b|slaves?\b|fan.?out", re.I)  # not "each"/"partition": pipelines say those too
+
+
+def chain_errors(data: dict) -> list[str]:
+    """A diagram drawn as one chain (every node one edge in, one out) whose own words say something fans out: the
+    primary shard replicated to its replicas was drawn Node 1 -> Node 2 -> Node 3."""
+    src = data["mermaid"]
+    if not re.match(r"\s*(flowchart|graph)\b", src) or re.search(r"^\s*subgraph\b", src, re.M):  # nodes drawn as boxes holding shards: the path is a route
+        return []
+    edges = set(EDGE.findall(mermaid_ids(src).split("\n", 1)[-1]))
+    nodes = {n for e in edges for n in e}
+    outs, ins = collections.Counter(a for a, _ in edges), collections.Counter(b for _, b in edges)
+    if len(nodes) < 4 or max(outs.values(), default=0) > 1 or max(ins.values(), default=0) > 1:
+        return []
+    cue = FAN_OUT.search(data.get("caption", "") + " " + src)
+    return [f"the diagram is one chain but its words say \"{cue.group()}\": what fans out should branch (several edges from one "
+            "node), not pass through each node in turn"] if cue else []
 
 
 def step_errors(data: dict) -> list[str]:
@@ -321,9 +430,32 @@ def component_errors(component: str, data: dict) -> list[str]:
             derived = [f] + [sp.diff(f, v) for v in sp.symbols("x y", real=True)]
             if any(d.has(*KINKS) for d in derived):
                 return ["expr is not differentiable everywhere (abs, sign, max...); the optimizer needs a smooth function"]
+    if component == "plot" and len(data["functions"]) > 1 and not all(fn.get("label", "").strip() for fn in data["functions"]):
+        return ["the plot draws several curves and some have no label: give every function a label saying which is which"]
     if component == "step_diagram":
-        return step_errors(data)
+        return step_errors(data) + chain_errors(data)
+    if component == "diagram":
+        return chain_errors(data) + size_errors(data)
     return []
+
+
+def flow_nodes(src: str) -> set[str]:
+    """The node ids of a Mermaid flowchart."""
+    ids = set(re.findall(r"(?m)(?:^|[;&>-])\s*([A-Za-z_][\w-]*)\s*(?=[\[({>]|-|$|;|&|:::)", mermaid_ids(src.split("\n", 1)[-1])))
+    return ids - {"subgraph", "end", "classDef", "class", "style", "linkStyle", "direction", "click"}
+
+
+def size_errors(data: dict) -> list[str]:
+    """learning-design.md: a diagram relates 4 to 9 elements. Fewer says what a sentence says; more is read in pieces.
+    A diagram with containers (subgraphs) redraws a slide's figure and keeps its size."""
+    src = data["mermaid"]
+    if not re.match(r"\s*(flowchart|graph)\b", src) or re.search(r"^\s*subgraph\b", src, re.M):
+        return []
+    edges = set(EDGE.findall(mermaid_ids(src).split("\n", 1)[-1]))
+    n = len(flow_nodes(src) | {x for e in edges for x in e})
+    if n < 4 and len(edges) < n:  # a chain of 2-3 boxes; a dense small graph (a 3-state Markov chain) earns its place
+        return [f"the diagram has only {n} elements: say it in a sentence (a prose Block) instead, or draw at least 4 related ones"]
+    return [f"the diagram has {n} nodes: keep to 9 at most; split it in two diagrams or walk it as a step_diagram"] if n > 9 else []
 
 
 def schema_errors(schema: dict, data: dict) -> list[str]:
@@ -355,7 +487,8 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
             data, errs = draft.data, schema_errors(extra[draft.component], draft.data)
         else:
             data, errs = validate_data(draft.component, draft.data)
-        block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin}
+        block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin,
+                 **({"exam_types": draft.exam_types} if draft.exam_types else {}), **({"tests": draft.tests} if draft.tests else {})}
         for c in draft.citations:
             if not 1 <= c.page <= sources.get(c.source, 0):
                 errs.append(f"citation to {c.source} page {c.page} does not exist")
@@ -367,6 +500,9 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
             errs += claim_errors(data.get("claims", []))
             errs += expr_errors(draft.component, data)
             errs += component_errors(draft.component, data)
+            errs += ascii_math_errors(data)
+            if m := CJK.search(json.dumps(data, ensure_ascii=False)):  # Qwen slips into Chinese mid-sentence
+                errs.append(f"Chinese/Japanese/Korean text {m.group()!r}: write it in the course's language")
             if draft.component == "iteration_table":
                 try:
                     data["rows"] = iteration_rows(data)

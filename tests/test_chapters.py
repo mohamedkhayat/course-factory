@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from course_factory.chapters import REPAIRS
 from test_outline import to_outline_gate
@@ -30,7 +31,8 @@ def chapters(client, cid):
 
 def first_block(client, cid):
     ch = chapters(client, cid)["Convexité"]
-    return client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"][0]["blocks"][0]
+    blocks = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"][0]["blocks"]
+    return next((b for b in blocks if b["component"] != "prose"), blocks[0])  # past the orienting opening
 
 
 def one_block(component, data, origin="model_added", citations=()):
@@ -64,13 +66,13 @@ def test_chapters_wait_for_review_and_publishing_makes_them_readable(client, mat
     assert client.get(f"/api/courses/{cid}/reader").json() == []
     review = client.get(f"/api/courses/{cid}/review").json()
     assert [c["title"] for c in review] == ["Convexité", "Méthodes de descente"]
-    assert len(review[1]["blocks"]) == 4 and review[1]["blocks"][0]["section"] == GRADIENT
+    assert len(review[1]["blocks"]) == 6 and review[1]["blocks"][0]["section"] == GRADIENT
     chid = review[0]["id"]
     assert client.post(f"/api/courses/{cid}/chapters/{chid}/publish").status_code == 200
     assert client.post(f"/api/courses/{cid}/chapters/{chid}/publish").status_code == 409
     readable = client.get(f"/api/courses/{cid}/reader").json()
     assert [c["title"] for c in readable] == ["Convexité"]
-    block = readable[0]["sections"][0]["blocks"][0]
+    block = readable[0]["sections"][0]["blocks"][1]
     assert block["component"] == "theorem_box" and block["origin"] == "from_source"
     assert block["citations"] == [{"source": "cours.pdf", "page": 1, "quote": ""}]
     actions = [t["owner_action"] for t in client.get(f"/api/courses/{cid}/traces").json() if t["step"] == "chapter_review_gate"]
@@ -109,7 +111,7 @@ def test_flagged_blocks_come_first_in_review(client, material, model):
 
 def test_math_and_diagram_errors_are_caught(client, material, model):
     blocks = (one_block("prose", {"markdown": r"Bien: $\frac{1}{2}$ mais $\frac{1}{$"})
-              + one_block("diagram", {"mermaid": "graph TD\n  A-->B"})
+              + one_block("diagram", {"mermaid": "graph TD\n  A-->B-->C-->D"})
               + one_block("diagram", {"mermaid": "graph TD\n  A-->"}))
     cid = generate(client, material, model, blocks=blocks)
     ch = chapters(client, cid)["Convexité"]
@@ -161,7 +163,7 @@ def test_a_block_going_beyond_its_pages_becomes_model_added(client, material, mo
 
 
 def test_a_block_contradicting_its_pages_is_repaired_and_judged_again(client, material, model):
-    verdicts = iter([{"results": [{"block": 0, "grounded": False, "contradicts": True, "reason": "Sp(A) is wrong"}]}])
+    verdicts = iter([{"results": [{"block": 1, "grounded": False, "contradicts": True, "reason": "Sp(A) is wrong"}]}])
     model.handlers["judge_grounding"] = lambda prompt, files: next(verdicts, {"grounded": True, "reason": ""})
     cid = generate(client, material, model)
     b = first_block(client, cid)
@@ -242,7 +244,7 @@ def test_run_pauses_at_chapter_review_until_the_last_chapter_is_published(client
 def test_traces_record_check_results_and_durations(client, material, model):
     cid = generate(client, material, model, blocks=one_block("theorem_box", {"kind": "theorem", "statement": r"$\frac{1}{$"}))
     traces = client.get(f"/api/courses/{cid}/traces").json()
-    section = next(t for t in traces if t["step"] == "write_section")
+    section = next(t for t in traces if t["step"] == "write_section" and "block" in (t["checks"] or ""))
     [check] = json.loads(section["checks"])
     assert check["block"] == 0 and check["errors"]  # still broken after the repairs
     repair = next(t for t in traces if t["step"] == "repair_block")
@@ -306,3 +308,47 @@ def test_run_shows_a_section_checking_repairing_judging_then_flagged(client, mat
     client.post(f"/api/courses/{cid}/gates/outline")
     assert ["repairing"] in seen and ["judging"] in seen
     assert states() == ["flagged"]
+
+
+def test_a_placeholder_section_is_written_again(client, material, model, monkeypatch):
+    from course_factory import chapters as chm
+    monkeypatch.setattr(chm, "MIN_SECTION_WORDS", 25)
+    real = model.handlers["write_section"]
+    seen = []
+    def stub_first(prompt, files):
+        seen.append(prompt)
+        if len(seen) == 1:
+            return {"blocks": [{"component": "prose", "data": {"markdown": "test"}, "origin": "model_added"}]}
+        out = real(prompt, files)
+        out["blocks"] += one_block("prose", {"markdown": "Un ensemble est convexe quand le segment entre deux de ses points reste dedans, ce qui garantit l'unicité du minimum."})
+        return out
+    model.handlers["write_section"] = stub_first
+    generate(client, material, model)
+    assert sum("RETRY FEEDBACK" in p and "is a placeholder" in p for p in seen) == 1  # only the stub is written again, told why
+
+
+@pytest.mark.parametrize("language,rule", [("en", "Write everything in English"), ("fr", "Write everything in French"),
+                                           (None, "Write your own explanations, intuitions and hints in English")])
+def test_the_course_language_chosen_before_generation_reaches_every_prompt(client, material, model, language, rule):
+    cid = generate(client, material, model, goal={"goal": "deep"} | ({"language": language} if language else {}))
+    prompts = [p for step, p in model.prompts if step in ("plan_chapter", "write_section")]
+    assert prompts and all(rule in p for p in prompts)
+    assert client.patch(f"/api/courses/{cid}", json={"goal": "deep", "language": "fr"}).json()["language"] == "fr"
+    assert client.patch(f"/api/courses/{cid}", json={"goal": "deep"}).json()["language"] == "fr"  # a goal change keeps it
+
+
+CRUD = [{"component": "terminal", "origin": "model_added", "data": {"title": "CRUD", "shell": "http", "entries": [
+            {"command": f"{m} /boutique/_doc/1", "output": "{}", "note": ""} for m in ("PUT", "GET", "DELETE")]}},
+        {"component": "quiz", "origin": "model_added", "data": {"questions": [
+            {"prompt": "Quel verbe supprime ?", "options": ["DELETE", "GET"], "correct": [0], "explanation": "DELETE supprime."}]}}]
+
+
+def test_merging_a_section_keeps_each_distinct_block_once(client, material, model):
+    cid = generate(client, material, model, blocks=CRUD)
+    ch = chapters(client, cid)["Méthodes de descente"]
+    first, second = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"]
+    assert second["overlaps"][0]["id"] == first["id"]  # the fake writes the same Blocks in both
+    kept = client.post(f"/api/courses/{cid}/sections/{second['id']}/merge", json={"into": first["id"]}).json()
+    [merged] = kept["sections"]
+    assert merged["id"] == first["id"] and len(merged["blocks"]) == len(first["blocks"]) and not merged["overlaps"]
+    assert client.post(f"/api/courses/{cid}/sections/{first['id']}/merge", json={"into": first["id"]}).status_code == 422
