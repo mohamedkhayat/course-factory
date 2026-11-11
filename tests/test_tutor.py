@@ -177,3 +177,19 @@ def test_a_proposal_failing_the_checks_cannot_be_accepted(client, material, mode
     assert done["proposal"]["flags"]["errors"]
     assert client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").status_code == 409
     assert len(blocks_of(client, cid, sections[0]["id"])) == len(sections[0]["blocks"])
+
+
+def test_explain_this_differently_asks_the_tutor_about_one_block_citing_only_the_section_pages(client, material, model):
+    cid, sections = published(client, material, model)
+    sid = sections[0]["id"]
+    block = blocks_of(client, cid, sid)[0]
+    done = ask(client, cid, "Explain this differently: simpler", section_id=sid, block_id=block["id"], style="simpler")
+    prompt = [p for s, p in model.prompts if s == "tutor"][-1]
+    assert "more simply" in prompt and f"The Block ({block['component']})" in prompt
+    assert done["citations"] == [{"source": "cours.pdf", "page": 1}]  # the Section's page; no search passages
+    other = blocks_of(client, cid, sections[1]["id"])[0]
+    r = client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "section_id": sid, "block_id": other["id"], "style": "deeper"})
+    assert r.status_code == 404
+    assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "section_id": sid, "block_id": block["id"],
+                                                          "style": "louder"}).status_code == 422
+    assert client.get(f"/api/courses/{cid}/tutor/{done['conversation_id']}").json()[0]["text"] == "Explain this differently: simpler"

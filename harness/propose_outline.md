@@ -10,7 +10,7 @@ Give each Chapter a "profile", how a student crams it before the exam: "problem"
 
 Propose the course outline: Chapters in the professor's order, each with Sections. Every Section lists the source pages it is built from (course notes first, then the exercise sheets and labs that practise it). Use the course's own chapter structure when the notes have one. Write titles in the material's language.
 
-For every Section, list in "teaches" the Concepts it teaches (short names: a command, a function, a definition, a method), in the order a learner meets them. Each Concept is taught in exactly one Section, the first that explains it: a Section that only uses or previews a Concept does not list it. Order the Sections so that each one needs only Concepts taught before it.
+For every Section, list in "teaches" the Concepts it teaches (short names: a command, a function, a definition, a method), in the order a learner meets them. Each Concept is taught in exactly one Section, the first that explains it: a Section that only uses or previews a Concept does not list it. Every Section teaches at least one Concept, except an exercises or revision Section. Order the Sections so that each one needs only Concepts taught before it.
 
 Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:

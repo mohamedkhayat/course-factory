@@ -7,7 +7,7 @@ import pytest
 
 from course_factory.checks import block_warnings, check_blocks
 from course_factory.failures import failure_class
-from course_factory.lesson_plan import LessonPlan, plan_errors, plan_gaps
+from course_factory.lesson_plan import LessonPlan, order_gaps, plan_errors, plan_gaps
 from test_chapters import EXERCICES, GRADIENT, chapters, generate, sections_written
 
 SECTIONS = [{"title": "Pas fixe", "teaches": ["pas fixe"]}, {"title": "Pas optimal", "teaches": ["pas optimal"]}]
@@ -26,14 +26,16 @@ def item(kind, component, objective="o1"):
     return {"objective": objective, "kind": kind, "component": component}
 
 
-GOOD = [lesson("Pas fixe", [obj("apply", ["gradient", "pas fixe"], ["Type descente"])],
-               [item("worked", "worked_example"), item("faded", "fill_blanks"), item("exam", "exercise")],
+GOOD = [lesson("Pas fixe", [obj("understand", ["pas fixe"], id="o0"), obj("apply", ["gradient", "pas fixe"], ["Type descente"])],
+               [item("retrieval", "fill_blanks", "o0"), item("worked", "worked_example"), item("faded", "fill_blanks"),
+                item("exam", "exercise")],
                visual={"relation": "quantity", "shows": "the iterates", "component": "iteration_table"}),
         lesson("Pas optimal", [obj("remember", ["pas optimal"])], [item("retrieval", "quiz")], [{"id": "m1", "text": "…"}])]
 
 
 def errors(sections, exam_types=("Type descente",)):
-    return plan_errors(LessonPlan.model_validate({"sections": sections}), SECTIONS, ["gradient"], list(exam_types))
+    overview = "Le pas fixe d'abord, la méthode la plus simple qui converge, puis le pas optimal qui choisit le meilleur pas à chaque itération."
+    return plan_errors(LessonPlan.model_validate({"overview": overview, "sections": sections}), SECTIONS, ["gradient"], list(exam_types))
 
 
 @pytest.mark.parametrize("change,expected", [
@@ -46,7 +48,20 @@ def errors(sections, exam_types=("Type descente",)):
     (lambda p: [p[0], p[1] | {"practice": [item("retrieval", "exercise")]}], "retrieval practice must be one of"),
     (lambda p: [p[0], p[1] | {"objectives": [obj("understand")], "practice": [item("worked", "worked_example")]}], "retrieval item"),
     (lambda p: [p[0] | {"visual": {"relation": "fan_out", "shows": "replicas", "component": "table"}}, p[1]], "fan_out is drawn"),
-    (lambda p: [p[0] | {"objectives": [obj("apply", ["pas fixe"])]}, p[1]], "Question Types ['Type descente']"),
+    (lambda p: [p[0] | {"objectives": [obj("understand", ["pas fixe"], id="o0"), obj("apply", ["pas fixe"])]}, p[1]],
+     "Question Types ['Type descente']"),
+    # the real plan of course 6, Chapter 22 "Fonctions convexes": objectives remember, apply, understand
+    (lambda p: [p[0] | {"objectives": p[0]["objectives"][::-1]}, p[1]], "lowest level to the highest"),
+    # 25/4 opened at analyse; a Chapter opening at apply has nothing to orient the learner
+    (lambda p: [p[0] | {"objectives": [p[0]["objectives"][1]], "practice": p[0]["practice"][1:]}, p[1]], "opens the Chapter"),
+    (lambda p: [p[0] | {"practice": p[0]["practice"][1:] + p[0]["practice"][:1]}, p[1]], "practise the objectives in their order"),
+    (lambda p: [p[0], p[1] | {"objectives": [obj("apply", ["pas optimal"])], "practice": [item("exam", "exercise"), item("worked", "worked_example")]}],
+     "the first practice is exam"),
+    # the stored plan of Chapter 23, "Algorithme du gradient", has 5 drills for 2 objectives
+    (lambda p: [p[0] | {"practice": p[0]["practice"] + [item("exam", "exercise")]}, p[1]], "its objectives need 2"),
+    # one retrieval item covers every remember/understand objective, and explain_back is one
+    (lambda p: [p[0], p[1] | {"objectives": [obj("remember", id="o1"), obj("understand", id="o2")],
+                              "practice": [item("retrieval", "explain_back", "o2")]}], None),
 ])
 def test_a_plan_is_held_to_the_learning_design_rules(change, expected):
     found = errors(change(json.loads(json.dumps(GOOD))))
@@ -57,7 +72,43 @@ def test_plan_gaps_name_the_missing_practice_and_visual():
     blocks = [{"component": "worked_example"}, {"component": "exercise"}]
     gaps = plan_gaps(GOOD[0] | {"visual": GOOD[0]["visual"]}, blocks)
     assert len(gaps) == 2 and "fill_blanks" in gaps[0] and "iteration_table" in gaps[1]
-    assert plan_gaps(GOOD[0], blocks + [{"component": "fill_blanks"}, {"component": "iteration_table"}]) == []
+    assert plan_gaps(GOOD[0], blocks + [{"component": "fill_blanks"}] * 2 + [{"component": "iteration_table"}]) == []
+
+
+# Course 2, "Vecteurs gaussiens : définition et fonction caractéristique": opened on a definition, cold.
+GAUSS_OPENING = [{"component": "theorem_box", "data": {"kind": "definition", "title": "Définition du vecteur gaussien",
+                                                       "statement": "On dit qu'un vecteur aléatoire $X$ est un vecteur gaussien si..."}},
+                 {"component": "key_formula", "data": {"name": "Fonction caractéristique", "latex": "\\Phi_X(u)"}}]
+# Course 6, "Application : régression linéaire par moindres carrés": the worked example says "minimiseur exact" for the Concept.
+NORMAL = "résolution exacte du minimum (X* = N⁻¹C)"
+SOLVE = {"component": "exercise", "tests": [NORMAL], "data": {"title": "Exercice — résoudre le système normal", "statement": "..."}}
+WORKED = {"component": "worked_example", "data": {"title": "Système normal et minimum exact",
+                                                  "problem": "Déterminer le minimiseur exact $X^*$ du problème."}}
+OPENING = {"component": "prose", "data": {"markdown": "C'est la mise en application de tout le chapitre."}}
+
+
+def test_order_gaps_flag_a_cold_opening_and_a_concept_asked_before_it_is_explained():
+    assert "opens with a theorem_box" in order_gaps(GAUSS_OPENING, [])[0]
+    definition = GAUSS_OPENING[0]
+    assert "Block 2 (theorem_box) states the formal version" in order_gaps([OPENING, definition], [])[0]
+    assert order_gaps([OPENING, WORKED, definition], []) == []  # a case first, then the definition
+    worked_case = {"component": "prose", "data": {"markdown": "Prenons deux gaussiennes $X_1$, $X_2$ : leur couple l'est-il ?"}}
+    assert order_gaps([worked_case, definition], []) == []
+    assert order_gaps([OPENING, WORKED, SOLVE], [NORMAL]) == []  # "minimiseur exact" explains it: stems, not exact words
+    gaps = order_gaps([OPENING, SOLVE, WORKED], [NORMAL])
+    assert gaps == [f'Block 2 (exercise) tests "{NORMAL}" before any Block explains it']
+    assert order_gaps([OPENING], [NORMAL]) == [f'no Block explains "{NORMAL}", which this Section teaches']
+    intuition = {"component": "intuition", "data": {"idea": "Une combinaison de gaussiennes reste gaussienne."}}
+    assert order_gaps([OPENING, intuition, definition], []) == []  # an intuition is the concrete case before the definition
+
+
+def test_a_section_mostly_practice_gets_an_order_warning_and_a_recap_counts_as_neither():
+    quiz = {"component": "quiz", "data": {"question": "Le pas fixe converge-t-il toujours vers le minimum ?"}}
+    recap = {"component": "recap", "data": {"takeaways": ["un", "deux"]}}
+    assert any("practice outweighs explanation (2 of 3 Blocks" in g for g in order_gaps([OPENING, quiz, quiz], []))
+    assert order_gaps([OPENING, WORKED, quiz, recap], []) == []
+    short = {"component": "prose", "data": {"markdown": "Court."}}
+    assert any("practice words" in g for g in order_gaps([short, short, quiz], []))  # 1 Block in 3, but fewer teaching words
 
 
 def test_one_plan_per_chapter_reaches_the_writer_and_the_reader(client, material, model):
@@ -69,6 +120,9 @@ def test_one_plan_per_chapter_reaches_the_writer_and_the_reader(client, material
     ch = chapters(client, cid)["Méthodes de descente"]
     secs = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"]
     assert [s["objectives"] for s in secs] == [["State it."], ["State it."]]
+    chapter = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()
+    assert chapter["overview"].endswith("Gradient, puis Exercices.")  # the map at the top of the Chapter
+    assert all('"overview": "Ce chapitre' in p for p in writes)  # and the writer of each Section sees it
 
 
 def test_an_invalid_plan_is_sent_back_once_and_never_stalls_the_run(client, material, model):
@@ -94,6 +148,7 @@ def test_a_section_missing_planned_practice_is_rewritten_once(client, material, 
     writes = [p for step, p in model.prompts if step == "write_section"]
     assert len(writes) == 6
     assert sum("the plan has 1 quiz Block(s) for objectives ['o1'], the Section has 0" in p for p in writes) == 3
+    assert sum("order: the Section opens with a theorem_box" in p for p in writes) == 3
 
 
 def test_a_resumed_chapter_reuses_its_plan(client, material, model):

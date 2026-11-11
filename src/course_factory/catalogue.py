@@ -278,9 +278,41 @@ class Code(BaseModel):
 
 
 class Prose(BaseModel):
-    """Use only when no other Component fits: free Markdown."""
+    """Use to explain in connected paragraphs: what an idea is, why it is needed, how it links to the last one."""
 
     markdown: Md
+
+
+class Intuition(BaseModel):
+    """Use before a formal statement: the idea in plain words, an optional analogy, and where the analogy stops being true."""
+
+    idea: Md
+    analogy: Md = ""
+    limits: Md = ""  # where the analogy breaks: a wrong analogy taught as true is worse than none
+
+
+class Misconception(BaseModel):
+    """Use for a Section's main mistake (from the plan's misconceptions): what students wrongly believe, why it is wrong, the correct idea."""
+
+    belief: Md
+    why_wrong: Md
+    correct: Md
+
+
+class Recap(BaseModel):
+    """Use as the Section's last Block: its 3-5 takeaways and what the learner can now do."""
+
+    takeaways: list[Md] = Field(min_length=2)
+    can_do: list[Md] = []
+
+
+class ExplainBack(BaseModel):
+    """Use to check an understand objective: the learner explains a Concept in their own words, graded against a rubric of the 2-5 points a good explanation makes."""
+
+    concept: str
+    prompt: Md
+    rubric: list[Md] = Field(min_length=1)
+    model_answer: Md
 
 
 Range = tuple[float, float]
@@ -397,6 +429,7 @@ CATALOGUE: dict[str, type[BaseModel]] = {
     "plot": Plot, "explorer": Explorer, "diagram": Diagram, "figure": Figure, "table": Table, "code": Code,
     "prose": Prose, "fill_blanks": FillBlanks, "code_exercise": CodeExercise, "surface_plot": SurfacePlot,
     "optimizer_animation": OptimizerAnimation, "step_diagram": StepDiagram, "terminal": Terminal,
+    "intuition": Intuition, "misconception": Misconception, "recap": Recap, "explain_back": ExplainBack,
 }
 
 

@@ -8,6 +8,8 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from . import exams
@@ -36,11 +38,18 @@ class Ask(BaseModel):
     section_id: int | None = None
     conversation_id: int | None = None
     lab_step_id: int | None = None  # the Lab tutor: coaches on the learner's code, outputs and plots
-    block_id: int | None = None  # the same coaching on a code_exercise Block
+    block_id: int | None = None  # the same coaching on a code_exercise Block; with style, the Block to explain again
+    style: Literal["simpler", "example", "analogy", "deeper"] | None = None  # "Explain this differently" on a teaching Block
     code: str = Field("", max_length=50_000)
     outputs: list[dict] = Field([], max_length=50)  # nbformat outputs of the learner's last run
 
 
+STYLES = {  # what the learner picked in "Explain this differently", as the instruction the tutor gets
+    "simpler": "Explain it again more simply: plain words, shorter sentences, no notation it does not need.",
+    "example": "Explain it again through one concrete worked example, with numbers or a real case.",
+    "analogy": "Explain it again through an analogy, and say where the analogy stops being true.",
+    "deeper": "Go deeper: why it holds, where it comes from, and how it connects to the rest of the Section.",
+}
 MAX_PLOTS = 4
 OUTPUT_CHARS = 4000
 
@@ -141,7 +150,7 @@ def router(ctx: Ctx) -> APIRouter:
             inputs = {"statement": step["statement"], "code": body.code, "outputs": output_text(body.outputs),
                       "history": history, "question": body.question}
             files = save_plots(body.outputs, ctx.course_dir(cid) / "tutor" / "plots")
-        elif body.block_id is not None:
+        elif body.block_id is not None and body.style is None:
             block = db.execute("SELECT b.component, b.data FROM blocks b JOIN sections s ON s.id=b.section_id JOIN chapters c "
                                "ON c.id=s.chapter_id WHERE b.id=? AND c.course_id=? AND c.status='published'", (body.block_id, cid)).fetchone()
             if block is None:
@@ -152,12 +161,18 @@ def router(ctx: Ctx) -> APIRouter:
             inputs = {"statement": json.loads(block["data"])["task"], "code": body.code, "outputs": "",
                       "history": history, "question": body.question}
         else:
+            question = body.question
+            if body.style is not None:  # explain one Block again from this Section's pages only, so its citations stay there
+                block = next((b for b in section_blocks(section["id"]) if b["id"] == body.block_id), None) if section else None
+                if block is None:
+                    raise HTTPException(404, "no such Block in this Section")
+                question = f"{STYLES[body.style]}\n\nThe Block ({block['component']}): {block['data']}"
             pages = page_texts(ctx, cid, json.loads(section["pages"])) if section else []
-            passages = [{"source": p["source"], "page": p["page"], "text": p["text"]}
-                        for p in searchm.search(db, ctx.search, cid, body.question, PASSAGES)]
+            passages = [] if body.style else [{"source": p["source"], "page": p["page"], "text": p["text"]}
+                                              for p in searchm.search(db, ctx.search, cid, body.question, PASSAGES)]
             name, allowed = "tutor", {(p["source"], p["page"]) for p in pages + passages}
             inputs = {"section": section["title"] if section else "", "pages": pages, "passages": passages,
-                      "history": history, "question": body.question, "catalogue": catalogue_text(ctx),
+                      "history": history, "question": question, "catalogue": catalogue_text(ctx),
                       "blocks": "\n".join(f"[{b['id']}] {b['component']}: {b['data'][:160]}" for b in section_blocks(section["id"]))
                       if section else "(no Section open: propose nothing)"}
 

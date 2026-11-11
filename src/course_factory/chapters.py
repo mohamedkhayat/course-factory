@@ -13,8 +13,8 @@ from .context import Ctx
 from .outline import profile_of
 from .failures import failure_class
 from .progression import flag_progression, section_overlaps
-from .lesson_plan import plan_chapter, plan_gaps
-from .pi_step import MODEL_LANES, StepFailed, attach_checks, last_trace_id, record_owner_action, run_pi_step
+from .lesson_plan import order_gaps, plan_chapter, plan_gaps
+from .pi_step import MIN_WORDS, MODEL_LANES, StepFailed, attach_checks, last_trace_id, record_owner_action, run_pi_step
 
 REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
@@ -39,7 +39,7 @@ def words(data) -> int:
     return len(data.split()) if isinstance(data, str) else 0
 
 
-MIN_SECTION_WORDS = 25
+MIN_SECTION_WORDS = MIN_WORDS["write_section"]  # the tool refuses shorter results in-session too
 
 
 class SectionDraft(BaseModel):
@@ -179,18 +179,31 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
     except StepFailed:
         lessons = {}  # no plan: the Sections are written as before rather than stalling the Run
 
+    overview = json.loads(db.execute("SELECT plan FROM chapters WHERE id=?", (chid,)).fetchone()["plan"] or "{}").get("overview", "")
+    chapter_map = json.dumps({"overview": overview, "sections": [s["title"] for s in sections]}, ensure_ascii=False)
+
     def write(sec):
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         lesson = lessons.get(sec["title"])
         inputs = {"goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
                   "pages": pages, "catalogue": catalogue, "language": language_rule(db, cid), "subject": subject, "cram": cram,
                   "owner_notes": (notes or {}).get(sec["id"], "none"), "taught_before": before[sec["id"]],
-                  "teaches": json.loads(sec["teaches"]), "plan": lesson or "none", "gaps": "none"}
+                  "teaches": json.loads(sec["teaches"]), "plan": lesson or "none", "gaps": "none",
+                  "chapter_map": chapter_map}
+
+        def gaps(blocks):
+            return ([f"plan: {g}" for g in plan_gaps(lesson, blocks)] if lesson else []) + \
+                [f"order: {g}" for g in order_gaps(blocks, inputs["teaches"])]
         draft = run_pi_step(db, ctx.backend, "write_section", inputs, SectionDraft, ctx.course_dir(cid), course_id=cid)
-        if lesson and (gaps := plan_gaps(lesson, draft.blocks)):  # one more try to follow the plan; then take what's written
-            attach_checks(db, last_trace_id(), [{"warnings": [f"plan: {g}" for g in gaps]}])
-            draft = run_pi_step(db, ctx.backend, "write_section", inputs | {"gaps": "\n".join(f"- {g}" for g in gaps)},
+        missed = gaps(draft.blocks)
+        if missed:
+            attach_checks(db, last_trace_id(), [{"warnings": missed}])
+        # Only a plan gap buys a rewrite: rewriting for order gaps doubled the time per Section and left them in 2 of 5.
+        if any(g.startswith("plan: ") for g in missed):
+            draft = run_pi_step(db, ctx.backend, "write_section", inputs | {"gaps": "\n".join(f"- {g}" for g in missed)},
                                 SectionDraft, ctx.course_dir(cid), course_id=cid)
+            if missed := gaps(draft.blocks):  # still there: kept as warnings on the trace, never a stall
+                attach_checks(db, last_trace_id(), [{"warnings": missed}])
         return sec, pages, draft, last_trace_id()
 
     with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(pending_sections))) as pool:
@@ -369,7 +382,8 @@ def block_json(row) -> dict:
 
 def load_chapter(ctx: Ctx, chid: int) -> dict:
     ch = ctx.db.execute("SELECT * FROM chapters WHERE id=?", (chid,)).fetchone()
-    plan = {p["title"]: p for p in json.loads(ch["plan"] or '{"sections": []}')["sections"]}
+    stored = json.loads(ch["plan"] or '{"sections": []}')
+    plan = {p["title"]: p for p in stored["sections"]}
     sections = []
     for s in ctx.db.execute("SELECT * FROM sections WHERE chapter_id=? ORDER BY position", (chid,)):
         blocks = [block_json(b) for b in ctx.db.execute("SELECT * FROM blocks WHERE section_id=? ORDER BY position", (s["id"],))]
@@ -381,7 +395,7 @@ def load_chapter(ctx: Ctx, chid: int) -> dict:
             s["overlaps"].append({"id": other["id"], "title": other["title"], "shared": shared,
                                   "warning": f"section overlap: teaches what \"{other['title']}\" teaches ({', '.join(shared[:6])}); merge them"})
     return {"id": ch["id"], "title": ch["title"], "priority": ch["priority"], "exam_weight": ch["exam_weight"],
-            "status": ch["status"], "sections": sections}
+            "status": ch["status"], "overview": stored.get("overview", ""), "sections": sections}
 
 
 def merge_sections(db, cid: int, sid: int, into: int) -> None:

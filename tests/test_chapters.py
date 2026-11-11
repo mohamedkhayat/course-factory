@@ -31,7 +31,8 @@ def chapters(client, cid):
 
 def first_block(client, cid):
     ch = chapters(client, cid)["Convexité"]
-    return client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"][0]["blocks"][0]
+    blocks = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"][0]["blocks"]
+    return next((b for b in blocks if b["component"] != "prose"), blocks[0])  # past the orienting opening
 
 
 def one_block(component, data, origin="model_added", citations=()):
@@ -65,13 +66,13 @@ def test_chapters_wait_for_review_and_publishing_makes_them_readable(client, mat
     assert client.get(f"/api/courses/{cid}/reader").json() == []
     review = client.get(f"/api/courses/{cid}/review").json()
     assert [c["title"] for c in review] == ["Convexité", "Méthodes de descente"]
-    assert len(review[1]["blocks"]) == 4 and review[1]["blocks"][0]["section"] == GRADIENT
+    assert len(review[1]["blocks"]) == 6 and review[1]["blocks"][0]["section"] == GRADIENT
     chid = review[0]["id"]
     assert client.post(f"/api/courses/{cid}/chapters/{chid}/publish").status_code == 200
     assert client.post(f"/api/courses/{cid}/chapters/{chid}/publish").status_code == 409
     readable = client.get(f"/api/courses/{cid}/reader").json()
     assert [c["title"] for c in readable] == ["Convexité"]
-    block = readable[0]["sections"][0]["blocks"][0]
+    block = readable[0]["sections"][0]["blocks"][1]
     assert block["component"] == "theorem_box" and block["origin"] == "from_source"
     assert block["citations"] == [{"source": "cours.pdf", "page": 1, "quote": ""}]
     actions = [t["owner_action"] for t in client.get(f"/api/courses/{cid}/traces").json() if t["step"] == "chapter_review_gate"]
@@ -110,7 +111,7 @@ def test_flagged_blocks_come_first_in_review(client, material, model):
 
 def test_math_and_diagram_errors_are_caught(client, material, model):
     blocks = (one_block("prose", {"markdown": r"Bien: $\frac{1}{2}$ mais $\frac{1}{$"})
-              + one_block("diagram", {"mermaid": "graph TD\n  A-->B"})
+              + one_block("diagram", {"mermaid": "graph TD\n  A-->B-->C-->D"})
               + one_block("diagram", {"mermaid": "graph TD\n  A-->"}))
     cid = generate(client, material, model, blocks=blocks)
     ch = chapters(client, cid)["Convexité"]
@@ -162,7 +163,7 @@ def test_a_block_going_beyond_its_pages_becomes_model_added(client, material, mo
 
 
 def test_a_block_contradicting_its_pages_is_repaired_and_judged_again(client, material, model):
-    verdicts = iter([{"results": [{"block": 0, "grounded": False, "contradicts": True, "reason": "Sp(A) is wrong"}]}])
+    verdicts = iter([{"results": [{"block": 1, "grounded": False, "contradicts": True, "reason": "Sp(A) is wrong"}]}])
     model.handlers["judge_grounding"] = lambda prompt, files: next(verdicts, {"grounded": True, "reason": ""})
     cid = generate(client, material, model)
     b = first_block(client, cid)

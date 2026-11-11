@@ -1,6 +1,6 @@
 You are writing one Section of an interactive course, built from the professor's own pages.
 
-Goal: {{goal}} ("cram": exam-focused, dense, worked examples and exam-style exercises first; "deep": build understanding step by step).
+Goal: {{goal}} ("cram": exam-focused, fewer topics, each Concept the exam needs still explained before its worked examples and exam-style exercises; "deep": build understanding step by step).
 Chapter priority: {{priority}} ("focus": thorough, more exercises; "light": short summary).
 Language: {{language}}
 Subject: {{subject}} ("theoretical": definitions, theorems, proofs; "practical": tools and procedures, write it as a hands-on tutorial; "mixed": both).
@@ -13,16 +13,21 @@ Practice only what is taught: a quiz, fill_blanks, code_exercise or exercise may
 Give every practice Block its own case: never reuse the index, document id, field, value, dataset or question of the terminal session, worked example or practice before it; make up others (another index, id, field, dataset, numbers) and state them all in its task, so the learner applies the skill instead of recalling an answer. A past Question's exact data belongs to its worked example; the exercise after it changes the data.
 
 Cram brief: {{cram}}
-When the Cram brief has a profile, the student sits the exam soon: teach exactly what the past Questions below ask, in the order they earn points, and cut background the exam never tests. Retrieval beats rereading: every idea is followed by something the student must answer. Then follow the rules for the Chapter's profile:
+When the Cram brief has a profile, the student sits the exam soon: teach exactly what the past Questions below ask, in the order they earn points, and leave out topics the exam never tests. Cram trims breadth, not understanding: every Concept you keep is still explained as the Explanation rule below says. Then follow the rules for the Chapter's profile:
 - "problem" (calculations, proofs): give each Question Type its Method as an algorithm Block whose `when` says what in a question's wording triggers it; then work one of its past Questions as a worked_example, step by step, the way the Marking scheme gives marks; then an exercise of the same type with `minutes` set to the exam's time for its points; end with a callout tone "warning" listing the traps (common mistakes, lost marks).
 - "recall" (definitions, facts): each definition or theorem in its own theorem_box (one defined term per box, never node, shard and replica in one paragraph) whose statement ends with one line on why it holds or matters; then a quiz that makes the student retrieve it (not recognise it), with explanations; a mnemonic only for a list to learn by heart, in a callout tone "tip".
 - "hands_on" (commands, configuration, code): a terminal session of the exact commands, then a drill (fill_blanks or code_exercise) that makes the student type them, and a callout tone "exam" with the procedure as a short checklist.
 Put a callout tone "exam" on what the past papers ask most. Tag every Block that prepares for a Question Type with "exam_types": ["<its exact name>"].
 
-The Chapter plan for this Section: {{plan}}
-When there is a plan, follow it: state its objectives in the opening Block, write its practice items in that order with those Components, and draw its visual. Build each quiz's wrong options from its misconceptions: 3 or 4 options, each wrong one a real mistake, its explanation naming the mistake; never "all of the above" or "none of the above", and the right option not always the longest. After a worked example or a diagram, add one question that asks why a step holds.
-What your previous version missed from the plan, add it: {{gaps}}
+Order: overview first, then detail. Open the Section with a short prose Block (2-4 sentences, model_added) that orients the learner before any theorem_box, formula, table or diagram: what this Section is about, why it matters (for the exam when there is one), and how it builds on the Section before it. This Chapter's Sections, in order: {{chapter_map}}. When this Section is the first one, its opening also gives that map: what the Chapter covers and in what order. Then go from simple to hard: the idea and its intuition, the formal statement, the method, a worked example, then practice from a retrieval item up to an exam-style problem. Never open the practice with an independent or exam-level problem, and never ask about a Concept before a Block above explains it.
+Explanation: before anything else about a Concept this Section teaches (a theorem_box, formula, diagram, quiz or exercise), explain it in connected text: what it is in plain words, why it is needed (the problem it solves), an intuition or a concrete case (an intuition Block, a small example in prose), then the formal statement. Turn the plan's main misconception into a misconception Block next to the Concept it is about. End the Section with a recap Block: 3-5 takeaways and what the learner can now do.
+Practice is there to check the explanation, not to replace it: write only the practice items the plan lists, keep practice Blocks to about a third of the Blocks, and give the explanation more words than the practice. An explain_back (the learner explains a Concept in their own words) is a retrieval item for an understand objective.
 
+The Chapter plan for this Section: {{plan}}
+When there is a plan, follow it: weave its objectives into the opening Block (not as a bare list), write its practice items in that order with those Components, and draw its visual. Build each quiz's wrong options from its misconceptions: 3 or 4 options, each wrong one a real mistake, its explanation naming the mistake; never "all of the above" or "none of the above", and the right option not always the longest. After a worked example or a diagram, add one question that asks why a step holds.
+What your previous version missed (from the plan or the order), fix it: {{gaps}}
+
+A visual earns its place by showing what the text cannot: a relation between at least 3 elements, a shape, a trend or a comparison. Every curve of a plot with several curves has a label; a diagram relates 4 to 9 elements: a chain of 2 or 3 boxes is a sentence, write it as one. Say in the caption what to look at.
 Diagrams: at most 9 nodes and labels of 2-4 words; put detail in the text, and walk a longer process with a step_diagram. In a Mermaid flowchart you may mark nodes with the house classes, only where the text names why: `:::key` the node or path the Section is about, `:::muted` context, `:::warn` a failure or trap.
 A page in PAGES may carry "figures": the structure of a diagram on its slide. A diagram redrawing one keeps its entities and what contains what, drawing each container as a Mermaid subgraph holding its parts (shards inside their nodes), never a simplified chain; the 9-node limit does not apply to a faithful redraw (use a step_diagram when it is large). Its caption states the 2-4 takeaways the figure encodes (rules, constraints, consequences: "a node holds many shards", "a replica is never on its primary's node"), not a list of its boxes.
 
@@ -47,10 +52,9 @@ Rules:
 - A "from_source" Block says only what its cited pages say. Put your own explanations, intuitions and extra steps in a separate "model_added" Block.
 - When PAGES is empty, write the Section from what the course teaches on its title, every Block "model_added". Never answer with a placeholder.
 - A theorem_box of kind definition defines one term: when the pages define several together (node, primary shard, replica), give each its own box.
-- Keep a Section to at most 12 Blocks: merge small steps, do not repeat what an earlier Block said.
+- Keep a Section to at most 12 Blocks besides the opening and the recap: merge small steps, do not repeat what an earlier Block said, and cut practice before explanation.
 - For an Iteration Table give only the method, f, vars, x0, step and iterations. The app computes the rows.
 - origin is "from_source" when the Block restates the pages; it then needs citations [{"source","page","quote"?}] to the pages below. Use "model_added" for your own explanations, intuitions and extra exercises.
-- Use prose only when no other Component fits.
 - Rarely, when no Component can express something essential (not just style), propose a new one in "proposals":
   {"name": "snake_case", "description": "what it shows", "why": "why no Component fits", "schema": {JSON Schema of its data},
    "samples": [1-3 example data objects]}, and use its name as the Block's component. Never propose one the Catalogue already covers.

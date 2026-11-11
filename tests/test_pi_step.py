@@ -74,11 +74,22 @@ def test_an_array_sent_as_a_json_string_is_parsed_before_validation(tmp_path):
     (tmp_path / "run.mjs").write_text(
         'const ext = (await import("./ext.mjs")).default; let tool; ext({ registerTool: (t) => (tool = t) });'
         'const args = tool.prepareArguments({ blocks: \'[{"a": 1}]\', title: "[not json]" });'
-        'console.log(JSON.stringify((await tool.execute("id", args)).details.result));')
-    out = subprocess.run(["node", "run.mjs"], cwd=tmp_path, env={**os.environ, "CF_OUTPUT_SCHEMA": str(tmp_path / "schema.json")},
-                         capture_output=True, text=True, check=True).stdout
-    prepared = json.loads(out)
+        'console.log(JSON.stringify((await tool.execute("id", args)).details.result));'
+        # the write_section failure: unescaped LaTeX and a raw newline in the string, which coercion then wrapped as ["[...]"]
+        'console.log(JSON.stringify(tool.prepareArguments({ blocks: String.raw`[{"t": "$\\alpha + \\\\beta$ \\"q\\" \\u00e9`'
+        ' + "\\n" + String.raw`x"}]` })));'
+        # trace 422: \frac and \nabla start like the JSON escapes \f and \n; once strict parsing failed they are LaTeX
+        r'console.log(JSON.stringify(tool.prepareArguments({ blocks: String.raw`[{"t": "$\frac{\partial f}{\partial x_n}$, $\nabla f \in \mathbb{R}^n$"}]` })));'
+        # trace 2171: the stub that used to end the session
+        'process.env.CF_MIN_WORDS = "25"; try { await tool.execute("id", {blocks: [{component: "callout", data: {text: "test", tone: "tip"}}], proposals: []});'
+        ' console.log("accepted") } catch (e) { console.log(e.message) }')
+    out = subprocess.run(["node", "run.mjs"], cwd=tmp_path, capture_output=True, text=True, check=True,
+                         env={**os.environ, "CF_OUTPUT_SCHEMA": str(tmp_path / "schema.json")}).stdout.splitlines()
+    prepared = json.loads(out[0])
     assert prepared == {"blocks": [{"a": 1}], "title": "[not json]"}
+    assert json.loads(out[1]) == {"blocks": [{"t": '$\\alpha + \\beta$ "q" é\nx'}]}
+    assert json.loads(out[2]) == {"blocks": [{"t": "$\\frac{\\partial f}{\\partial x_n}$, $\\nabla f \\in \\mathbb{R}^n$"}]}
+    assert out[3].startswith("Rejected: 3 words")
     events = [
         {"type": "message_end", "message": {"role": "assistant", "content": [
             {"type": "toolCall", "name": "cf_return_result", "arguments": {"blocks": '[{"a": 1}]', "title": "[not json]"}}]}},

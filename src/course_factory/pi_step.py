@@ -481,12 +481,13 @@ class PiBackend:
                 extension = root / "structured-output.mjs"
                 extension.write_text(STRUCTURED_OUTPUT_EXTENSION)
                 env["CF_OUTPUT_SCHEMA"] = str(schema_path)
+                env["CF_MIN_WORDS"] = str(MIN_WORDS.get(step, 0))
             stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
             stdin.write(prompt)
             stdin.seek(0)
             with stdin, subprocess.Popen(self._cmd(model, files, extension), cwd=workdir, stdin=stdin,
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
-                timer = threading.Timer(self.timeout, proc.kill)
+                timer = threading.Timer(min(self.timeout, STEP_TIMEOUT.get(step, self.timeout)), proc.kill)
                 timer.start()
                 cid = getattr(_now, "course_id", None)  # a background step's Course, so Stop can kill it
                 with _procs_lock:
@@ -535,8 +536,38 @@ def assistant_text(jsonl: str) -> str:
     return text
 
 
+# A page read takes 71 s at most when it succeeds (traces since 2026-11-09); past that it is looping on "&nbsp;" and the
+# 900 s default wasted 10 minutes of GPU before the retry.
+STEP_TIMEOUT = {"read_page": 180}
+# A write_section stub ("test", one Block) ended the pi session through the terminating tool: 19 of them in the traces, after
+# 2-14 minutes each. The tool now refuses a result under this many words and the model goes on in the same session.
+MIN_WORDS = {"write_section": 25}
+
 STRUCTURED_OUTPUT_EXTENSION = '''
 import { readFileSync } from "node:fs";
+
+const LATEX = new Set(__LATEX_WORDS__);
+
+// LaTeX in a stringified argument (a lone \\alpha, a raw newline) breaks JSON.parse: escape those inside strings and parse again
+function lenient(s) {
+  let out = "", inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (!inStr) { inStr = c === '"'; out += c; continue; }
+    if (c === "\\\\") {
+      const word = /^[A-Za-z]+/.exec(s.slice(i + 1))?.[0];
+      if (word && LATEX.has(word)) { out += "\\\\\\\\"; continue; }  // \\frac, \\nabla: LaTeX, not the escapes \\f, \\n
+      const ok = /^(u[0-9a-fA-F]{4}|["\\\\/bfnrt])/.exec(s.slice(i + 1, i + 6));
+      out += ok ? c + ok[1] : "\\\\\\\\";
+      if (ok) i += ok[1].length;
+    } else if (c === '"') { inStr = false; out += c; }
+    else out += c < " " ? "\\\\u" + c.charCodeAt(0).toString(16).padStart(4, "0") : c;
+  }
+  return JSON.parse(out);
+}
+
+const words = (v) => typeof v === "string" ? v.split(/\\s+/).filter(Boolean).length
+  : v && typeof v === "object" ? Object.values(v).reduce((n, x) => n + words(x), 0) : 0;
 
 export default function (pi) {
   const schema = JSON.parse(readFileSync(process.env.CF_OUTPUT_SCHEMA, "utf8"));
@@ -556,14 +587,17 @@ export default function (pi) {
       const out = { ...args };
       for (const [k, v] of Object.entries(out)) {
         if (typeof v === "string" && schema.properties?.[k]?.type !== "string" && /^\\s*[\\[{]/.test(v)) {
-          try { out[k] = JSON.parse(v); } catch {}
+          try { out[k] = JSON.parse(v); } catch { try { out[k] = lenient(v); } catch {} }
         }
       }
       return out;
     },
     async execute(_id, params) {  // details carry the prepared arguments: the assistant message keeps the raw ones
+      const min = Number(process.env.CF_MIN_WORDS || 0), n = words(params);
+      if (n < min)  // a probe ("test") or a first Block alone: refused without ending the session, so the work done so far is kept
+        throw new Error(`Rejected: ${n} words is a placeholder, not the result. The tool works; call it once with the complete result.`);
       return { content: [{ type: "text", text: "Result accepted." }], details: { result: params }, terminate: true };
     },
   });
 }
-'''
+'''.replace("__LATEX_WORDS__", json.dumps(sorted(LATEX_WORDS)))

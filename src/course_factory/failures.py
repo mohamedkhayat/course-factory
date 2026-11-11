@@ -16,6 +16,7 @@ CLASSES = [
     (r"^progression:", "progression"),
     (r"should branch", "diagram-chain"),
     (r"^plan:", "plan"),
+    (r"^order:", "order"),
     (r"^quiz cue:|is a cue, not a mistake", "quiz-cue"),
     (r"^diagram size:", "diagram-size"),
     (r"^definition cram:", "definition-cram"),

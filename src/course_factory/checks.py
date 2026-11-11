@@ -123,8 +123,7 @@ def block_warnings(block: dict, pages: Sequence[dict] = ()) -> list[str]:
             out.append("quiz cue: the right option is the longest in every question; make wrong options as long and as specific")
     if block["component"] in DIAGRAMS and re.match(r"\s*(flowchart|graph)\b", src := data.get("mermaid", "")):
         body = src.split("\n", 1)[-1]
-        ids = set(re.findall(r"(?m)(?:^|[;&>-])\s*([A-Za-z_][\w-]*)\s*(?=[\[({>]|-|$|;|&|:::)", mermaid_ids(body)))
-        ids -= {"subgraph", "end", "classDef", "class", "style", "linkStyle", "direction", "click"}
+        ids = flow_nodes(src)
         fidelity = figure_warnings(src, list(pages))
         out += fidelity or []
         # a step_diagram already shows it a stage at a time; a faithful redraw of a figure is as big as the figure
@@ -261,7 +260,7 @@ def heal_text(data, key: str = ""):
     return data if key in NOT_MARKDOWN else heal_markdown(data)
 
 
-ASCII_MATH = re.compile(r"\bsqrt\(|\bexp\(|(?<!\*\*)[\w)]\*\*(?:[\d(]|[A-Za-z](?!\w))|\w\^\(")  # x**2, e**x; not **D**éveloppeurs (bold)
+ASCII_MATH = re.compile(r"\bsqrt\(|\bexp\(|(?<!\*\*)[\w)]\*\*(?:[\d(]|[A-Za-z](?!\w|\*\*))|\w\^\(")  # x**2, e**x; not **D**éveloppeurs or Gi**t**H (bold)
 CODE_SPAN = re.compile(r"```.*?```|`[^`]*`", re.S)
 # shortcut: assumes French/English courses; a course taught in Chinese, Japanese or Korean would need this off
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
@@ -376,7 +375,8 @@ def blank_errors(blanks: list[dict], template: str, language: str) -> list[str]:
 
 def mermaid_ids(src: str) -> str:
     """The Mermaid source with labels removed, so only node ids and edges are left."""
-    return re.sub(r'"[^"]*"|\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|', " ", src)
+    unquoted = re.sub(r'"[^"]*"', '""', src)  # first: a quoted label may hold brackets ("collect() [ACTION]")
+    return re.sub(r'\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|', " ", unquoted).replace('""', " ")
 
 
 EDGE = re.compile(r"([\w-]+)\s*(?:-\.+->|--+>|==+>|---)\s*(?=([\w-]+))")
@@ -430,11 +430,32 @@ def component_errors(component: str, data: dict) -> list[str]:
             derived = [f] + [sp.diff(f, v) for v in sp.symbols("x y", real=True)]
             if any(d.has(*KINKS) for d in derived):
                 return ["expr is not differentiable everywhere (abs, sign, max...); the optimizer needs a smooth function"]
+    if component == "plot" and len(data["functions"]) > 1 and not all(fn.get("label", "").strip() for fn in data["functions"]):
+        return ["the plot draws several curves and some have no label: give every function a label saying which is which"]
     if component == "step_diagram":
         return step_errors(data) + chain_errors(data)
     if component == "diagram":
-        return chain_errors(data)
+        return chain_errors(data) + size_errors(data)
     return []
+
+
+def flow_nodes(src: str) -> set[str]:
+    """The node ids of a Mermaid flowchart."""
+    ids = set(re.findall(r"(?m)(?:^|[;&>-])\s*([A-Za-z_][\w-]*)\s*(?=[\[({>]|-|$|;|&|:::)", mermaid_ids(src.split("\n", 1)[-1])))
+    return ids - {"subgraph", "end", "classDef", "class", "style", "linkStyle", "direction", "click"}
+
+
+def size_errors(data: dict) -> list[str]:
+    """learning-design.md: a diagram relates 4 to 9 elements. Fewer says what a sentence says; more is read in pieces.
+    A diagram with containers (subgraphs) redraws a slide's figure and keeps its size."""
+    src = data["mermaid"]
+    if not re.match(r"\s*(flowchart|graph)\b", src) or re.search(r"^\s*subgraph\b", src, re.M):
+        return []
+    edges = set(EDGE.findall(mermaid_ids(src).split("\n", 1)[-1]))
+    n = len(flow_nodes(src) | {x for e in edges for x in e})
+    if n < 4 and len(edges) < n:  # a chain of 2-3 boxes; a dense small graph (a 3-state Markov chain) earns its place
+        return [f"the diagram has only {n} elements: say it in a sentence (a prose Block) instead, or draw at least 4 related ones"]
+    return [f"the diagram has {n} nodes: keep to 9 at most; split it in two diagrams or walk it as a step_diagram"] if n > 9 else []
 
 
 def schema_errors(schema: dict, data: dict) -> list[str]:

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { History, MessageCircle, Plus, Send, Trash2, X } from "lucide-react";
-import { BlockBody, PageViewer, ReaderBlock } from "@/components/blocks";
+import { BlockBody, PageViewer, ReaderBlock, type Style } from "@/components/blocks";
 import { Md, MdLine } from "@/components/md";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { get, readEvents, send, type Block, type Chapter, type Citation, type Course } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -49,9 +50,11 @@ function ProposalCard({ cid, mid, p, onDone }: { cid: number; mid: number; p: Pr
 
 /** The tutor panel. With `lab`, it coaches on a Lab Step: the learner's current code and last outputs go with each question.
  * In the reader it reopens the Section's latest conversation, and lists past ones to reopen or delete. */
-export function Tutor({ cid, sectionId, lab, onCite, onClose, className }: {
+export type Explain = { block_id: number; style: Style; label: string; n: number };
+
+export function Tutor({ cid, sectionId, lab, explain, onCite, onClose, className }: {
   cid: number; sectionId?: number; lab?: () => { lab_step_id: number; code: string; outputs: unknown[] };
-  onCite: (c: Citation) => void; onClose: () => void; className?: string;
+  explain?: Explain | null; onCite: (c: Citation) => void; onClose: () => void; className?: string;
 }) {
   const qc = useQueryClient();
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -67,6 +70,11 @@ export function Tutor({ cid, sectionId, lab, onCite, onClose, className }: {
     setMsgs(id === null ? [] : await get<Msg[]>(`/api/courses/${cid}/tutor/${id}`));
   };
   const opened = useRef<number | undefined>(undefined);
+  useEffect(() => {  // "Explain this differently" starts its own conversation; before the effect below, so it doesn't reopen another
+    if (!explain || busy) return;
+    opened.current = sectionId;
+    ask(explain.label, { block_id: explain.block_id, style: explain.style });
+  }, [explain?.n]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {  // a Section opens on its latest conversation, once the list has loaded
     if (lab || busy || opened.current === sectionId || !qc.getQueryData(["tutor", cid])) return;
     opened.current = sectionId;
@@ -77,15 +85,17 @@ export function Tutor({ cid, sectionId, lab, onCite, onClose, className }: {
     mutationFn: (id: number) => send(`/api/courses/${cid}/tutor/${id}`, undefined, "DELETE"),
     onSuccess: (_, id) => { if (id === conv) open(null); qc.invalidateQueries({ queryKey: ["tutor", cid] }); },
   });
-  const ask = async () => {
-    const question = q.trim();
+  const ask = async (asked?: string, about?: { block_id: number; style: Style }) => {
+    const question = asked ?? q.trim();
     if (!question || busy) return;
-    setQ(""); setBusy(true); setHistory(false);
-    setMsgs((m) => [...m, { role: "learner", text: question }, { role: "tutor", text: "" }]);
+    if (!about) setQ("");
+    setBusy(true); setHistory(false);
+    if (about) setConv(null);
+    setMsgs((m) => [...(about ? [] : m), { role: "learner", text: question }, { role: "tutor", text: "" }]);
     const patch = (f: (m: Msg) => Msg) => setMsgs((all) => [...all.slice(0, -1), f(all[all.length - 1])]);
     try {
       const res = await fetch(`/api/courses/${cid}/tutor`, { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question, section_id: sectionId ?? null, conversation_id: conv, ...lab?.() }) });
+        body: JSON.stringify({ question, section_id: sectionId ?? null, conversation_id: about ? null : conv, ...lab?.(), ...about }) });
       await readEvents(res, (ev, d) => {
         if (ev === "token") patch((m) => ({ ...m, text: m.text + d.text }));
         if (ev === "done") { setConv(d.conversation_id); patch((m) => ({ ...m, id: d.message_id, citations: d.citations, proposal: d.proposal })); }
@@ -158,6 +168,34 @@ export function Tutor({ cid, sectionId, lab, onCite, onClose, className }: {
   );
 }
 
+/** Where you are in the Chapter: its big picture (from the Chapter plan) and each Section with what it lets you do. Open on the
+ * Chapter's first Section, folded after. */
+function ChapterMap({ chapter, current, read, go }: { chapter: Chapter; current: number; read: Set<number>; go: (id: number) => void }) {
+  const at = chapter.sections.findIndex((s) => s.id === current);
+  return (
+    <details key={current} open={at === 0} className="group mt-4 rounded-lg border border-border px-4 py-3 text-sm">
+      <summary className="flex cursor-pointer list-none items-center gap-3">
+        <span className="shrink-0 font-medium">Section {at + 1} of {chapter.sections.length}</span>
+        <Progress value={((at + 1) / chapter.sections.length) * 100} className="h-1.5" aria-label="Place in the Chapter" />
+        <span className="shrink-0 text-muted-foreground group-open:hidden">Chapter map</span>
+      </summary>
+      {chapter.overview && <p className="mt-3 text-muted-foreground"><MdLine>{chapter.overview}</MdLine></p>}
+      <ol className="mt-3 space-y-1">
+        {chapter.sections.map((s, n) => (
+          <li key={s.id}>
+            <button type="button" onClick={() => go(s.id)} aria-current={s.id === current ? "step" : undefined}
+                    className={cn("flex w-full gap-2 rounded-md px-2 py-1 text-left hover:bg-accent", s.id === current && "bg-accent")}>
+              <span className={cn("tabular w-5 shrink-0", read.has(s.id) ? "text-ok" : "text-muted-foreground")}>{n + 1}.</span>
+              <span><span className={cn(s.id === current && "font-medium")}>{s.title}</span>
+                {s.objectives?.[0] && <span className="block text-muted-foreground"><MdLine>{s.objectives[0]}</MdLine></span>}</span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 export function Reader() {
   const cid = useCid();
   const { data: chapters = [] } = useQuery({ queryKey: ["reader", cid], queryFn: () => get<Chapter[]>(`/api/courses/${cid}/reader`) });
@@ -166,6 +204,8 @@ export function Reader() {
   const [sid, setSid] = useState<number | null>(() => Number(new URLSearchParams(location.search).get("section")) || null);
   const [cite, setCite] = useState<Citation | null>(null);
   const [tutor, setTutor] = useState(false);
+  const [explain, setExplain] = useState<Explain | null>(null);
+  const explainBlock = (block_id: number, style: Style, label: string) => { setTutor(true); setExplain((e) => ({ block_id, style, label, n: (e?.n ?? 0) + 1 })); };
   const mark = useMutation({ mutationFn: (section_id: number) => send(`/api/courses/${cid}/place`, { section_id }, "PUT") });
   const sections = chapters.flatMap((c) => c.sections.map((s) => ({ ...s, chapter: c })));
   const current = sections.find((s) => s.id === sid) ?? sections.find((s) => s.id === place?.section_id) ?? sections[0];
@@ -203,6 +243,7 @@ export function Reader() {
         <article className="mx-auto w-full max-w-[44rem] px-5 py-8 sm:px-8">
           <p className="text-sm text-muted-foreground">{current.chapter.title}</p>
           <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">{current.title}</h1>
+          <ChapterMap chapter={current.chapter} current={current.id} read={read} go={go} />
           {!!current.teaches?.length && <p className="mt-2 text-sm text-muted-foreground">New here: {current.teaches.join(" · ")}</p>}
           {!!current.objectives?.length && (
             <div className="mt-4 text-sm">
@@ -211,7 +252,7 @@ export function Reader() {
             </div>
           )}
           <div className="prose-cf mt-8 space-y-10">
-            {current.blocks.map((b) => <ReaderBlock key={b.id} block={b} cid={cid} onCite={setCite} />)}
+            {current.blocks.map((b) => <ReaderBlock key={b.id} block={b} cid={cid} onCite={setCite} onExplain={explainBlock} />)}
           </div>
           <div className="mt-14 flex justify-between gap-4 border-t border-border pt-4 text-sm">
             {i > 0 ? <button type="button" onClick={() => go(sections[i - 1].id)} className="text-left hover:text-primary">← {sections[i - 1].title}</button> : <span />}
@@ -221,7 +262,7 @@ export function Reader() {
       )}
       {tutor ? (
         <div className="fixed inset-x-0 bottom-0 top-12 z-20 lg:sticky lg:top-12 lg:h-[calc(100dvh-3rem)]">
-          <Tutor cid={cid} sectionId={current?.id} onCite={setCite} onClose={() => setTutor(false)} />
+          <Tutor cid={cid} sectionId={current?.id} explain={explain} onCite={setCite} onClose={() => { setTutor(false); setExplain(null); }} />
         </div>
       ) : (
         <Button className="fixed bottom-5 right-5 z-20 shadow-md" onClick={() => setTutor(true)}><MessageCircle className="size-4" />Ask the tutor</Button>

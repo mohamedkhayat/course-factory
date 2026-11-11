@@ -1,6 +1,6 @@
 import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, Timer, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, ListChecks, MessageSquareText, Sparkles, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { exported, get, pageUrl, send, type Block, type Citation } from "@/lib/api";
@@ -191,6 +191,61 @@ function Callout({ data }: P) {
   );
 }
 
+/** The idea in plain words before the formal statement; an analogy shows where it stops being true. */
+function Intuition({ data }: P<{ idea: string; analogy: string; limits: string }>) {
+  return (
+    <div className="flex gap-3 rounded-md bg-primary/6 px-4 py-3">
+      <Sparkles className="mt-1 size-4 shrink-0 text-primary" aria-hidden />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold">Intuition</p>
+        <Md>{data.idea}</Md>
+        {data.analogy && <div className="mt-2 border-l-2 border-primary/40 pl-3"><p className="text-sm text-muted-foreground">Comme…</p><Md>{data.analogy}</Md></div>}
+        {data.limits && <div className="mt-2 text-sm"><span className="font-medium">Où l'image s'arrête : </span><Md className="inline-block">{data.limits}</Md></div>}
+      </div>
+    </div>
+  );
+}
+
+/** A common wrong belief, why it fails, and the correct idea: the plan's main misconception, named and fixed. */
+function Misconception({ data }: P<{ belief: string; why_wrong: string; correct: string }>) {
+  return (
+    <div className="rounded-md border border-border px-4 py-3">
+      <p className="flex items-start gap-2"><X className="mt-1 size-4 shrink-0 text-destructive" aria-hidden />
+        <span className="min-w-0"><span className="text-sm font-semibold">Idée fausse : </span><Md className="inline-block [&_p]:my-0">{data.belief}</Md></span></p>
+      <div className="mt-2 pl-6 text-sm text-muted-foreground"><Md>{data.why_wrong}</Md></div>
+      <p className="mt-2 flex items-start gap-2 rounded-md bg-ok/10 px-2 py-1.5"><Check className="mt-1 size-4 shrink-0 text-ok" aria-hidden />
+        <span className="min-w-0"><span className="text-sm font-semibold">En réalité : </span><Md className="inline-block [&_p]:my-0">{data.correct}</Md></span></p>
+    </div>
+  );
+}
+
+/** The Section's last Block: what to keep, and what the learner can now do. */
+function Recap({ data }: P<{ takeaways: string[]; can_do: string[] }>) {
+  return (
+    <div className="rounded-md border-t-2 border-foreground/25 bg-muted/40 px-5 py-4">
+      <p className="flex items-center gap-2 font-semibold"><ListChecks className="size-4" aria-hidden />À retenir</p>
+      <ul className="mt-2 list-disc space-y-1 pl-5">{data.takeaways.map((t, i) => <li key={i}><Md className="[&_p]:my-0">{t}</Md></li>)}</ul>
+      {!!data.can_do?.length && <>
+        <p className="mt-3 text-sm font-medium">Vous savez maintenant</p>
+        <ul className="mt-1 space-y-1 text-sm">{data.can_do.map((t, i) => <li key={i} className="flex gap-2"><Check className="mt-1 size-3.5 shrink-0 text-ok" aria-hidden /><MdLine>{t}</MdLine></li>)}</ul>
+      </>}
+    </div>
+  );
+}
+
+/** The learner explains a Concept in their own words: graded on the rubric's points like a written exercise, or self-marked. */
+function ExplainBack({ data, cid, block }: P<{ concept: string; prompt: string; rubric: string[]; model_answer: string }>) {
+  return (
+    <div>
+      <h4 className="flex items-center gap-2 font-medium"><MessageSquareText className="size-4 text-primary" aria-hidden />Expliquez avec vos mots : {data.concept}</h4>
+      <Md>{data.prompt}</Md>
+      <WrittenAnswer cid={cid} block={block} />
+      <HandCorrection steps={data.rubric} correction={data.model_answer} cid={cid} block={block}
+                      intro="Explain it above, then grade it, or compare it point by point with what a good explanation says." />
+    </div>
+  );
+}
+
 function Algorithm({ data }: P) {
   return (
     <div className="rounded-md border border-border px-5 py-4">
@@ -368,8 +423,12 @@ const RENDER: Record<string, (p: P) => React.ReactNode> = {
   table: ({ data }) => <Table headers={data.headers} rows={data.rows} caption={data.caption} />, code: Code,
   prose: ({ data }) => <Md>{data.markdown}</Md>, fill_blanks: FillBlanks, code_exercise: CodeExercise, terminal: Terminal,
   surface_plot: ({ data }) => <SurfacePlot data={data} />, optimizer_animation: ({ data }) => <OptimizerAnimation data={data} />,
-  step_diagram: StepDiagram,
+  step_diagram: StepDiagram, intuition: Intuition, misconception: Misconception, recap: Recap, explain_back: ExplainBack,
 };
+
+const PRACTICE = new Set(["quiz", "fill_blanks", "code_exercise", "exercise", "explain_back", "recap"]);  // progression.PRACTICE, and the recap
+export type Style = "simpler" | "example" | "analogy" | "deeper";
+const STYLES: [Style, string][] = [["simpler", "Simpler"], ["example", "With an example"], ["analogy", "With an analogy"], ["deeper", "Go deeper"]];
 
 export function useComponents() {
   return useQuery({ queryKey: ["components"], queryFn: () => exported
@@ -418,7 +477,10 @@ export function PageViewer({ cid, cite, onClose }: { cid: number; cite: Citation
 }
 
 /** A Block as the learner sees it: content, then its Citations and origin, and a way to flag it. */
-export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number; onCite: (c: Citation) => void }) {
+export function ReaderBlock({ block, cid, onCite, onExplain }: {
+  block: Block; cid: number; onCite: (c: Citation) => void; onExplain?: (block_id: number, style: Style, label: string) => void;
+}) {
+  const [explaining, setExplaining] = useState(false);
   const [flagging, setFlagging] = useState(false);
   const [flagged, setFlagged] = useState(false);
   const [compare, setCompare] = useState(false);
@@ -465,6 +527,15 @@ export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number;
             {compare ? "Hide the slide" : "Compare with the slide"}</button>
         )}
         <span>{block.origin === "from_source" ? "From source" : "Model-added"}</span>
+        {onExplain && !PRACTICE.has(block.component) && (explaining ? (
+          <span role="group" aria-label="Explain this differently" className="flex flex-wrap items-center gap-1">
+            {STYLES.map(([s, l]) => <Button key={s} size="sm" variant="ghost" className="h-6 px-2 text-xs"
+              onClick={() => { setExplaining(false); onExplain(block.id, s, `Explain this ${block.component.replaceAll("_", " ")} differently: ${l.toLowerCase()}`); }}>{l}</Button>)}
+          </span>
+        ) : (
+          <button type="button" onClick={() => setExplaining(true)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
+            <Sparkles className="size-3" />Explain differently</button>
+        ))}
         <span className="ml-auto flex items-center gap-1">
           {flagged ? <span className="text-warn">Flagged, thanks</span> : flagging ? (
             <>

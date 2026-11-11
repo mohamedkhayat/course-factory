@@ -78,9 +78,9 @@ def test_latex_escapes_outside_math_become_text():
 
 
 def test_diagram_labels_starting_like_a_markdown_list_are_escaped():
-    src = 'flowchart TD\n  A["1. start"] -->|"+ J convexe"| B["- end"]'
+    src = 'flowchart TD\n  A["1. start"] -->|"+ J convexe"| B["- end"] --> C --> D'
     assert heal("diagram", {"mermaid": src, "caption": "c"})["mermaid"] == \
-        'flowchart TD\n  A["1#46; start"] -->|"#43; J convexe"| B["#45; end"]'
+        'flowchart TD\n  A["1#46; start"] -->|"#43; J convexe"| B["#45; end"] --> C --> D'
 
 
 def test_a_block_the_model_wrapped_in_another_object_is_unwrapped():
@@ -110,6 +110,15 @@ GOOD = {
         {"highlight": ["A"], "caption": "The client sends a request"}, {"highlight": ["B", "C"], "edges": [["B", "C"]], "caption": "The load balancer forwards it"}]},
     "terminal": {"entries": [{"command": "docker build -t app .", "output": "Successfully tagged app:latest", "note": "Builds the image"}]},
     "exercise": {"title": "t", "statement": "s", "correction": "c", "mode": "hand", "steps": ["a", "b"]},
+    "intuition": {"idea": "Le gradient indique la direction où $f$ monte le plus vite.", "analogy": "Sur une colline, c'est la ligne de plus grande pente.",
+                  "limits": "Une colline a deux dimensions ; $f$ peut en avoir mille."},
+    "misconception": {"belief": "Un pas plus grand converge toujours plus vite.", "why_wrong": "Au-delà de $2/L$ les itérés divergent.",
+                      "correct": "Le pas doit rester sous $2/L$ ; le meilleur est près de $1/L$."},
+    "recap": {"takeaways": ["Le gradient pointe vers la montée la plus forte.", "La descente suit $-\\nabla f$."],
+              "can_do": ["Écrire une itération de descente de gradient."]},
+    "explain_back": {"concept": "pas fixe", "prompt": "Expliquez pourquoi un pas trop grand fait diverger la descente.",
+                     "rubric": ["L'itéré dépasse le minimum", "L'écart grandit à chaque pas au-delà de $2/L$"],
+                     "model_answer": "Avec un pas trop grand, chaque itération saute au-delà du minimum et l'écart grandit."},
 }
 
 
@@ -177,7 +186,7 @@ def test_a_single_correct_index_becomes_a_list():
 
 
 def test_diagram_labels_with_line_breaks_and_math_render():
-    data = heal("diagram", {"mermaid": 'flowchart TD\n  A["$(M_n)_{n\\\\geq 0}$<br/>suite"] --> B{"Condition 1<br/>Adaptation"}'})
+    data = heal("diagram", {"mermaid": 'flowchart TD\n  A["$(M_n)_{n\\\\geq 0}$<br/>suite"] --> B{"Condition 1<br/>Adaptation"} --> C --> D'})
     assert "{n\\geq 0}" in data["mermaid"]  # escaped twice by the model, it would show a line break and "geq"
 
 
@@ -238,13 +247,32 @@ def test_markdown_bold_inside_a_word_is_not_ascii_math():
     assert heal("callout", {"tone": "tip", "text": "**D**éveloppeurs **G**èrent **C**ode, **M**a **R**egistre, x"})["text"]
     _, (e,) = check_blocks([block("prose", {"markdown": "so x**2 grows"})], {})
     assert any("as LaTeX" in m for m in e)
+    _, (e,) = check_blocks([block("callout", {"tone": "tip", "text": "**G**it**H**ub **A**ctions"})], {})
+    assert e == []  # mlops repair_block traces: "t**H" was read as t to the power H
+
+
+def test_a_visual_that_shows_nothing_more_than_the_text_is_an_error():
+    """Course 6, block 1514: Armijo's bound and the merit function drawn as two unlabelled curves."""
+    armijo = {"title": "Fonction de mérite et borne d'Armijo", "x_range": [0.0, 1.0], "functions": [
+        {"expr": "256*x**4 - 256*x**3 + 100*x**2 - 20*x + 2", "label": ""}, {"expr": "2 - 18*x", "label": ""}]}
+    assert any("label" in m for m in check_one("plot", armijo)[1])
+    named = [f | {"label": n} for f, n in zip(armijo["functions"], ["$\\varphi_k$", "borne d'Armijo"])]
+    assert check_one("plot", armijo | {"functions": named})[1] == []
+    two = {"mermaid": 'flowchart LR\n  a["données"] --> b["modèle"]', "caption": "c"}
+    assert any("only 2 elements" in m for m in check_one("diagram", two)[1])
+    markov = {"mermaid": 'graph LR\n  B -->|"1/2"| P\n  B -->|"1/2"| N\n  P -->|"1/4"| B\n  N -->|"1/4"| P', "caption": "météo"}
+    assert check_one("diagram", markov)[1] == []  # 3 states, 4 transitions: course 2's weather chain is worth drawing
+    big = {"mermaid": "flowchart LR\n  " + " --> ".join(f"n{i}" for i in range(11)), "caption": "c"}
+    assert any("11 nodes" in m for m in check_one("diagram", big)[1])
+    dag = {"mermaid": 'flowchart TD\n  r["textFile"]\n  c["collect()  [ACTION]"]\n  r -->|"narrow"| m["map"]\n  m --> c --> d["driver"]', "caption": "c"}
+    assert check_one("diagram", dag)[1] == []  # a bracket inside a quoted label is still a label (block 1120)
 
 
 def test_shapes_from_the_mlops_review_are_healed_or_accepted():
     """Flagged Blocks found reviewing mlops (2026-11-10)."""
     step = heal("step_diagram", {"mermaid": "flowchart LR\n  T1[a] --> T2[b]", "steps": [{"target": "T1", "caption": "c", "highlight": True}]})["steps"][0]
     assert step["highlight"] == ["T1"]
-    src = heal("diagram", {"mermaid": "flowchart TD\n  A[Client] --> B[Web Server : Uvicorn (ASGI)]\n  B --> F[(Database MySQL)]"})["mermaid"]
+    src = heal("diagram", {"mermaid": "flowchart TD\n  A[Client] --> B[Web Server : Uvicorn (ASGI)]\n  B --> F[(Database MySQL)]\n  B --> R[Redis]"})["mermaid"]
     assert 'B["Web Server : Uvicorn (ASGI)"]' in src and "F[(Database MySQL)]" in src  # a cylinder keeps its shape
     console = {"title": "t", "language": "json", "template": 'PUT /[[1]]\n{"settings": {"number_of_replicas": [[2]]}}',
                "blanks": [{"answers": ["mlflow-metrics"]}, {"answers": ["0"]}]}

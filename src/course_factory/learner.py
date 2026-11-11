@@ -20,7 +20,7 @@ from .context import Ctx
 SCHEDULER = Scheduler(enable_fuzzing=False)
 RATINGS = {"À revoir": Rating.Again, "Difficile": Rating.Hard, "Bien": Rating.Good, "Facile": Rating.Easy}
 DEFAULT_DAILY_GOAL = 4
-CARD_COMPONENTS = {"theorem_box", "key_formula", "worked_example", "exercise", "quiz"}
+CARD_COMPONENTS = {"theorem_box", "key_formula", "worked_example", "exercise", "quiz", "explain_back"}
 
 LEARNER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS reads (section_id INTEGER PRIMARY KEY REFERENCES sections(id) ON DELETE CASCADE, read_at TEXT NOT NULL);
@@ -115,6 +115,9 @@ class Settings(BaseModel):
 
 # Cards
 
+WRITTEN = ("exercise", "explain_back")  # the Blocks a written answer is typed or uploaded for, graded, or self-marked
+
+
 def card_faces(block: dict) -> list[tuple[int, str, str]]:
     d, c = block["data"], block["component"]
     if c == "theorem_box":
@@ -125,6 +128,8 @@ def card_faces(block: dict) -> list[tuple[int, str, str]]:
         return [(0, d["problem"], "\n\n".join(d["steps"]) + f"\n\n**{d['answer']}**")]
     if c == "exercise":
         return [(0, d["statement"], d["correction"])]
+    if c == "explain_back":
+        return [(0, d["prompt"], d["model_answer"])]
     if c == "code_exercise":
         return [(0, d["task"], f"```{d['language']}\n{d['solution']}\n```")]
     if c == "fill_blanks":
@@ -350,7 +355,7 @@ def router(ctx: Ctx) -> APIRouter:
     def self_mark(cid: int, bid: int, body: SelfMark):
         """The learner marks their own answer to an exercise (by hand or written) after comparing it with the correction."""
         row = published_block(cid, bid)
-        if row["component"] != "exercise":
+        if row["component"] not in WRITTEN:
             raise HTTPException(422, "not an exercise Block")
         record(ctx, "self_mark", row["chapter_id"], body.mark == "got")
         if body.mark != "got":
@@ -367,7 +372,7 @@ def router(ctx: Ctx) -> APIRouter:
 
     def exercise_or_422(cid: int, bid: int):
         row = published_block(cid, bid)
-        if row["component"] != "exercise":
+        if row["component"] not in WRITTEN:
             raise HTTPException(422, "not an exercise Block")
         return row
 
@@ -427,6 +432,8 @@ def router(ctx: Ctx) -> APIRouter:
         correction is a one-point step of the Marking scheme. A low mark makes the exercise due again, as "missed" does."""
         row = exercise_or_422(cid, bid)
         d, w = json.loads(row["data"]), written(bid)
+        if row["component"] == "explain_back":  # the rubric's points are the scheme's steps
+            d = {"statement": d["prompt"], "correction": d["model_answer"], "steps": d["rubric"]}
         scheme = [{"step": s, "points": 1.0} for s in d.get("steps") or []] or [{"step": "Reaches the correction's result", "points": 1.0}]
         workdir = ctx.course_dir(cid) / "written" / str(bid)
         workdir.mkdir(parents=True, exist_ok=True)

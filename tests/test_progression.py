@@ -168,6 +168,18 @@ def test_the_ledger_tells_apart_two_sections_with_the_same_title():
     assert len(errors[7]) == 1 and '"pas optimal"' in errors[7][0]
 
 
+def test_a_practice_naming_a_later_concept_it_does_not_declare_is_flagged():
+    """Course 6, Chapter 2 Section 15: an exam problem on least squares, which a Section of Chapter 2 teaches later."""
+    concepts = {"algorithme de descente de gradient (X_{k+1} = X_k − ρ∇J(X_k))": (3, "Gradient à pas fixe"),
+                "moindres carrés (f(X) = ½‖AX − b‖²)": (20, "Application : régression linéaire par moindres carrés")}
+    block = {"id": 1424, "at": 15, "component": "exercise", "tests": ["algorithme de descente de gradient (X_{k+1} = X_k − ρ∇J(X_k))"],
+             "data": {"title": "Examen — problème de moindres carrés : itérations (18 min, 6 pts)", "statement": "Soit $A$..."}}
+    (error,) = ledger_errors([block], concepts)[1424]
+    assert error.startswith('asks about "moindres carrés') and "Application : régression" in error
+    assert ledger_errors([block | {"at": 20}], concepts) == {}
+    assert ledger_errors([block | {"component": "worked_example"}], concepts) == {}  # showing it is not asking it
+
+
 def test_a_paper_set_for_two_years_counts_for_either():
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row

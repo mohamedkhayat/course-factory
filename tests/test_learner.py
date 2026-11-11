@@ -60,7 +60,7 @@ def test_flagging_a_block(client, material, model):
 
 def test_quiz_feedback_mistakes_and_stats(client, material, model):
     cid, sections = published(client, material, model)
-    quiz = sections[0]["blocks"][1]
+    quiz = sections[0]["blocks"][2]
     url = f"/api/courses/{cid}/blocks/{quiz['id']}"
     r = client.post(f"{url}/answers", json={"question": 0, "chosen": [1]}).json()
     assert r == {"correct": False, "correct_options": [0], "explanation": "Par définition."}
@@ -132,7 +132,7 @@ def test_focus_session_counts_active_time_and_only_with_an_action(client, materi
     assert client.post(f"/api/focus/{s['id']}/tick", json={"active_seconds": 120}).json()["active_seconds"] == 120
     assert client.post(f"/api/focus/{s['id']}/tick", json={"active_seconds": 900}).json()["active_seconds"] == 300  # capped
     client.put(f"/api/courses/{cid}/place", json={"section_id": sections[0]["id"]})
-    client.post(f"/api/courses/{cid}/blocks/{sections[0]['blocks'][1]['id']}/answers", json={"question": 0, "chosen": [0]})
+    client.post(f"/api/courses/{cid}/blocks/{sections[0]['blocks'][2]['id']}/answers", json={"question": 0, "chosen": [0]})
     done = client.post(f"/api/focus/{s['id']}/end").json()
     assert done["counts"] and done["sections_read"] == 1 and done["quiz"] == {"correct": 1, "total": 1}
     assert client.post(f"/api/focus/{s['id']}/tick", json={"active_seconds": 1}).status_code == 409
@@ -268,3 +268,23 @@ def test_a_written_answer_is_typed_or_uploaded_kept_and_graded_against_the_steps
     assert hand["id"] not in [c["block_id"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]  # half marks: not a miss
     assert client.delete(f"{url}/files").json()["files"] == 0
     assert client.get(f"/api/courses/{cid}/blocks/{code['id']}/written").status_code == 422
+
+
+EXPLAIN = {"component": "explain_back", "origin": "model_added", "citations": [], "data": {
+    "concept": "pas fixe", "prompt": "Pourquoi un pas trop grand diverge-t-il ?", "rubric": ["Dépasse le minimum", "L'écart grandit"],
+    "model_answer": "Chaque itération saute au-delà du minimum."}}
+
+
+def test_an_explain_back_is_graded_on_its_rubric_or_self_marked_and_a_miss_comes_back(client, material, model):
+    cid = generate(client, material, model, blocks=[EXPLAIN])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    block = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"][0]
+    url = f"/api/courses/{cid}/blocks/{block['id']}/written"
+    client.put(url, json={"text": "Le pas saute le minimum."})
+    grade = client.post(f"{url}/grade").json()["grade"]
+    assert [(s["step"], s["awarded"]) for s in grade["steps"]] == [("Dépasse le minimum", 1), ("L'écart grandit", 0)]
+    assert "Chaque itération saute" in [p for s, p in model.prompts if s == "grade_answer"][-1]  # the model answer
+    assert client.post(f"/api/courses/{cid}/blocks/{block['id']}/self-mark", json={"mark": "missed"}).status_code == 200
+    due = [c for c in client.get(f"/api/courses/{cid}/cards/due").json() if c["block_id"] == block["id"]]
+    assert due and "Pourquoi" in due[0]["front"]

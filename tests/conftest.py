@@ -43,9 +43,11 @@ class FakeModel:
             "propose_roles": self._roles,
             "propose_outline": lambda prompt, files: {"chapters": [
                 {"title": "Convexité", "sections": [
-                    {"title": "Ensembles convexes", "pages": [{"source": "cours.pdf", "page": 1}, {"source": "nope.pdf", "page": 1}]}]},
+                    {"title": "Ensembles convexes", "pages": [{"source": "cours.pdf", "page": 1}, {"source": "nope.pdf", "page": 1}],
+                     "teaches": ["ensemble convexe"]}]},
                 {"title": "Méthodes de descente", "sections": [
-                    {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}]},
+                    {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}, {"source": "cours.pdf", "page": 99}],
+                     "teaches": ["gradient"]},
                     {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]},
             "write_section": self._section,
             "plan_chapter": self._plan,
@@ -92,7 +94,9 @@ class FakeModel:
 
     def _section(self, prompt, files):
         page = self.pages_of(prompt)[0]
+        teaches = json.loads(prompt.split("This Section teaches: ", 1)[1].split("\n", 1)[0])
         return {"blocks": [
+            {"component": "prose", "origin": "model_added", "data": {"markdown": f"Cette Section présente {', '.join(teaches)}, par exemple sur $x^2$."}},
             {"component": "theorem_box", "origin": "from_source", "citations": [{"source": page["source"], "page": page["page"]}],
              "data": {"kind": "definition", "title": self.section_of(prompt), "statement": "Un ensemble est convexe si..."}},
             {"component": "quiz", "origin": "model_added", "data": {"questions": [
@@ -103,7 +107,9 @@ class FakeModel:
         """One remember objective per Section, practised by a quiz, tagged with every Question Type."""
         types = json.loads(prompt.split("(exact names): ", 1)[1].split("\n", 1)[0] or "[]")
         sections = json.loads(prompt.split("SECTIONS:", 1)[1].split("\n", 1)[0])
-        return {"sections": [{"title": s["title"], "objectives": [{"id": "o1", "level": "remember", "text": "State it.",
+        return {"overview": "Ce chapitre part d'une idée simple et complète, puis chaque Section y ajoute une pièce : "
+                            + ", puis ".join(s["title"] for s in sections) + ".",
+                "sections": [{"title": s["title"], "objectives": [{"id": "o1", "level": "remember", "text": "State it.",
                                                                    "concepts": [], "exam_types": types}],
                               "misconceptions": [{"id": "m1", "text": "Confuses it with its converse."}],
                               "practice": [{"objective": "o1", "kind": "retrieval", "component": "quiz"}]} for s in sections]}

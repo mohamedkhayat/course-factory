@@ -5,7 +5,7 @@ import itertools
 import json
 import re
 
-PRACTICE = {"quiz", "fill_blanks", "code_exercise", "exercise"}
+PRACTICE = {"quiz", "fill_blanks", "code_exercise", "exercise", "explain_back"}
 WORD = re.compile(r"\w[\w\-]*")
 CODE_SPAN = re.compile(r"```[^\n]*\n(.*?)```|`([^`\n]+)`", re.S)
 CALL = re.compile(r"\.?([A-Za-z_]\w*)\s*\(|/(_\w+)")  # function and method calls, `/_update`-style endpoints
@@ -19,6 +19,16 @@ def import from int str float len list dict set range open sum min max map filte
 
 def words(text: str) -> set[str]:
     return {w.lower() for w in WORD.findall(text)}
+
+
+def stems(text: str) -> set[str]:
+    """Word stems (5 letters: "minimiseur" and "minimum" meet), so a Concept's name matches the way the Blocks phrase it."""
+    return {w[:5] for w in words(text.replace("-", " ")) if len(w) >= 3 and w not in STOP}
+
+
+def name_stems(concept: str) -> set[str]:
+    """The stems of a Concept's name, without its notation in parentheses."""
+    return stems(re.split(r"\s*\(", concept)[0])
 
 
 def strings(data) -> list[str]:
@@ -229,7 +239,15 @@ def ledger_errors(blocks: list[dict], concepts: dict[str, tuple[int, str]]) -> d
     """The Concept ledger: each Block's declared `tests` must be Concepts (concept -> (reading-order index, title) of the
     Section that teaches it) taught by its own Section (the Block's "at") or an earlier one."""
     errors: dict[int, list[str]] = {}
+    names = {c: name_stems(c) for c in concepts}
     for b in blocks:
+        if b.get("component") in PRACTICE:  # undeclared: its text names a later Concept by words no Concept taught by now uses
+            known = set().union(*(names[c] for c, (i, _) in concepts.items() if i <= b["at"]))
+            text = {w for x in strings(b["data"]) for w in stems(x)}
+            if later := [f"asks about \"{c}\", which is taught later, in Section \"{t}\": move this practice after it or leave it out"
+                         for c, (i, t) in concepts.items() if i > b["at"] and c not in b.get("tests", [])
+                         and len(new := names[c] - known) >= 2 and new <= text]:
+                errors[b["id"]] = later
         for c in b.get("tests", []):
             if c not in concepts:
                 errors.setdefault(b["id"], []).append(f"tests \"{c}\", which is not a Concept of this Course; use one of: "
