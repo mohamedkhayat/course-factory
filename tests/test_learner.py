@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 
 from course_factory import learner
+from conftest import make_pdf
 from test_chapters import chapters, generate
 
 
@@ -242,7 +243,7 @@ def test_export_is_one_html_file_with_published_content_and_answers(client, mate
     assert client.get(f"/api/courses/{cid}/export").status_code == 503
 
 
-def test_a_written_answer_is_typed_or_uploaded_kept_and_graded_against_the_steps(client, material, model):
+def test_a_written_answer_is_typed_or_uploaded_kept_and_graded_against_the_steps(client, material, model, tmp_path):
     from test_grading import png
     cid = generate(client, material, model, blocks=[HAND, CODE_EXERCISE])
     for c in chapters(client, cid).values():
@@ -254,6 +255,9 @@ def test_a_written_answer_is_typed_or_uploaded_kept_and_graded_against_the_steps
     client.put(url, json={"text": "On pose $\\phi(\\rho)$."})
     assert client.post(f"{url}/files", files={"file": ("ink.png", png(), "image/png")}).json()["files"] == 1
     assert client.get(f"{url}/files/0").status_code == 200
+    huge = tmp_path / "huge.pdf"
+    make_pdf(huge, 41)  # every page would become a PNG on disk
+    assert client.post(f"{url}/files", files={"file": ("huge.pdf", huge.read_bytes(), "application/pdf")}).status_code == 413
     assert client.get(url).json()["text"] == "On pose $\\phi(\\rho)$."  # kept for next time
     grade = client.post(f"{url}/grade").json()["grade"]
     # the steps are the Marking scheme, one point each; the fake gives the first (clamped to 1) and misses the second

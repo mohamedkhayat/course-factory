@@ -17,6 +17,7 @@ from .pi_step import run_pi_step
 
 IMAGE_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
 MAX_UPLOAD = 40 * 1024 * 1024
+MAX_UPLOAD_PAGES = 40  # each page becomes a PNG at 2x: a PDF of thousands of blank pages would fill the disk
 
 
 class Transcription(BaseModel):
@@ -49,6 +50,8 @@ def save_upload(folder: Path, upload: UploadFile) -> list[str]:
             pdf = pdfium.PdfDocument(data)
         except pdfium.PdfiumError:
             raise HTTPException(422, "not a readable PDF")
+        if len(pdf) > MAX_UPLOAD_PAGES:
+            raise HTTPException(413, f"a PDF of at most {MAX_UPLOAD_PAGES} pages")
         paths = []
         for n in range(len(pdf)):
             p = folder / f"{stem}-{n + 1}.png"
