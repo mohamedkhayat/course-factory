@@ -19,7 +19,6 @@ from .pi_step import StepFailed, run_pi_step
 
 LEVELS = ("high", "medium", "low")
 ITEM_KINDS = {"theorem_box", "key_formula", "algorithm"}  # the Blocks a fallback on Chapter Exam Weight rates
-CHEAT_SHEET_CHARS = 9000  # about two A4 pages in the print layout
 SECTION_MIN, PASS_MIN, CARDS_MIN, MISTAKES_MIN, VARIANTS_MIN, MIXED_MIN = 15, 20, 15, 15, 15, 25
 EVE_SHEET_MIN, EVE_MISTAKES_MIN, EVE_RETRIEVAL_MIN = 30, 20, 30
 REVIEW_KINDS = ("card_review", "quiz_answer", "self_mark", "code_answer", "mixed")
@@ -182,7 +181,7 @@ def annotate(ctx: Ctx, cid: int, chapters: list[dict]) -> list[dict]:
 
 # Cheat Sheet
 
-KINDS = ["definition", "theorem", "proposition", "lemma", "corollary", "property", "formula", "method", "commands", "trap", "exam"]
+KINDS = ["definition", "theorem", "proposition", "lemma", "corollary", "property", "formula", "method", "question", "commands", "tip", "trap", "exam"]
 REPEAT_TEXT = 0.6  # share of distinct words two items of a kind share before the later one is a repeat
 
 
@@ -197,8 +196,8 @@ def cheat_item(b: dict) -> tuple[str, str, str, list[dict] | None] | None:
     if c == "algorithm":
         steps = "\n".join(f"{i}. {s}" for i, s in enumerate(d["steps"], 1))
         return "method", d["name"], (f"*When:* {d['when']}\n\n" if d.get("when") else "") + steps, None
-    if c == "callout" and d["tone"] in ("warning", "exam"):
-        return ("trap" if d["tone"] == "warning" else "exam"), "", d["text"], None
+    if c == "callout" and d["tone"] in ("warning", "exam", "tip"):
+        return {"warning": "trap", "exam": "exam", "tip": "tip"}[d["tone"]], "", d["text"], None
     if c == "terminal":
         rows = [{"command": e["command"].strip(), "note": (e.get("note") or "").strip()} for e in d["entries"] if e["command"].strip()]
         return "commands", d.get("title", ""), rows_text(rows), rows
@@ -209,11 +208,10 @@ def rows_text(rows: list[dict]) -> str:
     return "\n".join(r["command"] + "\n" + r["note"] for r in rows)
 
 
-def compile_sheet(candidates: list[dict], budget: int = 0) -> dict:
+def compile_sheet(candidates: list[dict]) -> dict:
     """The sheet from its candidate items: repeats merged (a command already listed, or a text sharing most of its words
-    with a likelier item of its kind), then the likeliest kept within the budget, then shown by Chapter and kind.
-    Each candidate has `_rank` (likelihood, then course order) and `_order` (course order)."""
-    budget = budget or CHEAT_SHEET_CHARS
+    with a likelier item of its kind, which wins), then shown by Chapter and kind. Each candidate has `_rank`
+    (likelihood, then course order) and `_order` (course order)."""
     words = lambda i: set(re.findall(r"\w{4,}", (i["title"] + " " + i["body"]).lower()))
     seen: set[str] = set()
     distinct: list[dict] = []
@@ -228,15 +226,8 @@ def compile_sheet(candidates: list[dict], budget: int = 0) -> dict:
                  for k in distinct if words(i) and words(k)):
             continue
         distinct.append(i)
-    kept, used = [], 0
-    for i in distinct:
-        size = len(i["title"]) + len(i["body"])
-        if used + size <= budget:
-            kept.append(i)
-            used += size
-    kept.sort(key=lambda i: (i["_order"][0], KINDS.index(i["kind"]) if i["kind"] in KINDS else len(KINDS), i["_order"]))
-    return {"items": [{k: v for k, v in i.items() if not k.startswith("_")} for i in kept], "left_out": len(distinct) - len(kept),
-            "budget_chars": budget}
+    distinct.sort(key=lambda i: (i["_order"][0], KINDS.index(i["kind"]) if i["kind"] in KINDS else len(KINDS), i["_order"]))
+    return {"items": [{k: v for k, v in i.items() if not k.startswith("_")} for i in distinct]}
 
 
 def cheat_sheet(ctx: Ctx, cid: int, chapter_id: int | None = None) -> dict:
@@ -254,12 +245,16 @@ def cheat_sheet(ctx: Ctx, cid: int, chapter_id: int | None = None) -> dict:
             order = (row["cpos"], row["spos"], row["position"])
             items.append({"block_id": row["id"], "kind": item[0], "title": item[1], "body": item[2], "rows": item[3], "likelihood": level,
                           "chapter_id": row["chid"], "chapter": row["chapter"], "section_id": row["sid"], "section": row["section"],
-                          "_level": LEVELS.index(level) if level else 3, "_order": order})
-    turn: dict[tuple, int] = {}  # each level round-robins over the Chapters, so the first Chapter can't fill the sheet alone
-    for i in sorted(items, key=lambda i: (i["_level"], i["_order"])):
-        key = (i["_level"], i["chapter_id"])
-        turn[key] = turn.get(key, -1) + 1
-        i["_rank"] = (i["_level"], turn[key], i["_order"])
+                          "_rank": (LEVELS.index(level) if level else 3, *order), "_order": order})
+    # the past papers' Question Types: how to recognise each and the steps that earn its marks; one asked across Chapters goes first
+    pos = dict(db.execute("SELECT id, position FROM chapters WHERE course_id=?", (cid,)).fetchall())
+    for n, t in enumerate(question_types(db, cid)):
+        if chapter_id is None or t["chapter_id"] == chapter_id:
+            body = (f"*Recognise it:* {t['trigger']}\n\n" if t["trigger"] else "") + t["template"]
+            order = (pos.get(t["chapter_id"], -1), -1, n)
+            items.append({"block_id": -t["id"], "kind": "question", "title": t["name"], "body": body, "rows": None,
+                          "likelihood": t["likelihood"], "chapter_id": t["chapter_id"], "chapter": t["chapter"] or "Across the Chapters",
+                          "section_id": None, "section": None, "_rank": (LEVELS.index(t["likelihood"]), *order), "_order": order})
     return compile_sheet(items)
 
 

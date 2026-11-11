@@ -50,8 +50,8 @@ export type Exported = {
 };
 export type Likelihood = "high" | "medium" | "low";
 export type CheatItem = { block_id: number; kind: string; title: string; body: string; likelihood: Likelihood | null;
-  chapter_id: number; chapter: string; section_id: number; section: string; rows: { command: string; note: string }[] | null };
-export type CheatSheet = { items: CheatItem[]; left_out: number; budget_chars: number };
+  chapter_id: number | null; chapter: string; section_id: number | null; section: string | null; rows: { command: string; note: string }[] | null };
+export type CheatSheet = { items: CheatItem[] };
 export type ExportedExam = { id: number; kind: string; title: string; duration_min: number;
   questions: { id: number; statement: string; points: number; model_answer: string; scheme: { step: string; points: number }[] | null }[] };
 export const exported: Exported | undefined = (() => {

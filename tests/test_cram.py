@@ -82,15 +82,17 @@ def test_exam_likelihood_follows_the_points_and_exercises_get_the_exam_time(clie
     assert any("Def Méthodes de descente" in f for f in fronts) and not any("Def Convexité" in f for f in fronts)
 
 
-def test_cheat_sheet_lists_checked_items_most_likely_first_within_budget(client, with_exam, model):
+def test_cheat_sheet_lists_checked_items_and_the_common_questions(client, with_exam, model):
     cid = published(client, with_exam, model)
     sheet = client.get(f"/api/courses/{cid}/cheatsheet").json()
     items = sheet["items"]
     # grouped by Chapter, then kind; the fake's two Chapters repeat each other's definition and formula, so each is kept once
-    assert [(i["chapter"], i["kind"]) for i in items] == [("Méthodes de descente", "definition"), ("Méthodes de descente", "formula")]
-    assert items[0]["title"] == "Def Méthodes de descente" and items[0]["likelihood"] == "high"
-    assert all(i["section_id"] and i["block_id"] for i in items)
-    assert sum(len(i["title"]) + len(i["body"]) for i in items) <= sheet["budget_chars"]
+    assert [(i["chapter"], i["kind"]) for i in items] == [("Convexité", "formula"), ("Méthodes de descente", "definition"),
+                                                         ("Méthodes de descente", "question")]
+    # the past papers' Question Type: how to recognise it and how to answer it, after its Chapter's definitions
+    assert items[2]["title"] == "Type Méthodes de descente" and items[2]["section_id"] is None and items[2]["body"]
+    assert items[1]["title"] == "Def Méthodes de descente" and items[1]["likelihood"] == "high"
+    assert all(i["section_id"] and i["block_id"] for i in items[:2])
     one = client.get(f"/api/courses/{cid}/cheatsheet", params={"chapter": items[1]["chapter_id"]}).json()["items"]
     assert {i["chapter"] for i in one} == {"Méthodes de descente"}
 
@@ -174,17 +176,14 @@ def candidate(block, rank, order, chapter=1):
     return {"kind": kind, "title": title, "body": body, "rows": rows, "chapter_id": chapter, "_rank": (rank, order), "_order": (chapter, order)}
 
 
-def test_commands_become_rows_and_repeats_merge_within_the_budget():
+def test_commands_become_rows_and_repeats_merge():
     put = "curl -X PUT 'localhost:9200/ventes?pretty' -H 'Content-Type: application/json' -d '{\"settings\":{\"number_of_shards\":3}}'"
     first = candidate(terminal((put, "Creates the index with **3 primary shards**."), ("GET _cat/indices?v", "")), 0, 2)
     again = candidate(terminal((put, "same"), ("GET _cat/indices?v", ""), title="REST API"), 1, 1)  # all its commands are in `first`
     more = candidate(terminal(("GET _cat/indices?v", ""), ("DELETE /ventes", "Drops it.")), 2, 3)
     defn = {"component": "theorem_box", "data": {"kind": "definition", "title": "Shard", "statement": "A shard is one Lucene index holding part of the documents."}}
     same = defn | {"data": defn["data"] | {"statement": "A shard is one Lucene index, holding a part of the documents."}}
-    sheet = compile_sheet([first, again, more, candidate(defn, 0, 0), candidate(same, 1, 4)], budget=10_000)
+    sheet = compile_sheet([first, again, more, candidate(defn, 0, 0), candidate(same, 1, 4)])
     assert [(i["kind"], i["title"]) for i in sheet["items"]] == [("definition", "Shard"), ("commands", "CRUD"), ("commands", "CRUD")]
     assert sheet["items"][1]["rows"][0] == {"command": put, "note": "Creates the index with **3 primary shards**."}  # Markdown stays out of the code
     assert sheet["items"][2]["rows"] == [{"command": "DELETE /ventes", "note": "Drops it."}]  # its repeated command merged away
-    assert sheet["left_out"] == 0
-    small = compile_sheet([candidate(defn, 0, 0), first], budget=80)
-    assert [i["kind"] for i in small["items"]] == ["definition"] and small["left_out"] == 1

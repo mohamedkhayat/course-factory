@@ -169,7 +169,7 @@ export function CramPage() {
   );
 }
 
-/** The Cheat Sheet: compiled from the checked Blocks, most likely in the exam first. Prints on about two pages;
+/** The Cheat Sheet: what to know for the exam, from the checked Blocks and the past papers' Question Types;
  * "Rebuild it" hides it and asks you to write it from memory first. */
 export function CheatSheetPage() {
   const cid = useCid();
@@ -178,7 +178,8 @@ export function CheatSheetPage() {
 }
 
 const GROUPS: [string, string[]][] = [["Definitions", ["definition", "theorem", "proposition", "lemma", "corollary", "property"]],
-  ["Formulas", ["formula"]], ["Methods", ["method"]], ["Commands", ["commands"]], ["Traps", ["trap"]], ["What the exam asks", ["exam"]]];
+  ["Formulas", ["formula"]], ["Methods", ["method"]], ["Common questions and how to answer them", ["question"]], ["Commands", ["commands"]],
+  ["Tips", ["tip"]], ["Traps", ["trap"]], ["What the exam asks", ["exam"]]];
 
 /** Likely-in-the-exam as a small mark: filled for high, ringed for medium, nothing for low. */
 function Mark({ level }: { level: CheatItem["likelihood"] }) {
@@ -189,7 +190,7 @@ function Mark({ level }: { level: CheatItem["likelihood"] }) {
 }
 
 /** Router-free, so the exported file can show it too (links only render with a server).
- * By Chapter, then by kind; commands as a table of command and what it does; prints on about two A4 pages. */
+ * By Chapter, then by kind; commands as a table of command and what it does. */
 export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
   const [rebuild, setRebuild] = useState(false);
   const [recall, setRecall] = useState<Record<number, string>>({});
@@ -228,11 +229,10 @@ export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
         {!exported && !done.isSuccess && <Button variant="ghost" onClick={() => done.mutate()}>Mark as read today</Button>}
         <span className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
           <span><Mark level="high" />likely</span><span><Mark level="medium" />sometimes</span>
-          {sheet.left_out > 0 && <span>· {sheet.left_out} less likely item{sheet.left_out === 1 ? "" : "s"} left out to fit two pages</span>}
         </span>
       </div>
       {!sheet.items.length && <p className="text-muted-foreground">Nothing yet: the sheet fills as Chapters are published.</p>}
-      <div className="cheat-sheet columns-1 gap-8 text-[0.84rem] leading-snug md:columns-2 print:columns-2 print:gap-5 print:text-[7.6pt]">
+      <div className="cheat-sheet columns-1 gap-8 text-[0.84rem] leading-snug md:columns-2 print:columns-2 print:gap-5 print:text-[8.5pt]">
         {chapters.map(([chid, title]) => (
           <section key={chid} className="mb-5 print:mb-2">
             <h2 className="mb-1.5 break-after-avoid border-b-2 border-foreground pb-0.5 font-display text-base font-semibold print:text-[9pt]">{title}</h2>
@@ -244,10 +244,10 @@ export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
                   <h3 className="break-after-avoid text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground print:text-[6.5pt]">{label}</h3>
                   {items.map((i) => (
                     <article key={i.block_id} className={cn("break-inside-avoid py-1 print:py-0.5",
-                      i.kind === "trap" && "border-l-2 border-warn pl-2", i.kind === "exam" && "border-l-2 border-primary pl-2")}>
+                      i.kind === "trap" && "border-l-2 border-warn pl-2", (i.kind === "exam" || i.kind === "question") && "border-l-2 border-primary pl-2")}>
                       {i.title ? (
                         <p className="font-semibold"><Mark level={i.likelihood} />
-                          {exported ? <MdLine>{i.title}</MdLine> : (
+                          {exported || i.section_id == null ? <MdLine>{i.title}</MdLine> : (
                             <Link to="/c/$cid/read" params={{ cid: String(cid) }} search={{ section: i.section_id } as never} title={`${i.chapter} › ${i.section}`}
                                   className="hover:text-primary"><MdLine>{i.title}</MdLine></Link>
                           )}</p>
