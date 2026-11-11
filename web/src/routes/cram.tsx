@@ -302,7 +302,7 @@ export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
     </>
   );
   return (
-    <Page title="Cheat Sheet" wide>
+    <Page title="Cheat Sheet" wide="full">
       <div className="mb-6 flex flex-wrap items-center gap-2 print:hidden">
         <Button variant={rebuild ? "outline" : "default"} onClick={() => { setRebuild(!rebuild); setShown(new Set()); }}>
           <RotateCcw className="size-4" />{rebuild ? "Show the sheet" : "Rebuild it from memory"}</Button>
@@ -313,7 +313,7 @@ export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
         </span>
       </div>
       {!sheet.items.length && <p className="text-muted-foreground">Nothing yet: the sheet fills as Chapters are published.</p>}
-      <div className="cheat-sheet columns-1 gap-8 text-[0.84rem] leading-snug md:columns-2 print:columns-2 print:gap-5 print:text-[8.5pt]">
+      <div className="cheat-sheet columns-1 gap-8 text-[0.84rem] leading-snug md:columns-2 2xl:columns-3 print:columns-2 print:gap-5 print:text-[8.5pt]">
         {chapters.map(([chid, title]) => (
           <section key={chid} className="mb-5 print:mb-2">
             <h2 className="mb-1.5 break-after-avoid border-b-2 border-foreground pb-0.5 font-display text-base font-semibold print:text-[9pt]">{title}</h2>

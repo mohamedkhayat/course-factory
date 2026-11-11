@@ -75,7 +75,7 @@ function Viewer() {
           )}
         </div>
       </nav>
-      <article className="mx-auto w-full max-w-[44rem] px-5 py-8 sm:px-8">
+      <article className={"mx-auto w-full px-5 py-8 sm:px-8 " + ("sheet" in place ? "max-w-[112rem]" : "max-w-[44rem]")}>
         {"sheet" in place ? <SheetView sheet={exported!.cheatsheet} cid={0} /> : "exam" in place ? (exams[place.exam] ? <ExamView exam={exams[place.exam]} /> : <p className="text-muted-foreground">This Course is empty.</p>) : current && (
           <>
             <p className="text-sm text-muted-foreground">{current.chapter.title}</p>

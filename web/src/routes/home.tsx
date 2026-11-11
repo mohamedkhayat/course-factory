@@ -11,9 +11,9 @@ import { ApiError, duration, get, send, upload, type CourseSummary, type Gpu } f
 import { cn } from "@/lib/utils";
 import { Heatmap } from "./practice";
 
-export function Page({ title, children, wide }: { title?: string; children: React.ReactNode; wide?: boolean }) {
+export function Page({ title, children, wide }: { title?: string; children: React.ReactNode; wide?: boolean | "full" }) {
   return (
-    <div className={wide ? "mx-auto max-w-6xl px-4 py-8 sm:px-6" : "mx-auto max-w-3xl px-4 py-8 sm:px-6"}>
+    <div className={cn("mx-auto px-4 py-8 sm:px-6", wide === "full" ? "max-w-[112rem]" : wide ? "max-w-6xl" : "max-w-3xl")}>
       {title && <h1 className="mb-6 font-display text-2xl font-semibold tracking-tight">{title}</h1>}
       {children}
     </div>
