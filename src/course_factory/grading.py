@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 import uuid
+from pathlib import Path
 
 import pypdfium2 as pdfium
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -36,12 +37,11 @@ class QuestionGrade(BaseModel):
     steps: list[StepGrade] = Field(min_length=1)
 
 
-def save_upload(ctx: Ctx, cid: int, copy_id: int, upload: UploadFile, kind: str) -> list[str]:
-    """Stores an upload as page images (a PDF becomes one PNG per page). Returns the image paths."""
+def save_upload(folder: Path, upload: UploadFile) -> list[str]:
+    """Stores an upload in the folder as page images (a PDF becomes one PNG per page). Returns the image paths."""
     data = upload.file.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "file too large")
-    folder = ctx.course_dir(cid) / "copies" / str(copy_id)
     folder.mkdir(parents=True, exist_ok=True)
     stem = uuid.uuid4().hex[:10]
     if upload.content_type == "application/pdf":
@@ -129,7 +129,7 @@ def router(ctx: Ctx) -> APIRouter:
         if question_id is not None and not db.execute("SELECT 1 FROM questions WHERE id=? AND exam_id=?", (question_id, row["exam_id"])).fetchone():
             raise HTTPException(422, "not a Question of this Exam")
         files = json.loads(row["files"]) + [{"path": p, "kind": kind, "question_id": question_id}
-                                            for p in save_upload(ctx, cid, copy_id, file, kind)]
+                                            for p in save_upload(ctx.course_dir(cid) / "copies" / str(copy_id), file)]
         db.execute("UPDATE copies SET files=? WHERE id=?", (json.dumps(files), copy_id))
         return {"files": [{"index": i, "kind": f["kind"], "question_id": f["question_id"]} for i, f in enumerate(files)]}
 

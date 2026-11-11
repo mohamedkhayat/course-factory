@@ -3,13 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
 import { exported, get, pageUrl, send, type Block, type Citation } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fadedSteps, lastStage, LIKELIHOOD } from "@/lib/cram";
 import { Md, MdLine, Tex } from "./md";
 import { Explorer, Plot } from "./plot";
-import { CodeExercise, FillBlanks, HandCorrection, Terminal } from "./practice";
+import { CodeExercise, FillBlanks, HandCorrection, Terminal, WrittenAnswer } from "./practice";
 import { OptimizerAnimation, SurfacePlot } from "./surface";
 
 type P<T = any> = { data: T; cid: number; block: Block };
@@ -102,11 +101,9 @@ function Exercise({ data, cid, block }: P) {
         {(block.cram?.minutes || data.minutes) ? <ExerciseTimer minutes={block.cram?.minutes || data.minutes} /> : null}
         {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}
       </div>
-      {data.mode === "hand" ? <HandCorrection steps={data.steps ?? []} correction={data.correction} cid={cid} block={block} />
-        : <>
-            <Textarea className="mt-3 font-mono text-sm" rows={6} aria-label="Your answer" placeholder="Write your answer here…" />
-            <HandCorrection steps={[]} correction={data.correction} cid={cid} block={block} intro="Write your answer, then compare it with the correction." />
-          </>}
+      <WrittenAnswer cid={cid} block={block} />
+      <HandCorrection steps={data.mode === "hand" ? data.steps ?? [] : []} correction={data.correction} cid={cid} block={block}
+                      intro="Answer above, then grade it or compare it with the correction yourself." />
     </div>
   );
 }

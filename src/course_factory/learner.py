@@ -3,15 +3,17 @@
 import datetime as dt
 import json
 import re
+from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fsrs import Card, Rating, Scheduler
 from pydantic import BaseModel, Field
 
 from .chapters import language_rule, block_json
 from .checks import GAP
+from .grading import QuestionGrade, Transcription, save_upload
 from .pi_step import StepFailed, run_pi_step
 from .context import Ctx
 
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS actions (
   correct INTEGER, at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS written_answers (block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+  text TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', grade TEXT, updated_at TEXT NOT NULL);
 """
 
 
@@ -76,6 +80,10 @@ class CodeGrade(BaseModel):
     correct: bool
     feedback: str
     hint: str = ""
+
+
+class WrittenText(BaseModel):
+    text: str = Field(max_length=50000)
 
 
 class SelfMark(BaseModel):
@@ -345,11 +353,106 @@ def router(ctx: Ctx) -> APIRouter:
         if row["component"] != "exercise":
             raise HTTPException(422, "not an exercise Block")
         record(ctx, "self_mark", row["chapter_id"], body.mark == "got")
-        if body.mark != "got":  # it comes back in the next Review
-            for part, front, back in card_faces(block_json(row)):
-                add_card(ctx, cid, front, back, block_id=bid, part=part)
-            db.execute("UPDATE cards SET due=? WHERE block_id=?", (now().isoformat(), bid))
+        if body.mark != "got":
+            due_again(cid, row)
         return {"ok": True}
+
+    def due_again(cid: int, row) -> None:
+        """A missed exercise comes back in the next Review."""
+        for part, front, back in card_faces(block_json(row)):
+            add_card(ctx, cid, front, back, block_id=row["id"], part=part)
+        db.execute("UPDATE cards SET due=? WHERE block_id=?", (now().isoformat(), row["id"]))
+
+    # Written answers to exercises: typed, or uploaded as photos / a tablet PDF, kept per Block, graded on demand
+
+    def exercise_or_422(cid: int, bid: int):
+        row = published_block(cid, bid)
+        if row["component"] != "exercise":
+            raise HTTPException(422, "not an exercise Block")
+        return row
+
+    def written(bid: int) -> dict:
+        w = db.execute("SELECT * FROM written_answers WHERE block_id=?", (bid,)).fetchone()
+        return {"text": w["text"], "files": json.loads(w["files"]), "grade": json.loads(w["grade"]) if w["grade"] else None} if w else \
+            {"text": "", "files": [], "grade": None}
+
+    def keep(bid: int, **fields) -> None:
+        db.execute("INSERT INTO written_answers (block_id, updated_at) VALUES (?,?) ON CONFLICT(block_id) DO NOTHING", (bid, now().isoformat()))
+        for k, v in fields.items():  # k is one of text, files, grade: this file's names, never the request's
+            db.execute(f"UPDATE written_answers SET {k}=?, updated_at=? WHERE block_id=?", (v, now().isoformat(), bid))
+
+    def written_json(cid: int, bid: int) -> dict:
+        w = written(bid)
+        return {"text": w["text"], "files": len(w["files"]), "grade": w["grade"],
+                "subject": db.execute("SELECT subject FROM courses WHERE id=?", (cid,)).fetchone()["subject"]}
+
+    @r.get("/api/courses/{cid}/blocks/{bid}/written")
+    def get_written(cid: int, bid: int):
+        exercise_or_422(cid, bid)
+        return written_json(cid, bid)
+
+    @r.put("/api/courses/{cid}/blocks/{bid}/written")
+    def save_written(cid: int, bid: int, body: WrittenText):
+        exercise_or_422(cid, bid)
+        keep(bid, text=body.text)
+        return written_json(cid, bid)
+
+    @r.post("/api/courses/{cid}/blocks/{bid}/written/files", status_code=201)
+    def upload_written(cid: int, bid: int, file: UploadFile = File(...)):
+        """A photo of paper, tablet ink exported as an image, or a PDF (one image per page)."""
+        exercise_or_422(cid, bid)
+        files = written(bid)["files"] + save_upload(ctx.course_dir(cid) / "written" / str(bid), file)
+        keep(bid, files=json.dumps(files))
+        return written_json(cid, bid)
+
+    @r.get("/api/courses/{cid}/blocks/{bid}/written/files/{index}")
+    def written_file(cid: int, bid: int, index: int):
+        exercise_or_422(cid, bid)
+        files = written(bid)["files"]
+        if not 0 <= index < len(files):
+            raise HTTPException(404, "no such file")
+        return FileResponse(files[index])
+
+    @r.delete("/api/courses/{cid}/blocks/{bid}/written/files")
+    def clear_written_files(cid: int, bid: int):
+        exercise_or_422(cid, bid)
+        for f in written(bid)["files"]:
+            Path(f).unlink(missing_ok=True)
+        keep(bid, files="[]")
+        return written_json(cid, bid)
+
+    @r.post("/api/courses/{cid}/blocks/{bid}/written/grade")
+    def grade_written(cid: int, bid: int):
+        """Grades the saved answer as an exam Copy is graded: uploads transcribed, then each step of the exercise's
+        correction is a one-point step of the Marking scheme. A low mark makes the exercise due again, as "missed" does."""
+        row = exercise_or_422(cid, bid)
+        d, w = json.loads(row["data"]), written(bid)
+        scheme = [{"step": s, "points": 1.0} for s in d.get("steps") or []] or [{"step": "Reaches the correction's result", "points": 1.0}]
+        workdir = ctx.course_dir(cid) / "written" / str(bid)
+        workdir.mkdir(parents=True, exist_ok=True)
+        try:
+            transcribed = run_pi_step(db, ctx.backend, "transcribe_copy", {"question": 1, "statement": d["statement"]}, Transcription,
+                                      workdir, tuple(Path(f) for f in w["files"]), course_id=cid, live=True).text if w["files"] else ""
+            answer = "\n\n".join(a for a in (w["text"], transcribed) if a.strip())
+            if not answer:
+                raise HTTPException(422, "type or upload an answer first")
+            graded = run_pi_step(db, ctx.backend, "grade_answer", {"statement": d["statement"], "model_answer": d["correction"],
+                                 "scheme": scheme, "answer": answer}, QuestionGrade, workdir, course_id=cid, live=True)
+        except StepFailed as e:
+            raise HTTPException(502, f"the model could not grade it (busy or unavailable): {str(e)[:300]}")
+        by_step = {g.step: g for g in graded.steps}
+        steps = []
+        for i, s in enumerate(scheme):
+            g = by_step.get(s["step"]) or (graded.steps[i] if i < len(graded.steps) else None)
+            steps.append({"step": s["step"], "points": s["points"], "awarded": min(g.awarded, s["points"]) if g else 0.0,
+                          "comment": g.comment if g else "not addressed"})
+        grade = {"graded_at": now().isoformat(), "total": sum(s["awarded"] for s in steps), "max": sum(s["points"] for s in steps),
+                 "transcription": transcribed, "steps": steps}
+        keep(bid, grade=json.dumps(grade, ensure_ascii=False))
+        record(ctx, "self_mark", row["chapter_id"], grade["total"] >= grade["max"])
+        if grade["total"] < grade["max"] / 2:
+            due_again(cid, row)
+        return written_json(cid, bid)
 
     @r.get("/api/courses/{cid}/mistakes")
     def mistakes(cid: int):

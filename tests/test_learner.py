@@ -240,3 +240,27 @@ def test_export_is_one_html_file_with_published_content_and_answers(client, mate
     assert payload["cheatsheet"]["items"][0]["kind"] == "definition"  # the Cheat Sheet travels with it
     monkeypatch.setattr(appm, "EXPORT_VIEWER", tmp_path / "missing.html")
     assert client.get(f"/api/courses/{cid}/export").status_code == 503
+
+
+def test_a_written_answer_is_typed_or_uploaded_kept_and_graded_against_the_steps(client, material, model):
+    from test_grading import png
+    cid = generate(client, material, model, blocks=[HAND, CODE_EXERCISE])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    hand, code = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"]
+    url = f"/api/courses/{cid}/blocks/{hand['id']}/written"
+    assert client.get(url).json() == {"text": "", "files": 0, "grade": None, "subject": "mixed"}
+    assert client.post(f"{url}/grade").status_code == 422  # nothing to grade yet
+    client.put(url, json={"text": "On pose $\\phi(\\rho)$."})
+    assert client.post(f"{url}/files", files={"file": ("ink.png", png(), "image/png")}).json()["files"] == 1
+    assert client.get(f"{url}/files/0").status_code == 200
+    assert client.get(url).json()["text"] == "On pose $\\phi(\\rho)$."  # kept for next time
+    grade = client.post(f"{url}/grade").json()["grade"]
+    # the steps are the Marking scheme, one point each; the fake gives the first (clamped to 1) and misses the second
+    assert [(s["step"], s["awarded"]) for s in grade["steps"]] == [("Poser", 1), ("Dériver", 0)] and grade["max"] == 2
+    assert "(1 images)" in grade["transcription"]
+    answer = [p for s, p in model.prompts if s == "grade_answer"][-1]
+    assert "On pose" in answer and "(1 images)" in answer and "$\\rho^* = 1/2$" in answer  # typed + transcribed, the correction as model answer
+    assert hand["id"] not in [c["block_id"] for c in client.get(f"/api/courses/{cid}/cards/due").json()]  # half marks: not a miss
+    assert client.delete(f"{url}/files").json()["files"] == 0
+    assert client.get(f"/api/courses/{cid}/blocks/{code['id']}/written").status_code == 422
