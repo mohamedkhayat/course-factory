@@ -277,6 +277,23 @@ def parse_json(text: str) -> object:
     raise last_error
 
 
+class Stopped(Exception):
+    """The owner stopped the Run: not a StepFailed, so no step catches it and moves on."""
+
+
+STOPPED: set[int] = set()  # Courses whose Run the owner stopped; cleared when the Run ends
+PROCS: dict[int | None, set[subprocess.Popen]] = {}  # course id (None: a live step) -> its model subprocesses running now
+_procs_lock = threading.Lock()
+
+
+def stop_course(cid: int) -> None:
+    """Stops a Course's Run: its model subprocesses are killed and its next model step raises Stopped."""
+    STOPPED.add(cid)
+    with _procs_lock:
+        for proc in PROCS.get(cid, set()):
+            proc.kill()
+
+
 def run_pi_step[T: BaseModel](
     db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, schema: type[T],
     workdir: Path, files: tuple[Path, ...] = (), course_id: int | None = None, live: bool = False,
@@ -288,6 +305,8 @@ def run_pi_step[T: BaseModel](
     activity_id = uuid4().hex
     try:
         for attempt in range(1, ATTEMPTS + 1 + bool(os.environ.get("CF_FALLBACK_MODEL"))):
+            if course_id in STOPPED:
+                raise Stopped("stopped by the owner: Retry resumes from the last finished step")
             raw, start = None, time.monotonic()
             _now.model = model_for(step, attempt)
             if watched is not None:
@@ -469,6 +488,9 @@ class PiBackend:
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
                 timer = threading.Timer(self.timeout, proc.kill)
                 timer.start()
+                cid = getattr(_now, "course_id", None)  # a background step's Course, so Stop can kill it
+                with _procs_lock:
+                    PROCS.setdefault(cid, set()).add(proc)
                 try:
                     assert proc.stdout is not None
                     for line in proc.stdout:
@@ -480,6 +502,8 @@ class PiBackend:
                     code = proc.wait()
                 finally:
                     timer.cancel()
+                    with _procs_lock:
+                        PROCS.get(cid, set()).discard(proc)
                 if code != 0:
                     raise StepFailed(f"pi exited {code}: {proc.stderr.read()[-500:] if proc.stderr else ''}")
         finally:

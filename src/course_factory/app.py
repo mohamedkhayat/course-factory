@@ -30,7 +30,7 @@ from .checks import check_blocks
 from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
 from .progression import flag_progression
 from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
-from .pi_step import HARNESS_DIR, STEP_MODELS, Backend, activity, default_model, model_for, record_owner_action
+from .pi_step import HARNESS_DIR, STEP_MODELS, STOPPED, Backend, activity, default_model, model_for, record_owner_action, stop_course
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 EXPORT_VIEWER = WEB_DIST.parent / "dist-export" / "export.html"
@@ -185,6 +185,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             db.execute("UPDATE courses SET run_error=? WHERE id=?", (f"{type(e).__name__}: {e}"[:2000], cid))
         finally:
             advancing.discard(cid)
+            STOPPED.discard(cid)
 
     @app.post("/api/courses", status_code=201)
     def create_course(body: NewCourse, tasks: BackgroundTasks):
@@ -338,6 +339,15 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
                 time.sleep(RUN_POLL)
 
         return StreamingResponse(events(), media_type="text/event-stream")
+
+    @app.post("/api/courses/{cid}/run/stop")
+    def stop_run(cid: int):
+        """Stops the executing Run: the model step in progress is lost, every finished step is kept, and Retry resumes."""
+        course_or_404(cid)
+        if cid not in advancing:
+            raise HTTPException(409, "the Run is not executing")
+        stop_course(cid)
+        return {"ok": True}
 
     @app.post("/api/courses/{cid}/run/retry")
     def retry_run(cid: int, tasks: BackgroundTasks):

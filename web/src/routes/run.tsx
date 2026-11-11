@@ -282,6 +282,7 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
   const a = run.activity;
   const now = a?.inputs.source && a.inputs.page ? { source: a.inputs.source, page: Number(a.inputs.page) } : null;
   const at = run.pipeline.findIndex((p) => p.state === "current");
+  const stop = useMutation({ mutationFn: () => send(`/api/courses/${cid}/run/stop`) });
   return (
     <div className="mb-12 grid gap-x-10 gap-y-8 lg:grid-cols-[15rem_minmax(0,1fr)]">
       <ol className="hidden self-start lg:sticky lg:top-6 lg:block" aria-label="Pipeline">
@@ -307,7 +308,17 @@ function RunProgress({ cid, run, onRetry, retrying, retryError }: { cid: number;
       </ol>
       <div className="min-w-0 space-y-10" aria-live="polite">
         <header className="space-y-3">
-          <h2 className="text-2xl">{at >= 0 ? run.pipeline[at].label : "Starting"}</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-2xl">{at >= 0 ? run.pipeline[at].label : "Starting"}</h2>
+            {live && (
+              <Button size="sm" variant="outline" onClick={() => stop.mutate()} disabled={stop.isPending || stop.isSuccess}
+                      title="Stops the model now. Finished steps are kept; Retry resumes from the last one.">
+                {stop.isPending || stop.isSuccess ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <X className="size-4" aria-hidden />}
+                {stop.isPending || stop.isSuccess ? "Stopping…" : "Stop the Run"}
+              </Button>
+            )}
+          </div>
+          {!!stop.error && <p className="text-sm text-destructive">{errText(stop.error)}</p>}
           <div className="space-y-2">
             {run.pages_total > 0 && <Progress value={100 * (run.progress?.fraction ?? run.pages_read / run.pages_total)} aria-label="Overall progress" />}
             <p className="tabular flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
