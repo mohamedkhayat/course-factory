@@ -4,7 +4,7 @@ import json
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .context import Ctx, Priority, Profile
 from .pi_step import run_pi_step
@@ -42,7 +42,19 @@ def propose_outline(ctx: Ctx, cid: int) -> None:
         heads = [{"page": p["n"], "head": (p["text"] or "")[:PAGE_HEAD_CHARS]}
                  for p in db.execute("SELECT n, text FROM pages WHERE source_id=? AND readable=1 ORDER BY n", (s["id"],))]
         sources.append({"name": s["name"], "role": s["role"], "pages": heads})
-    plan = run_pi_step(db, ctx.backend, "propose_outline", {"goal": goal, "sources": sources}, OutlinePlan,
+    notes = [s["name"] for s in sources if s["role"] == "course notes"]
+
+    class CoveringPlan(OutlinePlan):
+        """A local model can stop after the first Chapter with valid JSON; a retry names the notes it left out."""
+        @model_validator(mode="after")
+        def covers_the_notes(self):
+            cited = {p.source for ch in self.chapters for s in ch.sections for p in s.pages}
+            if missing := [n for n in notes if n not in cited]:
+                raise ValueError(f"outline incomplete: no Section cites the course notes {', '.join(missing)}. "
+                                 "Plan the whole course: add the Chapters for these notes, after the ones you have.")
+            return self
+
+    plan = run_pi_step(db, ctx.backend, "propose_outline", {"goal": goal, "sources": sources}, CoveringPlan,
                        ctx.course_dir(cid), course_id=cid)
     db.execute("UPDATE courses SET subject=? WHERE id=?", (plan.kind, cid))
     save_outline(ctx, cid, plan)

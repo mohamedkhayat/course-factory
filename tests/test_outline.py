@@ -70,3 +70,21 @@ def test_goal_can_be_switched_after_found_gate(client, material, model):
     assert client.patch(f"/api/courses/{cid}", json={"goal": "cram"}).status_code == 422
     r = client.patch(f"/api/courses/{cid}", json={"goal": "cram", "exam_date": "2027-01-20"})
     assert r.json()["goal"] == "cram" and r.json()["exam_date"] == "2027-01-20"
+
+
+def test_an_outline_that_stops_before_some_course_notes_is_retried_naming_them(client, material, model):
+    from conftest import make_pdf
+    make_pdf(material / "cours2.pdf", 1)
+    full = model.handlers["propose_outline"]
+    prompts = []
+
+    def stops_early(prompt, files):
+        prompts.append(prompt)
+        plan = full(prompt, files)
+        if "RETRY FEEDBACK" in prompt:
+            plan["chapters"].append({"title": "Newton", "sections": [{"title": "Newton", "pages": [{"source": "cours2.pdf", "page": 1}]}]})
+        return plan
+    model.handlers["propose_outline"] = stops_early
+    cid = to_outline_gate(client, material, model)
+    assert "cours2.pdf" in prompts[1].split("RETRY FEEDBACK", 1)[1]
+    assert [c["title"] for c in client.get(f"/api/courses/{cid}/outline").json()["chapters"]][-1] == "Newton"

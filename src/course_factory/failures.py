@@ -21,6 +21,7 @@ CLASSES = [
     (r"^definition cram:", "definition-cram"),
     (r"^figure fidelity:", "figure-fidelity"),
     (r"^section overlap:", "section-overlap"),
+    (r"outline incomplete:", "outline-incomplete"),
     (r"^grounding judge (failed|returned no result)", "judge-failed"),
     (r"^contradicts its cited pages", "contradicts-pages"),
     (r"^grounding:", "beyond-pages"),

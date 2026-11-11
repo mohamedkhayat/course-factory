@@ -131,3 +131,9 @@ section-overlap:
   what: two Sections of a Chapter drilling the same commands (method + endpoint, or calls not the Chapter's boilerplate) or Concepts get a warning naming each other; the Review page merges one into the other
   hardened: 2026-11-11
   test: tests/test_progression.py
+
+outline-incomplete:
+  handler: check
+  what: propose_outline returned valid JSON for the first Chapter only (course 6, qwen 27B, 18 sources); an outline that cites no page of some course notes is rejected and the retry names the notes left out
+  hardened: 2026-11-11
+  test: tests/test_outline.py
