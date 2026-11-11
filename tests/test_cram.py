@@ -2,6 +2,8 @@ import datetime as dt
 
 import pytest
 
+from course_factory.cram import cheat_item, compile_sheet
+
 from conftest import make_pdf
 from course_factory import learner
 from test_chapters import generate
@@ -84,12 +86,12 @@ def test_cheat_sheet_lists_checked_items_most_likely_first_within_budget(client,
     cid = published(client, with_exam, model)
     sheet = client.get(f"/api/courses/{cid}/cheatsheet").json()
     items = sheet["items"]
-    assert [i["kind"] for i in items][:2] == ["definition", "definition"]
+    # grouped by Chapter, then kind; the fake's two Chapters repeat each other's definition and formula, so each is kept once
+    assert [(i["chapter"], i["kind"]) for i in items] == [("Méthodes de descente", "definition"), ("Méthodes de descente", "formula")]
     assert items[0]["title"] == "Def Méthodes de descente" and items[0]["likelihood"] == "high"
-    assert {i["kind"] for i in items} == {"definition", "formula"}  # no exercises or quizzes
     assert all(i["section_id"] and i["block_id"] for i in items)
     assert sum(len(i["title"]) + len(i["body"]) for i in items) <= sheet["budget_chars"]
-    one = client.get(f"/api/courses/{cid}/cheatsheet", params={"chapter": items[0]["chapter_id"]}).json()["items"]
+    one = client.get(f"/api/courses/{cid}/cheatsheet", params={"chapter": items[1]["chapter_id"]}).json()["items"]
     assert {i["chapter"] for i in one} == {"Méthodes de descente"}
 
 
@@ -161,3 +163,28 @@ def test_mixed_practice_interleaves_chapters_and_a_miss_becomes_a_card(client, w
     assert any(c["front"] == q["statement"] for c in client.get(f"/api/courses/{cid}/cards/due").json())
     variants = client.get(f"/api/courses/{cid}/cram/mixed", params={"types": "Type Convexité"}).json()
     assert [v["type"] for v in variants] == ["Type Convexité"]
+
+
+def terminal(*entries, title="CRUD"):
+    return {"component": "terminal", "data": {"title": title, "entries": [{"command": c, "output": "", "note": n} for c, n in entries]}}
+
+
+def candidate(block, rank, order, chapter=1):
+    kind, title, body, rows = cheat_item(block)
+    return {"kind": kind, "title": title, "body": body, "rows": rows, "chapter_id": chapter, "_rank": (rank, order), "_order": (chapter, order)}
+
+
+def test_commands_become_rows_and_repeats_merge_within_the_budget():
+    put = "curl -X PUT 'localhost:9200/ventes?pretty' -H 'Content-Type: application/json' -d '{\"settings\":{\"number_of_shards\":3}}'"
+    first = candidate(terminal((put, "Creates the index with **3 primary shards**."), ("GET _cat/indices?v", "")), 0, 2)
+    again = candidate(terminal((put, "same"), ("GET _cat/indices?v", ""), title="REST API"), 1, 1)  # all its commands are in `first`
+    more = candidate(terminal(("GET _cat/indices?v", ""), ("DELETE /ventes", "Drops it.")), 2, 3)
+    defn = {"component": "theorem_box", "data": {"kind": "definition", "title": "Shard", "statement": "A shard is one Lucene index holding part of the documents."}}
+    same = defn | {"data": defn["data"] | {"statement": "A shard is one Lucene index, holding a part of the documents."}}
+    sheet = compile_sheet([first, again, more, candidate(defn, 0, 0), candidate(same, 1, 4)], budget=10_000)
+    assert [(i["kind"], i["title"]) for i in sheet["items"]] == [("definition", "Shard"), ("commands", "CRUD"), ("commands", "CRUD")]
+    assert sheet["items"][1]["rows"][0] == {"command": put, "note": "Creates the index with **3 primary shards**."}  # Markdown stays out of the code
+    assert sheet["items"][2]["rows"] == [{"command": "DELETE /ventes", "note": "Drops it."}]  # its repeated command merged away
+    assert sheet["left_out"] == 0
+    small = compile_sheet([candidate(defn, 0, 0), first], budget=80)
+    assert [i["kind"] for i in small["items"]] == ["definition"] and small["left_out"] == 1

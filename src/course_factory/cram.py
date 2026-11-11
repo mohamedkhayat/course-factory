@@ -4,6 +4,7 @@ Everything here is computed from the past papers and the learner's progress; the
 
 import datetime as dt
 import json
+import re
 import math
 import random
 
@@ -181,27 +182,65 @@ def annotate(ctx: Ctx, cid: int, chapters: list[dict]) -> list[dict]:
 
 # Cheat Sheet
 
-def cheat_item(b: dict) -> tuple[str, str, str] | None:
-    """(kind, title, Markdown body) of a Block worth a line on the Cheat Sheet, or None."""
+KINDS = ["definition", "theorem", "proposition", "lemma", "corollary", "property", "formula", "method", "commands", "trap", "exam"]
+REPEAT_TEXT = 0.6  # share of distinct words two items of a kind share before the later one is a repeat
+
+
+def cheat_item(b: dict) -> tuple[str, str, str, list[dict] | None] | None:
+    """(kind, title, Markdown body, command rows) of a Block worth a line on the Cheat Sheet, or None. A terminal's
+    commands become {command, note} rows, so its notes render as Markdown beside the code, not inside it."""
     d, c = b["data"], b["component"]
     if c == "theorem_box":
-        return d["kind"], d.get("title", ""), d["statement"]
+        return d["kind"], d.get("title", ""), d["statement"], None
     if c == "key_formula":
-        return "formula", d["name"], f"$${d['latex']}$$\n\n{d['meaning']}"
+        return "formula", d["name"], f"$${d['latex']}$$\n\n{d['meaning']}", None
     if c == "algorithm":
         steps = "\n".join(f"{i}. {s}" for i, s in enumerate(d["steps"], 1))
-        return "method", d["name"], (f"*When:* {d['when']}\n\n" if d.get("when") else "") + steps
+        return "method", d["name"], (f"*When:* {d['when']}\n\n" if d.get("when") else "") + steps, None
     if c == "callout" and d["tone"] in ("warning", "exam"):
-        return ("trap" if d["tone"] == "warning" else "exam"), "", d["text"]
+        return ("trap" if d["tone"] == "warning" else "exam"), "", d["text"], None
     if c == "terminal":
-        cmds = "\n".join(e["command"] + (f"  # {e['note']}" if e.get("note") and "\n" not in e["note"] else "") for e in d["entries"])
-        return "commands", d.get("title", ""), f"```{d.get('shell', 'bash')}\n{cmds}\n```"
+        rows = [{"command": e["command"].strip(), "note": (e.get("note") or "").strip()} for e in d["entries"] if e["command"].strip()]
+        return "commands", d.get("title", ""), rows_text(rows), rows
     return None
 
 
+def rows_text(rows: list[dict]) -> str:
+    return "\n".join(r["command"] + "\n" + r["note"] for r in rows)
+
+
+def compile_sheet(candidates: list[dict], budget: int = 0) -> dict:
+    """The sheet from its candidate items: repeats merged (a command already listed, or a text sharing most of its words
+    with a likelier item of its kind), then the likeliest kept within the budget, then shown by Chapter and kind.
+    Each candidate has `_rank` (likelihood, then course order) and `_order` (course order)."""
+    budget = budget or CHEAT_SHEET_CHARS
+    words = lambda i: set(re.findall(r"\w{4,}", (i["title"] + " " + i["body"]).lower()))
+    seen: set[str] = set()
+    distinct: list[dict] = []
+    for i in sorted(candidates, key=lambda i: i["_rank"]):
+        if i["rows"] is not None:
+            rows = [r for r in i["rows"] if " ".join(r["command"].split()) not in seen]
+            seen |= {" ".join(r["command"].split()) for r in i["rows"]}
+            if not rows:
+                continue
+            i = i | {"rows": rows, "body": rows_text(rows)}
+        elif any(k["kind"] == i["kind"] and len(words(i) & words(k)) >= REPEAT_TEXT * min(len(words(i)), len(words(k)))
+                 for k in distinct if words(i) and words(k)):
+            continue
+        distinct.append(i)
+    kept, used = [], 0
+    for i in distinct:
+        size = len(i["title"]) + len(i["body"])
+        if used + size <= budget:
+            kept.append(i)
+            used += size
+    kept.sort(key=lambda i: (i["_order"][0], KINDS.index(i["kind"]) if i["kind"] in KINDS else len(KINDS), i["_order"]))
+    return {"items": [{k: v for k, v in i.items() if not k.startswith("_")} for i in kept], "left_out": len(distinct) - len(kept),
+            "budget_chars": budget}
+
+
 def cheat_sheet(ctx: Ctx, cid: int, chapter_id: int | None = None) -> dict:
-    """The Cheat Sheet, compiled from the published, checked Blocks: most likely in the exam first, then course order,
-    cut to the print budget. Every item links back to its Section."""
+    """The Cheat Sheet, compiled from the published, checked Blocks (compile_sheet). Every item links back to its Section."""
     db = ctx.db
     lk = Likelihood(db, cid)
     items = []
@@ -212,17 +251,16 @@ def cheat_sheet(ctx: Ctx, cid: int, chapter_id: int | None = None) -> dict:
         item = cheat_item(block_json(row))
         if item:
             level = lk.of(row["component"], json.loads(row["exam_types"]), row["chid"])
-            items.append({"block_id": row["id"], "kind": item[0], "title": item[1], "body": item[2], "likelihood": level,
+            order = (row["cpos"], row["spos"], row["position"])
+            items.append({"block_id": row["id"], "kind": item[0], "title": item[1], "body": item[2], "rows": item[3], "likelihood": level,
                           "chapter_id": row["chid"], "chapter": row["chapter"], "section_id": row["sid"], "section": row["section"],
-                          "_key": (LEVELS.index(level) if level else 3, row["cpos"], row["spos"], row["position"])})
-    items.sort(key=lambda i: i.pop("_key"))
-    kept, used = [], 0
-    for i in items:
-        size = len(i["title"]) + len(i["body"])
-        if used + size <= CHEAT_SHEET_CHARS:
-            kept.append(i)
-            used += size
-    return {"items": kept, "left_out": len(items) - len(kept), "budget_chars": CHEAT_SHEET_CHARS}
+                          "_level": LEVELS.index(level) if level else 3, "_order": order})
+    turn: dict[tuple, int] = {}  # each level round-robins over the Chapters, so the first Chapter can't fill the sheet alone
+    for i in sorted(items, key=lambda i: (i["_level"], i["_order"])):
+        key = (i["_level"], i["chapter_id"])
+        turn[key] = turn.get(key, -1) + 1
+        i["_rank"] = (i["_level"], turn[key], i["_order"])
+    return compile_sheet(items)
 
 
 def technique(ctx: Ctx, cid: int) -> dict:

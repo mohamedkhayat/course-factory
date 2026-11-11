@@ -54,7 +54,7 @@ function CourseNav() {
 function Shell() {
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-30 flex h-12 items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur">
+      <header className="sticky top-0 z-30 flex h-12 print:hidden items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur">
         <Link to="/" className="flex items-center gap-2 font-display text-[0.95rem] font-semibold tracking-tight">
           <svg viewBox="0 0 24 24" className="size-5 text-primary" aria-hidden><rect x="3" y="4" width="13" height="16" rx="1.5" fill="currentColor" opacity=".35" /><rect x="7" y="2" width="13" height="16" rx="1.5" fill="currentColor" /><path d="M10 7h7M10 10.5h7M10 14h4" stroke="var(--background)" strokeWidth="1.4" strokeLinecap="round" /></svg>
           <span className="hidden sm:inline">course-factory</span>

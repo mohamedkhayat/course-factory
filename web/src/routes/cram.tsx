@@ -6,7 +6,7 @@ import { Md, MdLine } from "@/components/md";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { exported, get, send, type CheatSheet } from "@/lib/api";
+import { exported, get, send, type CheatItem, type CheatSheet } from "@/lib/api";
 import { LIKELIHOOD } from "@/lib/cram";
 import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
@@ -177,13 +177,48 @@ export function CheatSheetPage() {
   return <SheetView sheet={data} cid={cid} />;
 }
 
-/** Router-free, so the exported file can show it too (links only render with a server). */
+const GROUPS: [string, string[]][] = [["Definitions", ["definition", "theorem", "proposition", "lemma", "corollary", "property"]],
+  ["Formulas", ["formula"]], ["Methods", ["method"]], ["Commands", ["commands"]], ["Traps", ["trap"]], ["What the exam asks", ["exam"]]];
+
+/** Likely-in-the-exam as a small mark: filled for high, ringed for medium, nothing for low. */
+function Mark({ level }: { level: CheatItem["likelihood"] }) {
+  if (level !== "high" && level !== "medium") return null;
+  return <span title={LIKELIHOOD[level].label} aria-label={LIKELIHOOD[level].label}
+               className={cn("mr-1 inline-block size-[0.55em] translate-y-[-0.1em] rounded-full align-middle",
+                             level === "high" ? "bg-destructive" : "border border-warn")} />;
+}
+
+/** Router-free, so the exported file can show it too (links only render with a server).
+ * By Chapter, then by kind; commands as a table of command and what it does; prints on about two A4 pages. */
 export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
   const [rebuild, setRebuild] = useState(false);
   const [recall, setRecall] = useState<Record<number, string>>({});
   const [shown, setShown] = useState<Set<number>>(new Set());
   const done = useMutation({ mutationFn: () => send(`/api/courses/${cid}/cheatsheet/done`) });
   if (!sheet) return <Page title="Cheat Sheet"><p className="text-muted-foreground">Loading…</p></Page>;
+  const chapters = [...new Map(sheet.items.map((i) => [i.chapter_id, i.chapter])).entries()];
+  const body = (i: CheatItem) => rebuild && !shown.has(i.block_id) ? (
+    <div className="mt-1 print:hidden">
+      <Textarea rows={2} placeholder="Write it from memory…" value={recall[i.block_id] ?? ""} onChange={(e) => setRecall({ ...recall, [i.block_id]: e.target.value })} />
+      <Button size="sm" variant="ghost" className="mt-1" onClick={() => setShown(new Set(shown).add(i.block_id))}>Compare</Button>
+    </div>
+  ) : (
+    <>
+      {i.rows ? (
+        <table className="w-full table-fixed border-collapse">
+          <tbody>
+            {i.rows.map((r, k) => (
+              <tr key={k} className="border-t border-border/70 align-top first:border-t-0">
+                <td className="w-[58%] py-1 pr-3"><code className="block whitespace-pre-wrap font-mono text-[0.86em] leading-snug [overflow-wrap:anywhere]">{r.command}</code></td>
+                <td className="py-1 text-muted-foreground">{r.note && <Md className="sheet-md">{r.note}</Md>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <Md className="sheet-md">{i.body}</Md>}
+      {rebuild && recall[i.block_id] && <p className="mt-1 border-t border-dashed border-input pt-1 text-muted-foreground">You wrote: {recall[i.block_id]}</p>}
+    </>
+  );
   return (
     <Page title="Cheat Sheet" wide>
       <div className="mb-6 flex flex-wrap items-center gap-2 print:hidden">
@@ -191,29 +226,39 @@ export function SheetView({ sheet, cid }: { sheet?: CheatSheet; cid: number }) {
           <RotateCcw className="size-4" />{rebuild ? "Show the sheet" : "Rebuild it from memory"}</Button>
         <Button variant="outline" onClick={() => { print(); if (!exported) done.mutate(); }}><Printer className="size-4" />Print</Button>
         {!exported && !done.isSuccess && <Button variant="ghost" onClick={() => done.mutate()}>Mark as read today</Button>}
-        {sheet.left_out > 0 && <span className="text-sm text-muted-foreground">{sheet.left_out} less likely item{sheet.left_out === 1 ? "" : "s"} left out to fit two pages</span>}
+        <span className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+          <span><Mark level="high" />likely</span><span><Mark level="medium" />sometimes</span>
+          {sheet.left_out > 0 && <span>· {sheet.left_out} less likely item{sheet.left_out === 1 ? "" : "s"} left out to fit two pages</span>}
+        </span>
       </div>
       {!sheet.items.length && <p className="text-muted-foreground">Nothing yet: the sheet fills as Chapters are published.</p>}
-      <div className="cheat-sheet columns-1 gap-6 text-sm md:columns-2 print:columns-2 print:text-[8.5pt]">
-        {sheet.items.map((i) => (
-          <article key={i.block_id} className="mb-3 break-inside-avoid rounded-md border border-border px-3 py-2 print:mb-1.5 print:px-2 print:py-1">
-            <p className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
-              <span className="font-medium uppercase tracking-wide">{i.kind}{i.title && <span className="normal-case tracking-normal text-foreground"> · <MdLine>{i.title}</MdLine></span>}</span>
-              {i.likelihood && <span className={cn("shrink-0 rounded-full px-1.5", LIKELIHOOD[i.likelihood].cls)}>{i.likelihood}</span>}
-            </p>
-            {rebuild && !shown.has(i.block_id) ? (
-              <div className="mt-1 print:hidden">
-                <Textarea rows={2} placeholder="Write it from memory…" value={recall[i.block_id] ?? ""} onChange={(e) => setRecall({ ...recall, [i.block_id]: e.target.value })} />
-                <Button size="sm" variant="ghost" className="mt-1" onClick={() => setShown(new Set(shown).add(i.block_id))}>Compare</Button>
-              </div>
-            ) : (
-              <div className="mt-1"><Md>{i.body}</Md>
-                {rebuild && recall[i.block_id] && <p className="mt-1 border-t border-dashed border-input pt-1 text-muted-foreground">You wrote: {recall[i.block_id]}</p>}
-              </div>
-            )}
-            {!exported && <Link to="/c/$cid/read" params={{ cid: String(cid) }} search={{ section: i.section_id } as never}
-                                className="mt-1 block text-xs text-muted-foreground hover:text-primary print:hidden">{i.chapter} › {i.section}</Link>}
-          </article>
+      <div className="cheat-sheet columns-1 gap-8 text-[0.84rem] leading-snug md:columns-2 print:columns-2 print:gap-5 print:text-[7.6pt]">
+        {chapters.map(([chid, title]) => (
+          <section key={chid} className="mb-5 print:mb-2">
+            <h2 className="mb-1.5 break-after-avoid border-b-2 border-foreground pb-0.5 font-display text-base font-semibold print:text-[9pt]">{title}</h2>
+            {GROUPS.map(([label, kinds]) => {
+              const items = sheet.items.filter((i) => i.chapter_id === chid && kinds.includes(i.kind));
+              if (!items.length) return null;
+              return (
+                <div key={label} className="mb-2.5 print:mb-1">
+                  <h3 className="break-after-avoid text-[0.7rem] font-semibold uppercase tracking-wider text-muted-foreground print:text-[6.5pt]">{label}</h3>
+                  {items.map((i) => (
+                    <article key={i.block_id} className={cn("break-inside-avoid py-1 print:py-0.5",
+                      i.kind === "trap" && "border-l-2 border-warn pl-2", i.kind === "exam" && "border-l-2 border-primary pl-2")}>
+                      {i.title ? (
+                        <p className="font-semibold"><Mark level={i.likelihood} />
+                          {exported ? <MdLine>{i.title}</MdLine> : (
+                            <Link to="/c/$cid/read" params={{ cid: String(cid) }} search={{ section: i.section_id } as never} title={`${i.chapter} › ${i.section}`}
+                                  className="hover:text-primary"><MdLine>{i.title}</MdLine></Link>
+                          )}</p>
+                      ) : null}
+                      {i.title ? body(i) : <div className="flex items-start"><span className="pt-[0.45em]"><Mark level={i.likelihood} /></span><div className="min-w-0 flex-1">{body(i)}</div></div>}
+                    </article>
+                  ))}
+                </div>
+              );
+            })}
+          </section>
         ))}
       </div>
     </Page>
