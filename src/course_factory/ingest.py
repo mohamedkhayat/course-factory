@@ -1,6 +1,7 @@
 """Import, page reading and Role proposals: everything before the found Approval Gate."""
 
 import hashlib
+import json
 import shutil
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -20,9 +21,18 @@ def is_material(rel: Path) -> bool:
     return not any(part.startswith(".") or part in JUNK_DIRS for part in rel.parts)
 
 
+class PageFigure(BaseModel):
+    """A figure's structure, so a redraw can keep it: what it shows, what contains what, and the labelled links."""
+    kind: str = ""
+    entities: list[str] = []
+    contains: list[tuple[str, str]] = []
+    relations: list[list[str]] = []
+
+
 class PageReading(BaseModel):
     text: str
     readable: bool
+    figures: list[PageFigure] = []
 
 
 class RoleProposal(BaseModel):
@@ -63,8 +73,9 @@ def read_pages(ctx: Ctx, cid: int) -> None:
             for future in done:
                 n, img = pending.pop(future)
                 reading = future.result()
-                db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable) VALUES (?,?,?,?,?)",
-                           (src["id"], n, str(img), reading.text, int(reading.readable)))
+                db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable, figures) VALUES (?,?,?,?,?,?)",
+                           (src["id"], n, str(img), reading.text, int(reading.readable),
+                            json.dumps([f.model_dump() for f in reading.figures], ensure_ascii=False)))
 
         with ThreadPoolExecutor(max_workers=MODEL_LANES) as pool:
             try:

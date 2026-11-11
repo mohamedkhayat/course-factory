@@ -113,9 +113,10 @@ def source_pages(ctx: Ctx, cid: int) -> dict[str, int]:
 def page_texts(ctx: Ctx, cid: int, refs: list[dict]) -> list[dict]:
     out = []
     for r in refs:
-        row = ctx.db.execute("SELECT p.text FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",
+        row = ctx.db.execute("SELECT p.text, p.figures FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",
                              (cid, r["source"], r["page"])).fetchone()
-        out.append({"source": r["source"], "page": r["page"], "text": row["text"] if row else ""})
+        figures = json.loads(row["figures"] or "[]") if row else []
+        out.append({"source": r["source"], "page": r["page"], "text": row["text"] if row else "", **({"figures": figures} if figures else {})})
     return out
 
 
@@ -347,7 +348,8 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
     flags = []
     for block, block_errors, warned in zip(blocks, errors, warnings):
         state_errors, state_warnings = components.status_flags(ctx.db, block["component"]) if not block_errors else ([], [])
-        flags.append({"errors": block_errors + state_errors, "warnings": warned + state_warnings + block_warnings(block)})
+        cited = page_texts(ctx, cid, block.get("citations") or []) if block["component"] in ("diagram", "step_diagram") else []
+        flags.append({"errors": block_errors + state_errors, "warnings": warned + state_warnings + block_warnings(block, cited)})
     return blocks, flags
 
 

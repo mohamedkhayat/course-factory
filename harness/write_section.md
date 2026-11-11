@@ -24,6 +24,7 @@ When there is a plan, follow it: state its objectives in the opening Block, writ
 What your previous version missed from the plan, add it: {{gaps}}
 
 Diagrams: at most 9 nodes and labels of 2-4 words; put detail in the text, and walk a longer process with a step_diagram. In a Mermaid flowchart you may mark nodes with the house classes, only where the text names why: `:::key` the node or path the Section is about, `:::muted` context, `:::warn` a failure or trap.
+A page in PAGES may carry "figures": the structure of a diagram on its slide. A diagram redrawing one keeps its entities and what contains what, drawing each container as a Mermaid subgraph holding its parts (shards inside their nodes), never a simplified chain; the 9-node limit does not apply to a faithful redraw (use a step_diagram when it is large). Its caption states the 2-4 takeaways the figure encodes (rules, constraints, consequences: "a node holds many shards", "a replica is never on its primary's node"), not a list of its boxes.
 
 Write the Section as an ordered list of Blocks. Each Block uses exactly one Component from this Catalogue, with data matching its fields (? = optional):
 {{catalogue}}

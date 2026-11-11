@@ -163,3 +163,39 @@ def test_a_definition_of_three_terms_at_once_is_a_warning():
     [w] = block_warnings(box(CRAMMED))
     assert failure_class(w) == "definition-cram" and "PrimaryShard, SecondaryShard (replica), Node" in w
     assert block_warnings(box(NODE)) == []
+
+
+# The slide on p.7 of the course-5 Elasticsearch deck, transcribed by hand: four nodes, each holding several shards.
+ES_FIGURE = {"kind": "architecture", "entities": ["Document à indexer", "Node 1 (Master)", "Node 2", "Node 3", "Node 4",
+                                                  "a0", "a1", "b0", "b1", "b2", "b3", "b4"],
+             "contains": [["Node 1 (Master)", "a0"], ["Node 1 (Master)", "b2"], ["Node 1 (Master)", "b1"], ["Node 2", "a1"],
+                          ["Node 2", "b3"], ["Node 2", "b0"], ["Node 2", "b2"], ["Node 3", "b0"], ["Node 3", "b4"], ["Node 3", "a0"],
+                          ["Node 3", "b3"], ["Node 4", "b1"], ["Node 4", "a1"], ["Node 4", "b4"]],
+             "relations": [["Document à indexer", "Node 1 (Master)", "Route"], ["Node 2", "Node 3", "Réplication"]]}
+ES_PAGE = {"source": "Ch6-elasticsearch_en.pdf", "page": 7, "text": "", "figures": [ES_FIGURE]}
+# The real course-5 routing diagram: the cluster flattened to a chain of nodes, no shard inside any of them.
+ES_FLAT = ('flowchart TD\n  doc["Document à indexer"]\n  master["Node 1 (Master) — Elasticsearch instance"]\n'
+           '  n2["Node 2 — Elasticsearch instance"]\n  n3["Node 3 — Elasticsearch instance"]\n  n4["Node 4 — Elasticsearch instance"]\n'
+           '  doc -->|"Route"| master\n  master -->|"shard primaire"| n2\n  n2 -->|"réplication"| n3\n  n3 -->|"réplication"| n4')
+# Its hand fix: a subgraph per node, holding its shards.
+ES_NODES = ('flowchart LR\n  doc["Document à indexer"]\n  subgraph N1["Node 1 (Master)"]\n    a0p["a0 primaire"]\n    b1r["b1 réplique"]\n  end\n'
+            '  subgraph N2["Node 2"]\n    b3p["b3 primaire"]\n    a1p["a1 primaire"]\n  end\n  subgraph N3["Node 3"]\n    b3r["b3 réplique"]\n'
+            '    a0r["a0 réplique"]\n  end\n  subgraph N4["Node 4"]\n    a1r["a1 réplique"]\n  end\n'
+            '  doc -->|"via le master"| N1\n  N1 -->|"route"| b3p\n  b3p -->|"réplication"| b3r')
+
+
+def test_a_diagram_that_drops_its_slides_shards_and_nodes_containment_is_a_warning():
+    diagram = lambda src: {"component": "diagram", "data": {"mermaid": src}, "citations": [{"source": ES_PAGE["source"], "page": 7}]}
+    [flat] = block_warnings(diagram(ES_FLAT), [ES_PAGE])
+    assert failure_class(flat) == "figure-fidelity" and "a0" in flat and "subgraph" in flat
+    assert block_warnings(diagram(ES_NODES), [ES_PAGE]) == []
+    assert block_warnings(diagram(ES_FLAT), [{**ES_PAGE, "figures": []}]) == []  # pages read before figures: nothing to compare
+    big = ES_NODES + "".join(f'\n  N4 --> x{i}["x{i}"]' for i in range(8))  # a faithful redraw may be big
+    assert block_warnings(diagram(big), [ES_PAGE]) == []
+
+
+def test_a_figure_read_from_a_page_reaches_the_prompt_of_the_section_citing_it(client, material, model):
+    model.handlers["read_page"] = lambda prompt, files: {"text": f"page text of {files[0].name}", "readable": True, "figures": [ES_FIGURE]}
+    generate(client, material, model)
+    prompt = next(p for step, p in model.prompts if step == "write_section")
+    assert '"figures"' in prompt and "Node 1 (Master)" in prompt

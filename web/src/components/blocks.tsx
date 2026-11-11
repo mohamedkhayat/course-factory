@@ -421,6 +421,9 @@ export function PageViewer({ cid, cite, onClose }: { cid: number; cite: Citation
 export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number; onCite: (c: Citation) => void }) {
   const [flagging, setFlagging] = useState(false);
   const [flagged, setFlagged] = useState(false);
+  const [compare, setCompare] = useState(false);
+  const slides = block.component === "diagram" || block.component === "step_diagram"
+    ? [...new Map(block.citations.map((c) => [`${c.source}#${c.page}`, c])).values()].filter((c) => pageUrl(cid, c.source, c.page)) : [];
   const flag = async (reason: "wrong" | "unclear") => {
     await send(`/api/courses/${cid}/blocks/${block.id}/flags`, { reason });
     setFlagged(true);
@@ -435,6 +438,16 @@ export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number;
         </p>
       )}
       <BlockBody block={block} cid={cid} />
+      {compare && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {slides.map((c) => (
+            <figure key={`${c.source}#${c.page}`}>
+              <img src={pageUrl(cid, c.source, c.page)} alt={`${c.source} page ${c.page}`} loading="lazy" className="w-full rounded-md border border-border" />
+              <figcaption className="mt-1 text-xs text-muted-foreground">{c.source}, p. {c.page}</figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
       {block.flags.filter((f) => f.startsWith("source error: ")).map((f) => (
         <p key={f} className="mt-2 rounded-md border-l-2 border-warn bg-warn/10 px-3 py-2 text-sm">
           <span className="font-medium">The source has a slip here: </span><MdLine>{f.slice("source error: ".length)}</MdLine>
@@ -446,6 +459,10 @@ export function ReaderBlock({ block, cid, onCite }: { block: Block; cid: number;
             <BookOpen className="size-3" />{c.source} p.{c.page}
           </button>
         ))}
+        {slides.length > 0 && (
+          <button type="button" aria-expanded={compare} onClick={() => setCompare(!compare)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
+            {compare ? "Hide the slide" : "Compare with the slide"}</button>
+        )}
         <span>{block.origin === "from_source" ? "From source" : "Model-added"}</span>
         <span className="ml-auto flex items-center gap-1">
           {flagged ? <span className="text-warn">Flagged, thanks</span> : flagging ? (

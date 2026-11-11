@@ -664,12 +664,14 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         chapters = reader(cid)
         blocks = [b for c in chapters for s in c["sections"] for b in s["blocks"]]
         pages = {}
-        for b in blocks:  # only Figures carry their page image; Citations stay as text to keep the file small
-            if b["component"] == "figure":
-                row = db.execute("SELECT p.image FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",
-                                 (cid, b["data"]["source"], b["data"]["page"])).fetchone()
-                if row and row["image"] and Path(row["image"]).exists():
-                    pages[f'{b["data"]["source"]}#{b["data"]["page"]}'] = "data:image/png;base64," + base64.b64encode(Path(row["image"]).read_bytes()).decode()
+        # only Figures and the slides a diagram redraws carry their page image; other Citations stay as text to keep the file small
+        shown = [(b["data"]["source"], b["data"]["page"]) for b in blocks if b["component"] == "figure"]
+        shown += [(c["source"], c["page"]) for b in blocks if b["component"] in ("diagram", "step_diagram") for c in b["citations"]]
+        for source, page in dict.fromkeys(shown):
+            row = db.execute("SELECT p.image FROM pages p JOIN sources s ON s.id=p.source_id WHERE s.course_id=? AND s.name=? AND p.n=?",
+                             (cid, source, page)).fetchone()
+            if row and row["image"] and Path(row["image"]).exists():
+                pages[f'{source}#{page}'] = "data:image/png;base64," + base64.b64encode(Path(row["image"]).read_bytes()).decode()
         comps = []
         for name in sorted({b["component"] for b in blocks}):
             js = components.comp_dir(ctx, name) / "component.js"

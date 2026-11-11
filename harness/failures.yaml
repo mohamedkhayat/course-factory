@@ -120,6 +120,12 @@ definition-cram:
   hardened: 2026-11-10
   test: tests/test_lesson_plan.py
 
+figure-fidelity:
+  handler: check
+  what: a diagram citing a page read with figures keeps under 60% of their entities, or flattens their containment (no subgraph), is a warning on the Block naming what is missing; read_page records each figure's entities, containment and relations, and write_section gets them
+  hardened: 2026-11-11
+  test: tests/test_lesson_plan.py
+
 section-overlap:
   handler: check
   what: two Sections of a Chapter drilling the same commands (method + endpoint, or calls not the Chapter's boilerplate) or Concepts get a warning naming each other; the Review page merges one into the other

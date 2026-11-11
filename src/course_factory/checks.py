@@ -85,8 +85,32 @@ CATCH_ALL = re.compile(r"\b(all|none) of the above\b|toutes les r[ée]ponses|auc
 LABEL = re.compile(r'\["?([^\]"]*)"?\]|\("?([^)"]*)"?\)|\{"?([^}"]*)"?\}')
 
 
-def block_warnings(block: dict) -> list[str]:
-    """Item-writing and readability heuristics: shown on the Block, never block it."""
+FIGURE_KEPT = 0.6  # share of a cited figure's entities a diagram redrawing it must keep
+
+
+def figure_warnings(src: str, pages: list[dict]) -> list[str] | None:
+    """For a diagram citing pages read with figures: what of the figures it drops (entities, containment).
+    None when no cited page has a figure, so there is nothing to compare."""
+    figures = [f for p in pages for f in p.get("figures") or []]
+    if not figures:
+        return None
+    labels = " ".join(t for m in re.findall(r'"([^"]*)"', src) + [next((g for g in m if g), "") for m in LABEL.findall(src)]
+                      for t in [m] if t).lower()
+    found = lambda e: re.search(r"(?<!\w)" + re.escape(e.lower().strip()) + r"(?!\w)", labels)
+    out = []
+    entities = list(dict.fromkeys(e for f in figures for e in f.get("entities", []) if e.strip()))
+    missing = [e for e in entities if not found(e)]
+    if entities and len(missing) > (1 - FIGURE_KEPT) * len(entities):
+        out.append(f"the cited figure shows {len(entities)} things, the diagram keeps {len(entities) - len(missing)}; "
+                   f"missing {', '.join(missing[:12])}")
+    if any(f.get("contains") for f in figures) and not re.search(r"(?m)^\s*subgraph\b", src):
+        holders = list(dict.fromkeys(c[0] for f in figures for c in f.get("contains", [])))
+        out.append(f"the figure puts things inside {', '.join(holders[:6])}; draw each as a subgraph holding its parts, not a flat chain")
+    return ["figure fidelity: " + "; ".join(out)] if out else []
+
+
+def block_warnings(block: dict, pages: list[dict] = ()) -> list[str]:  # type: ignore[assignment]
+    """Item-writing and readability heuristics: shown on the Block, never block it. `pages`: the Block's cited pages."""
     data, out = block["data"], []
     if block["component"] == "quiz":
         qs = [q for q in data.get("questions", []) if len(q["options"]) > 1 and len(q["correct"]) == 1]
@@ -98,7 +122,10 @@ def block_warnings(block: dict) -> list[str]:
         body = src.split("\n", 1)[-1]
         ids = set(re.findall(r"(?m)(?:^|[;&>-])\s*([A-Za-z_][\w-]*)\s*(?=[\[({>]|-|$|;|&|:::)", mermaid_ids(body)))
         ids -= {"subgraph", "end", "classDef", "class", "style", "linkStyle", "direction", "click"}
-        if len(ids) > 9 and block["component"] == "diagram":  # a step_diagram already shows it a stage at a time
+        fidelity = figure_warnings(src, list(pages))
+        out += fidelity or []
+        # a step_diagram already shows it a stage at a time; a faithful redraw of a figure is as big as the figure
+        if len(ids) > 9 and block["component"] == "diagram" and fidelity is None:
             out.append(f"diagram size: {len(ids)} nodes; keep to 9 at most, split it or walk it as a step_diagram")
         long = [t for t in (next(g for g in m if g) for m in LABEL.findall(body) if any(m))
                 if len(re.findall(r"[^\W\d_]{2,}", re.sub(r"\$[^$]*\$|<[^>]+>", " ", t))) > 6]  # words, not symbols
