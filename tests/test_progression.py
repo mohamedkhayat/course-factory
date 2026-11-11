@@ -233,3 +233,19 @@ def test_two_sections_teaching_the_same_commands_overlap():
     [(a, b, shared)] = section_overlaps(sections)
     assert (a["title"], b["title"]) == ("REST API: Request Types", "CRUD Operations: PUT, GET, DELETE")
     assert shared == ["DELETE _doc", "GET _doc", "PUT _doc"]
+
+
+def test_a_clause_only_named_before_its_drill_is_flagged_until_an_example_shows_it():
+    # The real course-5 Query DSL Section: a table row listed `bool`, `term`, `range`, the hints named them, then the exercise.
+    mention = {"id": 1, "chapter": 1, "section": "DSL", "component": "table", "data": {"headers": ["Critère", "Query DSL"],
+               "rows": [["Expressivité", "`bool`, `term`, `match`, `range`, `filter` ; combinable"]]}}
+    exercise = {"id": 2, "chapter": 1, "section": "DSL", "component": "code_exercise", "data": {
+        "title": "Écrire une Query DSL combinée", "language": "json", "hints": ["Préférez `term`.", "`range` avec `lt`."],
+        "task": "Documents de l'index `ventes` dont `Statut` vaut « payée » et `Prix` < 500.",
+        "starter": "GET /ventes/_search\n{\n  \"query\": {\n    \"bool\": {\n      \"must\": [\n        // TODO\n      ]\n    }\n  }\n}",
+        "solution": "GET /ventes/_search\n{\"query\": {\"bool\": {\"must\": [{\"term\": {\"Statut\": \"payée\"}}, {\"range\": {\"Prix\": {\"lt\": 500}}}]}}}"}}
+    [errs] = progression_errors([mention, exercise]).values()
+    assert {e.split('"')[1] for e in errs} == {"_search", "bool", "must", "term", "range", "lt"}
+    shown = {"id": 3, "chapter": 1, "section": "DSL", "component": "terminal", "data": {"entries": [{"command":
+             "GET /boutique/_search\n{\"query\": {\"bool\": {\"must\": [{\"term\": {\"genre\": \"piano\"}}, {\"range\": {\"prix\": {\"lt\": 20}}}]}}}"}]}}
+    assert progression_errors([mention, shown, exercise]) == {}

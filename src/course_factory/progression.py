@@ -10,6 +10,7 @@ WORD = re.compile(r"\w[\w\-]*")
 CODE_SPAN = re.compile(r"```[^\n]*\n(.*?)```|`([^`\n]+)`", re.S)
 CALL = re.compile(r"\.?([A-Za-z_]\w*)\s*\(|/(_\w+)")  # function and method calls, `/_update`-style endpoints
 GAP = re.compile(r"\[\[\d+\]\]")
+JSON_KEY = re.compile(r'"([A-Za-z_]\w*)"\s*:')  # a query DSL's clauses (`"bool":`, `"range":`) are its keys
 NAMED = re.compile(r"\b(?:index|indices?|documents?|champs?|fields?|tables?|fichiers?|files?|dossiers?|topics?|colonnes?|columns?)\s+[«\"]?\s*`([^`]+)`", re.I)
 STOP = set("""a an and are as at be by de des du en et for from if in is it la le les of on or ou par pas pour que qui sur the
 to un une with dans est sont ce cette il elle on ne se sa son ses au aux y oui non yes no true false none null self print return
@@ -83,6 +84,39 @@ def tested(component: str, data: dict) -> tuple[list[tuple[str, set[str]]], str]
     return [], ""
 
 
+def practised(component: str, data: dict) -> set[str]:
+    """The commands, functions and clauses a code drill makes the learner write: its answer's calls and keys, less the data
+    its title and task give. A hint or a starter comment naming them does not teach them."""
+    if component == "code_exercise" or (component == "fill_blanks" and data.get("language")):
+        code = answer_text(data)
+        keys = set() if data.get("language") == "python" else {k.lower() for k in JSON_KEY.findall(code)}  # a Python dict's keys are data
+        terms = (code_terms(code) - STOP) | keys  # a query's `"range":` is a clause, not the builtin
+        if data.get("blanks"):
+            terms = set().union(*(in_context(data.get("template") or data.get("starter", ""), i, b["answers"][0])
+                                  for i, b in enumerate(data["blanks"], 1) if b.get("answers"))) - STOP
+        return terms - words(data.get("title", "") + " " + data.get("task", ""))
+    return set()
+
+
+def example_code(component: str, data: dict) -> str:
+    """The code a Block shows working, which is what teaches a command or clause: a session, a code listing, a worked
+    answer, an earlier practice's answer, fenced code, or a table row that pairs one piece of code with what it does.
+    A name only listed in passing (`bool`, `term`, `range` in one cell) is mentioned, not shown."""
+    if component == "terminal":
+        return "\n".join(e.get("command", "") + "\n" + (e.get("output") or "") for e in data.get("entries", []))
+    if component == "code":
+        return data.get("code", "")
+    if component in ("fill_blanks", "code_exercise"):
+        return answer_text(data)
+    fenced = "\n".join(a for a, _ in CODE_SPAN.findall("\n".join(strings(data))) if a)
+    if component == "worked_example":
+        fenced += "\n" + data.get("answer", "") + "\n" + "\n".join(map(spans, data.get("steps", [])))
+    if component == "exercise":
+        fenced += "\n" + spans(data.get("correction", ""))
+    rows = [r for r in data.get("rows", []) if isinstance(r, list)] if component == "table" else []
+    return fenced + "\n" + "\n".join(c.strip("`") for r in rows for c in r if isinstance(c, str) and re.fullmatch(r"`[^`]+`", c.strip()))
+
+
 def progression_errors(blocks: list[dict]) -> dict[int, list[str]]:
     """`blocks` in reading order, each {"id", "component", "data", "chapter", "section"}. Returns id -> errors for each
     practice Block that expects a term no earlier Block has taught (or one a later Section of its Chapter is named after)
@@ -101,6 +135,7 @@ def progression_errors(blocks: list[dict]) -> dict[int, list[str]]:
         return next((t for c, t in sections[at + 1:] if c == chapter and term in words(t)), None)
 
     taught: set[str] = set()
+    shown_code: set[str] = set()  # words of the code earlier Blocks showed working (example_code)
     explained: dict[tuple, set[str]] = {}  # per Section: words its tables, definitions and prose explain (not just show)
     errors: dict[int, list[str]] = {}
     for b in blocks:
@@ -134,7 +169,13 @@ def progression_errors(blocks: list[dict]) -> dict[int, list[str]]:
                         errors.setdefault(b["id"], []).append(
                             f"{label}: tests \"{t}\", which the later Section \"{main}\" teaches: move this practice "
                             "after it, or test only what this Section and earlier ones teach")
+            for t in sorted(practised(b["component"], b["data"]) - shown_code):
+                if len(t) >= 2 and not number(t) and not any(f'"{t}"' in e for e in errors.get(b["id"], [])):
+                    errors.setdefault(b["id"], []).append(
+                        f"expects \"{t}\", which no earlier Block shows working (naming it in a table, a hint or the starter is not enough): show it working "
+                        "first in a terminal session, code or worked example that says what it does, then practise it")
         taught |= words(" ".join(strings(b["data"])))
+        shown_code |= words(example_code(b["component"], b["data"]))
         if b["component"] not in PRACTICE | {"terminal", "code"}:
             here |= words(" ".join(strings(b["data"])))
     return errors

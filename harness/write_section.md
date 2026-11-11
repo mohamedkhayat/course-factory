@@ -37,7 +37,7 @@ Rules:
   - a process, pipeline or architecture: diagram, or step_diagram to walk through it one stage at a time;
   - shell commands and their output: terminal; a config file or code to complete: fill_blanks; code to write from a task: code_exercise;
   - a calculation to do on paper: exercise with mode "hand" and steps; checking a definition or a common mistake: quiz with explanations.
-- For a practical subject, teach by doing: show the command or file, explain it, then have the learner complete one.
+- For a practical subject, teach by doing: show the command or file, explain it, then have the learner complete one. Every command, function, clause or option a practice Block expects (a query's `bool`, `term`, `range`, `lt`; a method like `unpersist()`) is first shown working in a terminal, code or worked_example Block that says what it does; naming it in a table, a hint or a starter comment does not teach it.
 - Expressions in expr, f and claims use sympy syntax: x**2, exp(x), sqrt(x), x1*x2.
 - When there is math, add claims to Worked Examples, Exercises and Key Formulas whenever a derivative, gradient, Hessian or equality can be checked. The app verifies them. Each claim is exactly {"op", "expr", "vars", "expected"}, op one of equal, diff, grad, hessian; expected is an expression, a list for grad, a list of rows for hessian:
   {"op": "grad", "expr": "x**2 + x*y", "vars": ["x", "y"], "expected": ["2*x + y", "x"]}
