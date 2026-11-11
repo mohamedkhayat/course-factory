@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Check, Moon, Printer, RotateCcw } from "lucide-react";
+import { ArrowRight, Check, ChevronRight, Moon, Printer, RotateCcw } from "lucide-react";
 import { Md, MdLine } from "@/components/md";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -58,6 +58,51 @@ function LateNight({ examDate }: { examDate: string | null }) {
   );
 }
 
+const ROUTINE = new Set(["cards", "mistakes"]);
+const CHIP: Record<string, string> = { learn: "bg-primary/10 text-primary", review: "bg-muted text-foreground",
+  mock: "bg-warn/15 text-warn font-medium", cheatsheet: "border border-border text-foreground", variants: "bg-muted text-foreground",
+  mixed: "bg-muted text-foreground" };
+const daysUntil = (iso: string) => Math.round((new Date(`${iso}T12:00`).getTime() - new Date(new Date().toLocaleDateString("sv") + "T12:00").getTime()) / 86_400_000);
+const monday = (iso: string) => { const d = new Date(`${iso}T12:00`); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.toLocaleDateString("sv"); };
+
+const routineOnly = (d: Day) => !d.eve && d.activities.every((a) => ROUTINE.has(a.kind));
+/** Runs of two or more routine-only days of the same length fold into one quiet row. */
+const quiet = (days: Day[]) => days.reduce<(Day | Day[])[]>((out, d) => {
+  const last = out.at(-1);
+  const prev = Array.isArray(last) ? last.at(-1)! : last;
+  if (prev && routineOnly(d) && routineOnly(prev) && prev.minutes === d.minutes) {
+    out[out.length - 1] = Array.isArray(last) ? [...last, d] : [prev, d];
+  } else out.push(d);
+  return out;
+}, []);
+
+/** One day of the run-up: its distinctive work as chips, the daily routine as a quiet note, and its load as a bar. */
+function DayRow({ d, max, go }: { d: Day; max: number; go: (a: Activity) => void }) {
+  const work = d.activities.filter((a) => !ROUTINE.has(a.kind));
+  const routine = d.activities.filter((a) => ROUTINE.has(a.kind));
+  const date = new Date(`${d.date}T12:00`);
+  return (
+    <li className={cn("grid grid-cols-[3.25rem_minmax(0,1fr)_3.5rem] items-start gap-x-3 py-2", d.eve && "rounded-md bg-primary/5 px-2 -mx-2")}>
+      <p className="leading-tight"><span className="block text-xs text-muted-foreground">{date.toLocaleDateString(undefined, { weekday: "short" })}</span>
+        <span className="tabular text-base font-semibold">{date.getDate()}</span></p>
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-1.5 text-sm">
+          {d.eve && <span className="mr-1 font-medium">The eve</span>}
+          {work.map((a, i) => (
+            <button key={i} type="button" onClick={() => go(a)} title={`${a.title} · ${hm(a.minutes)}`}
+                    className={cn("max-w-full truncate rounded px-2 py-0.5 text-left transition-colors hover:ring-1 hover:ring-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", CHIP[a.kind] ?? "bg-muted")}>
+              {a.title}<span className="tabular ml-1.5 opacity-70">{hm(a.minutes)}</span></button>
+          ))}
+          {routine.length > 0 && <span className="text-xs text-muted-foreground">{work.length ? "+ " : ""}{routine.map((a) => a.kind === "cards" ? "cards" : "mistakes").join(" and ")}
+            <span className="tabular"> · {hm(routine.reduce((n, a) => n + a.minutes, 0))}</span></span>}
+        </div>
+        <div className="mt-1.5 h-1 rounded-full bg-muted" aria-hidden><div className="h-1 rounded-full bg-primary/50" style={{ width: `${(100 * d.minutes) / max}%` }} /></div>
+      </div>
+      <p className="tabular pt-0.5 text-right text-sm text-muted-foreground">{hm(d.minutes)}</p>
+    </li>
+  );
+}
+
 export function CramPage() {
   const cid = useCid();
   const qc = useQueryClient();
@@ -65,40 +110,66 @@ export function CramPage() {
   const { data, error } = useQuery({ queryKey: ["cram", cid], queryFn: () => get<Cram>(`/api/courses/${cid}/cram`) });
   const hours = useMutation({
     mutationFn: (h: number) => send(`/api/courses/${cid}/cram/settings`, { hours_per_day: h }, "PUT"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["cram", cid] }),
+    onSuccess: () => { setH(""); qc.invalidateQueries({ queryKey: ["cram", cid] }); },
   });
   const prepare = useMutation({ mutationFn: () => send(`/api/courses/${cid}/cram/prepare`) });
   const [h, setH] = useState<string>("");
   if (error) return <Page title="Cram"><p className="text-destructive">{errText(error)}</p></Page>;
   if (!data) return <Page title="Cram"><p className="text-muted-foreground">Loading…</p></Page>;
-  const { plan } = data;
+  const { plan, technique } = data;
   const today = plan.days[0];
+  const ahead = plan.days.slice(1);
+  const max = Math.max(1, ...ahead.map((d) => d.minutes));
+  const weeks = [...ahead.reduce((m, d) => m.set(monday(d.date), [...(m.get(monday(d.date)) ?? []), d]), new Map<string, Day[]>())];
+  const left = data.exam_date ? daysUntil(data.exam_date) : null;
+  const how = new Map(technique.types.map((t) => [t.name, t]));
+  const top = Math.max(0.01, ...data.question_types.map((t) => t.share));
+  const doneMin = today ? today.activities.filter((a) => a.done).reduce((n, a) => n + a.minutes, 0) : 0;
   return (
     <Page title="Cram" wide>
       <LateNight examDate={data.exam_date} />
-      {plan.needs_date && <p className="text-muted-foreground">Set the exam date in the Course settings to get a Cram Plan.</p>}
-      {data.exam_date && !plan.days.length && <p className="text-muted-foreground">The exam is today. Read the Cheat Sheet once, calmly, and go.</p>}
-      <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <div>
+      <div className="-mt-2 mb-8 flex flex-wrap items-end justify-between gap-x-8 gap-y-4 border-b border-border pb-5">
+        <p className="font-display">
+          {left === null ? <span className="text-muted-foreground">No exam date: set it in the Course settings to get a Cram Plan.</span>
+            : <><span className="tabular text-3xl font-semibold">{left <= 0 ? "Today" : left === 1 ? "Tomorrow" : `${left} days`}</span>
+                <span className="ml-2 text-muted-foreground">{left > 1 ? "to the exam, " : ""}{fmtDay(data.exam_date!)}</span></>}
+        </p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+          <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (+h > 0) hours.mutate(+h); }}>
+            <Input type="number" min={0.5} max={16} step={0.5} className="h-8 w-16" aria-label="Hours per day" placeholder={String(data.hours_per_day)}
+                   value={h} onChange={(e) => setH(e.target.value)} /><span className="text-muted-foreground">hours a day</span>
+            {h && <Button size="sm" variant="outline" type="submit" disabled={hours.isPending}>{hours.isPending ? "Replanning…" : "Replan"}</Button>}
+          </form>
+          <Button size="sm" variant="outline" asChild><Link to="/c/$cid/sheet" params={{ cid: String(cid) }}>Cheat Sheet</Link></Button>
+          <Button size="sm" variant="outline" asChild><Link to="/c/$cid/mixed" params={{ cid: String(cid) }}>Mixed practice</Link></Button>
+        </div>
+      </div>
+      {data.exam_date && !plan.days.length && <p className="mb-8 text-muted-foreground">The exam is today. Read the Cheat Sheet once, calmly, and go.</p>}
+      <div className="grid gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="min-w-0">
           {today && (
-            <section className="rounded-lg border border-border bg-card px-5 py-5">
-              <p className="text-sm text-muted-foreground">Today · {hm(today.minutes)} planned</p>
-              {plan.next ? (
-                <div className="mt-2 flex flex-wrap items-center justify-between gap-4">
-                  <p className="font-display text-xl font-semibold">{plan.next.title}<span className="tabular ml-2 text-sm font-normal text-muted-foreground">{hm(plan.next.minutes)}</span></p>
-                  <Button size="lg" onClick={() => go(plan.next!)} disabled={plan.next.ready === false}>Next<ArrowRight className="size-4" /></Button>
-                </div>
-              ) : <p className="mt-2 font-display text-xl font-semibold">Today's plan is done.</p>}
-              {plan.next?.ready === false && <p className="mt-1 text-sm text-muted-foreground">This Chapter isn't published yet: publish it from Review.</p>}
-              <ul className="mt-4 divide-y divide-border border-t border-border">
-                {today.activities.map((a, i) => (
-                  <li key={i} className="flex items-center gap-3 py-2 text-sm">
-                    <span className={cn("grid size-4 shrink-0 place-items-center rounded-full border", a.done ? "border-ok bg-ok text-white" : "border-input")}>{a.done && <Check className="size-3" />}</span>
-                    <button type="button" className={cn("flex-1 text-left hover:text-primary", a.done && "text-muted-foreground line-through")} onClick={() => go(a)}>{a.title}</button>
-                    <span className="tabular text-muted-foreground">{hm(a.minutes)}</span>
-                  </li>
-                ))}
+            <section aria-labelledby="today" className="rounded-lg border border-border bg-card px-5 py-4">
+              <div className="flex items-baseline justify-between gap-4">
+                <h2 id="today" className="font-display text-lg font-semibold">Today</h2>
+                <p className="tabular text-sm text-muted-foreground">{doneMin ? `${hm(doneMin)} of ` : ""}{hm(today.minutes)}</p>
+              </div>
+              {!plan.next && <p className="mt-1 text-sm text-ok">Today's plan is done. Rest counts too.</p>}
+              <ul className="mt-3 space-y-1">
+                {today.activities.map((a, i) => {
+                  const next = !!plan.next && !a.done && a.title === plan.next.title && a.kind === plan.next.kind;
+                  return (
+                    <li key={i} className={cn("flex items-center gap-3 rounded-md px-2 py-2 text-sm", next && "bg-primary/5")}>
+                      <span className={cn("grid size-4 shrink-0 place-items-center rounded-full border", a.done ? "border-ok bg-ok text-white" : next ? "border-primary" : "border-input")}>
+                        {a.done && <Check className="size-3" />}</span>
+                      <button type="button" onClick={() => go(a)} disabled={a.ready === false}
+                              className={cn("min-w-0 flex-1 truncate text-left hover:text-primary disabled:cursor-not-allowed disabled:opacity-60", next && "font-medium", a.done && "text-muted-foreground line-through")}>{a.title}</button>
+                      <span className="tabular text-muted-foreground">{hm(a.minutes)}</span>
+                      {next && <Button size="sm" onClick={() => go(a)} disabled={a.ready === false}>Start<ArrowRight className="size-4" /></Button>}
+                    </li>
+                  );
+                })}
               </ul>
+              {plan.next?.ready === false && <p className="mt-2 text-sm text-muted-foreground">This Chapter isn't published yet: publish it from Review.</p>}
             </section>
           )}
           {plan.skip.length > 0 && (
@@ -108,61 +179,72 @@ export function CramPage() {
               <p className="mt-1 text-muted-foreground">More hours per day, or Priority focus on a Chapter, brings it back.</p>
             </section>
           )}
-          <section className="mt-8">
-            <h2 className="mb-2 font-medium">The days until the exam</h2>
-            <ol className="space-y-3">
-              {plan.days.slice(1).map((d) => (
-                <li key={d.date} className="rounded-md border border-border px-4 py-3 text-sm">
-                  <p className="flex justify-between"><span className="font-medium">{fmtDay(d.date)}{d.eve && " · the eve"}</span><span className="tabular text-muted-foreground">{hm(d.minutes)}</span></p>
-                  <ul className="mt-1 text-muted-foreground">{d.activities.map((a, i) => <li key={i}>{a.title} · {hm(a.minutes)}</li>)}</ul>
-                </li>
-              ))}
-            </ol>
-          </section>
-        </div>
-        <aside className="space-y-8">
-          <section>
-            <h2 className="mb-2 font-medium">Time</h2>
-            <form className="flex items-center gap-2 text-sm" onSubmit={(e) => { e.preventDefault(); if (+h > 0) hours.mutate(+h); }}>
-              <Input type="number" min={0.5} max={16} step={0.5} className="w-20" aria-label="Hours per day" placeholder={String(data.hours_per_day)}
-                     value={h} onChange={(e) => setH(e.target.value)} />hours a day <Button size="sm" variant="outline" type="submit" disabled={!h}>Set</Button>
-            </form>
-            <p className="mt-2 text-sm"><Link to="/c/$cid/sheet" params={{ cid: String(cid) }} className="text-primary underline-offset-4 hover:underline">Cheat Sheet</Link>
-              <span className="mx-2 text-muted-foreground">·</span><Link to="/c/$cid/mixed" params={{ cid: String(cid) }} className="text-primary underline-offset-4 hover:underline">Mixed practice</Link></p>
-          </section>
-          <section>
-            <h2 className="mb-2 font-medium">What the exam asks</h2>
-            {!data.question_types.length && (
-              <div className="text-sm text-muted-foreground">
-                <p>No Question Types yet. They come from the past papers.</p>
-                {data.unclassified > 0 && <Button size="sm" variant="outline" className="mt-2" disabled={prepare.isPending || prepare.isSuccess} onClick={() => prepare.mutate()}>
-                  {prepare.isSuccess ? "Sorting on the GPU… reload later" : "Sort the past Questions into types"}</Button>}
-              </div>
-            )}
-            <ul className="space-y-2">
-              {data.question_types.map((t) => (
-                <li key={t.id} className="text-sm">
-                  <p className="flex items-baseline justify-between gap-2"><span className="font-medium"><MdLine>{t.name}</MdLine></span>
-                    <span className={cn("tabular shrink-0 rounded-full px-2 py-0.5 text-xs", LIKELIHOOD[t.likelihood].cls)}>{Math.round(t.share * 100)}% · {t.papers} paper{t.papers === 1 ? "" : "s"}</span></p>
-                  {t.trigger && <p className="text-muted-foreground"><MdLine>{t.trigger}</MdLine></p>}
-                </li>
-              ))}
-            </ul>
-          </section>
-          {data.technique.types.length > 0 && (
-            <section>
-              <h2 className="mb-2 font-medium">Exam technique</h2>
-              {data.technique.minutes_per_point && <p className="text-sm">About <span className="tabular font-medium">{data.technique.minutes_per_point.toFixed(1)} min</span> per point: stuck past that, move on and come back.</p>}
-              {data.technique.types.filter((t) => t.template || t.method_marks.length).map((t) => (
-                <details key={t.name} className="mt-2 rounded-md border border-border px-3 py-2 text-sm">
-                  <summary className="cursor-pointer font-medium"><MdLine>{t.name}</MdLine></summary>
-                  {t.template && <div className="mt-1"><Md>{t.template}</Md></div>}
-                  {t.method_marks.length > 0 && <><p className="mt-2 text-muted-foreground">Marks are given for:</p>
-                    <ul className="list-disc pl-5">{t.method_marks.map((m) => <li key={m.step}><MdLine>{m.step}</MdLine> <span className="tabular text-muted-foreground">({m.points} pts)</span></li>)}</ul></>}
-                </details>
+          {weeks.length > 0 && (
+            <section aria-labelledby="runup" className="mt-10">
+              <h2 id="runup" className="font-display text-lg font-semibold">The run-up</h2>
+              <p className="mt-0.5 text-sm text-muted-foreground">Every day starts with your due cards and yesterday's mistakes; the rest is shown.</p>
+              {weeks.map(([start, days]) => (
+                <div key={start} className="mt-5">
+                  <p className="flex justify-between border-b border-border pb-1 text-xs text-muted-foreground">
+                    <span>Week of {fmtDay(start)}</span><span className="tabular">{hm(days.reduce((n, d) => n + d.minutes, 0))}</span></p>
+                  <ol className="divide-y divide-border/60">{quiet(days).map((r) => Array.isArray(r) ? (
+                    <li key={r[0].date} className="grid grid-cols-[3.25rem_minmax(0,1fr)_3.5rem] gap-x-3 py-2 text-xs text-muted-foreground">
+                      <span className="tabular">{new Date(`${r[0].date}T12:00`).getDate()}–{new Date(`${r.at(-1)!.date}T12:00`).getDate()}</span>
+                      <span>Cards and mistakes only</span><span className="tabular whitespace-nowrap text-right">{hm(r[0].minutes)}/day</span>
+                    </li>
+                  ) : <DayRow key={r.date} d={r} max={max} go={go} />)}</ol>
+                </div>
               ))}
             </section>
           )}
+        </div>
+        <aside aria-labelledby="asks" className="min-w-0">
+          <h2 id="asks" className="font-display text-lg font-semibold">What the exam asks</h2>
+          {technique.papers.length > 0 && (
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              From {technique.papers.length} past paper{technique.papers.length === 1 ? "" : "s"}
+              {technique.minutes_per_point && <>; about <span className="tabular font-medium text-foreground">{technique.minutes_per_point.toFixed(1)} min</span> a point: stuck past that, move on and come back</>}.</p>
+          )}
+          {!data.question_types.length && (
+            <div className="mt-3 text-sm text-muted-foreground">
+              <p>No Question Types yet. They come from the past papers.</p>
+              {data.unclassified > 0 && <Button size="sm" variant="outline" className="mt-2" disabled={prepare.isPending || prepare.isSuccess} onClick={() => prepare.mutate()}>
+                {prepare.isSuccess ? "Sorting on the GPU… reload later" : "Sort the past Questions into types"}</Button>}
+            </div>
+          )}
+          <ul className="mt-4 divide-y divide-border border-y border-border">
+            {data.question_types.map((t) => {
+              const tech = how.get(t.name);
+              return (
+                <li key={t.id}>
+                  <details className="group py-3">
+                    <summary className="cursor-pointer list-none rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                      <p className="flex items-start gap-2 text-sm font-medium">
+                        <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform duration-200 group-open:rotate-90" />
+                        <span className="min-w-0 flex-1"><MdLine>{t.name}</MdLine></span></p>
+                      <div className="ml-6 mt-1.5 flex items-center gap-2 text-xs">
+                        <div className="h-1.5 flex-1 rounded-full bg-muted" aria-hidden>
+                          <div className={cn("h-1.5 rounded-full", t.likelihood === "high" ? "bg-destructive/70" : t.likelihood === "medium" ? "bg-warn/70" : "bg-muted-foreground/40")}
+                               style={{ width: `${(100 * t.share) / top}%` }} /></div>
+                        <span className="tabular shrink-0 text-muted-foreground">{Math.round(t.share * 100)}% of points · {t.papers} paper{t.papers === 1 ? "" : "s"}</span>
+                      </div>
+                    </summary>
+                    <div className="ml-6 mt-3 space-y-3 text-sm">
+                      {t.trigger && <div><p className="text-xs font-medium text-muted-foreground">How to recognise it</p><MdLine>{t.trigger}</MdLine></div>}
+                      {tech?.template && <div><p className="text-xs font-medium text-muted-foreground">How to answer</p><Md className="sheet-md">{tech.template}</Md></div>}
+                      {!!tech?.method_marks.length && (
+                        <div><p className="text-xs font-medium text-muted-foreground">Marks are given for</p>
+                          <ul className="mt-1 space-y-0.5">{tech.method_marks.map((m) => (
+                            <li key={m.step} className="flex justify-between gap-3"><MdLine>{m.step}</MdLine><span className="tabular shrink-0 text-muted-foreground">{m.points} pts</span></li>))}</ul></div>
+                      )}
+                      <Link to="/c/$cid/mixed" params={{ cid: String(cid) }} search={{ types: t.name } as never} className="inline-flex items-center gap-1 text-primary hover:underline">
+                        Practise this type<ArrowRight className="size-3.5" /></Link>
+                    </div>
+                  </details>
+                </li>
+              );
+            })}
+          </ul>
         </aside>
       </div>
     </Page>
