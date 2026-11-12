@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
@@ -297,9 +297,11 @@ def stop_course(cid: int) -> None:
 def run_pi_step[T: BaseModel](
     db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, schema: type[T],
     workdir: Path, files: tuple[Path, ...] = (), course_id: int | None = None, live: bool = False,
+    parse: Callable[[str], object] | None = None,
 ) -> T:
+    """parse: the step answers in plain text that parse turns into the schema's data, instead of calling the result tool with JSON."""
     version, base_prompt = harness_version(), render_prompt(step, inputs)
-    prompt, output_schema = base_prompt, schema.model_json_schema()
+    prompt, output_schema = base_prompt, None if parse else schema.model_json_schema()
     error = "no attempt"
     watched = None if live else course_id  # background generation shows on the Run screen
     activity_id = uuid4().hex
@@ -320,7 +322,7 @@ def run_pi_step[T: BaseModel](
                 _now.activity_id = activity_id
             try:
                 raw = call_backend(backend, step, prompt, list(files), workdir, live, output_schema)
-                result = schema.model_validate(parse_json(raw))
+                result = schema.model_validate((parse or parse_json)(raw))
             except (ValidationError, json.JSONDecodeError, StepFailed, subprocess.TimeoutExpired, OSError) as e:
                 error = str(e)[:2000]
                 _trace(db, course_id, step, version, inputs, files, raw, error, start)
@@ -371,15 +373,15 @@ def report(kind: str, delta: str | bool) -> None:
 
 
 def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, workdir: Path,
-                   files: tuple[Path, ...] = (), course_id: int | None = None) -> Iterator[str]:
-    """Live work with a free-text answer: yields text chunks as they arrive, then writes one Trace."""
+                   files: tuple[Path, ...] = (), course_id: int | None = None, stop: threading.Event | None = None) -> Iterator[str]:
+    """Live work with a free-text answer: yields text chunks as they arrive, then writes one Trace. Setting `stop` kills the model."""
     version, prompt, chunks, start = harness_version(), render_prompt(step, inputs), [], time.monotonic()
     stream = getattr(backend, "stream", None)
     try:
         for _ in range(QUEUE_RETRIES):
             try:
                 with GATE.lane(live=True):
-                    for chunk in (stream(step, prompt, list(files), workdir) if stream else [backend(step, prompt, list(files), workdir)]):
+                    for chunk in (stream(step, prompt, list(files), workdir, stop=stop) if stream else [backend(step, prompt, list(files), workdir)]):
                         chunks.append(chunk)
                         yield chunk
                 break
@@ -461,12 +463,13 @@ class PiBackend:
         return [{"id": f"{r[0]}/{r[1]}", "thinking": r[head.index("thinking")] == "yes"}
                 for r in rows[rows.index(head) + 1:] if len(r) == len(head)]
 
-    def stream(self, step, prompt, files, workdir) -> Iterator[str]:
-        for _, d in self._events(step, prompt, files, workdir):
+    def stream(self, step, prompt, files, workdir, stop: threading.Event | None = None) -> Iterator[str]:
+        for _, d in self._events(step, prompt, files, workdir, stop=stop):
             if d.get("type") == "text_delta":
                 yield d.get("delta", "")
 
-    def _events(self, step, prompt, files, workdir, output_schema: dict | None = None) -> Iterator[tuple[str, dict]]:
+    def _events(self, step, prompt, files, workdir, output_schema: dict | None = None,
+                stop: threading.Event | None = None) -> Iterator[tuple[str, dict]]:
         """pi's JSON event lines, each with its assistant message event ({} for other events). Killed after the timeout."""
         workdir.mkdir(parents=True, exist_ok=True)
         model = current_model() or model_for(step)  # live streams (tutor) don't go through run_pi_step
@@ -489,6 +492,8 @@ class PiBackend:
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
                 timer = threading.Timer(min(self.timeout, STEP_TIMEOUT.get(step, self.timeout)), proc.kill)
                 timer.start()
+                if stop is not None:  # a live answer the learner stopped: kill it even while it is silent (thinking)
+                    threading.Thread(target=lambda: stop.wait() and proc.poll() is None and proc.kill(), daemon=True).start()
                 cid = getattr(_now, "course_id", None)  # a background step's Course, so Stop can kill it
                 with _procs_lock:
                     PROCS.setdefault(cid, set()).add(proc)
@@ -502,6 +507,10 @@ class PiBackend:
                         yield line, (ev.get("assistantMessageEvent") or {}) if ev.get("type") == "message_update" else {}
                     code = proc.wait()
                 finally:
+                    if proc.poll() is None:  # the reader went away: don't let it run on
+                        proc.kill()
+                    if stop is not None:
+                        stop.set()  # ends the watcher thread
                     timer.cancel()
                     with _procs_lock:
                         PROCS.get(cid, set()).discard(proc)
@@ -587,7 +596,10 @@ export default function (pi) {
       const out = { ...args };
       for (const [k, v] of Object.entries(out)) {
         if (typeof v === "string" && schema.properties?.[k]?.type !== "string" && /^\\s*[\\[{]/.test(v)) {
-          try { out[k] = JSON.parse(v); } catch { try { out[k] = lenient(v); } catch {} }
+          try { out[k] = JSON.parse(v); } catch { try { out[k] = lenient(v); } catch {
+            // the string swallowed the rest of the arguments ('[...], "proposals": []}'): read it as the rest of the object
+            try { Object.assign(out, lenient(`{${JSON.stringify(k)}:${v}`)); } catch {}
+          } }
         }
       }
       return out;

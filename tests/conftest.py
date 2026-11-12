@@ -143,7 +143,7 @@ class FakeModel:
     def models():
         return [{"id": "llama-swap/big", "thinking": True}, {"id": "llama-swap/small", "thinking": False}]
 
-    def stream(self, step, prompt, files, workdir):
+    def stream(self, step, prompt, files, workdir, stop=None):
         text = self(step, prompt, files, workdir)
         for i in range(0, len(text), 12):
             yield text[i : i + 12]

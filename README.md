@@ -56,7 +56,9 @@ A Block that fails goes to a repair step; what still fails is flagged for review
 
 ## Studying with it
 
-- **Read**: the course, with a Chapter map, citations that open the professor's page, and a flag on every Block.
+- **Read**: the course, with a Chapter map, citations that open the professor's page, and a flag on every Block. The left rail lists what is in the open Section; search (`/`), keyboard shortcuts (`?`), text size, a warm-up recall of the previous Section, your own note under any Block, and a confidence rating at the end of each Section.
+- **Practice**: one exercise at a time, chosen from your own results. Every quiz, gap text, code exercise and Written answer is recorded per Block; what you missed comes back first, then Blocks on weak Concepts, then what you got right once its gap (1, 3, 7, 14, 30 days) has passed, then what you have not tried. Sections are interleaved.
+- **Progress**: Sections read and rated, practice tried and missed per Section, Concepts weakest first, what to work on next, and your notes.
 - **Tutor**: answers from the Section's pages with citations, and can propose a new or replacement Block. "Explain differently" on any teaching Block asks for a simpler version, an example, an analogy or more depth.
 - **Written answers and Explain back**: write (or photograph) an answer and have it graded step by step against a marking scheme, or self-mark when no model is available.
 - **Cram**: past papers rebuilt into Questions and sorted into Question Types, a plan up to the exam date, exam technique per type, Mock exams, and a printable Cheat Sheet.
@@ -86,7 +88,7 @@ The app serves on `127.0.0.1:8765` and keeps its data in `~/.local/share/course-
 | `CF_MODEL_<STEP>` | Model for one step, e.g. `CF_MODEL_JUDGE_GROUNDING` |
 | `CF_FALLBACK_MODEL` | One extra attempt on this model after the retries |
 | `CF_MODEL_CONCURRENCY` | Model calls at once (default 2); raise it only for a server configured for more |
-| `CF_HOST` | `0.0.0.0` to reach the app from a paired tablet |
+| `CF_HOST` | addresses to listen on, comma-separated: `127.0.0.1,$(tailscale ip -4)` to reach the app over Tailscale: any device on the tailnet gets in without pairing (not as the host) |
 
 Per-step models can also be set in Settings. The model server's API key is read from the environment and is never stored in the repository.
 

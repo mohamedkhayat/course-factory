@@ -3,6 +3,7 @@ sympy-verified claims. Also computes the numbers the app owns (Iteration Table r
 
 import ast
 import collections
+import functools
 import json
 import jsonschema
 import re
@@ -16,6 +17,7 @@ import yaml
 from sympy.parsing.sympy_parser import parse_expr, standard_transformations, implicit_multiplication_application, convert_xor
 
 from .catalogue import CATALOGUE, BlockDraft, validate_data
+from .kernels import LAB_IMAGE_TAG
 from .pi_step import LATEX_WORDS
 
 DIAGRAMS = ("diagram", "step_diagram")  # the Components drawn in Mermaid
@@ -263,6 +265,8 @@ def heal_text(data, key: str = ""):
 ASCII_MATH = re.compile(r"\bsqrt\(|\bexp\(|(?<!\*\*)[\w)]\*\*(?:[\d(]|[A-Za-z](?!\w|\*\*))|\w\^\(")  # x**2, e**x; not **D**éveloppeurs or Gi**t**H (bold)
 CODE_SPAN = re.compile(r"```.*?```|`[^`]*`", re.S)
 # shortcut: assumes French/English courses; a course taught in Chinese, Japanese or Korean would need this off
+# a correction that argues with itself ("Attendez — relisons") was written before its answer was worked out, and is often wrong
+SECOND_THOUGHTS = re.compile(r"\battendez(?!-vous)|\brecalculons\b|\brelisons\b|\boups\b|\bwait\s*[,—:-]|\bhold on\b|\blet me re-?(?:check|compute|calculate)", re.I)
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+")
 
 
@@ -410,15 +414,46 @@ def step_errors(data: dict) -> list[str]:
     return errors
 
 
+@functools.lru_cache(maxsize=1)
+def _lab_image_built() -> bool:
+    try:
+        return subprocess.run(["docker", "image", "inspect", LAB_IMAGE_TAG], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def run_errors(src: str) -> list[str]:
+    """Runs a Python solution in the Lab image (no network, 20 s): 1 of 1 solutions that executed anything crashed on a shape
+    error and nothing noticed. Passes when Docker or the image is missing."""
+    if not _lab_image_built():
+        return []
+    try:
+        out = subprocess.run(["docker", "run", "--rm", "-i", "--network", "none", "--memory", "1g", "--pids-limit", "128",
+                              LAB_IMAGE_TAG, "timeout", "20", "python", "-I", "-"], input=src, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    last = (out.stderr.strip().splitlines() or [""])[-1]
+    # shortcut: a fragment that leans on its setting passes (spark, X_train: 9 of 24 stored solutions), and so does a server that
+    # never returns; upgrade when code exercises carry their own setup code
+    if out.returncode in (0, 124) or last.startswith(("NameError", "ModuleNotFoundError", "ImportError", "EOFError", "FileNotFoundError")):
+        return []
+    return [f"the solution crashes when run: {last[:300]}; fix it (array shapes, names) so it runs from top to bottom"]
+
+
 def component_errors(component: str, data: dict) -> list[str]:
     """Checks for the Components whose content must work as code, a function of x and y, or a solvable drill."""
     if component == "code":
         return syntax_errors(data["language"], data["code"])
     if component == "code_exercise":
         return syntax_errors(data["language"], data["solution"]) or (
-            blank_errors(data["blanks"], data["starter"], data["language"]) if data.get("blanks") else [])
+            blank_errors(data["blanks"], data["starter"], data["language"]) if data.get("blanks") else []) or (
+            run_errors(data["solution"]) if data["language"].strip().lower() in ("python", "py") else [])
     if component == "fill_blanks":
-        return blank_errors(data["blanks"], data["template"], data["language"])
+        # code with gaps and no task is a guessing game; shortcut: a long title is taken to state the task, as older Blocks do
+        no_task = data["language"] and len(data.get("task", "")) < 20 and len(data["title"]) < 60
+        return blank_errors(data["blanks"], data["template"], data["language"]) + ([
+            'a fill_blanks on code needs a "task": what the completed code must do, with every condition a gap depends on '
+            "(a date bound, a sort order, scored or not), so each gap can be deduced and not guessed"] if no_task else [])
     if component in ("surface_plot", "optimizer_animation"):
         try:
             f = two_variable(data["expr"])
@@ -487,6 +522,8 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
             data, errs = draft.data, schema_errors(extra[draft.component], draft.data)
         else:
             data, errs = validate_data(draft.component, draft.data)
+        for c in draft.citations:  # a model types the plain apostrophe where the file name has the curly one
+            c.source = next((k for k in sources if k.replace("’", "'") == c.source.replace("’", "'")), c.source)
         block = {"component": draft.component, "data": data, "citations": [c.model_dump() for c in draft.citations], "origin": draft.origin,
                  **({"exam_types": draft.exam_types} if draft.exam_types else {}), **({"tests": draft.tests} if draft.tests else {})}
         for c in draft.citations:
@@ -503,6 +540,9 @@ def check_blocks(raw: list[dict], sources: dict[str, int], extra: dict[str, dict
             errs += ascii_math_errors(data)
             if m := CJK.search(json.dumps(data, ensure_ascii=False)):  # Qwen slips into Chinese mid-sentence
                 errs.append(f"Chinese/Japanese/Korean text {m.group()!r}: write it in the course's language")
+            if m := SECOND_THOUGHTS.search(json.dumps(data, ensure_ascii=False)):
+                errs.append(f"the text argues with itself ({m.group()!r}): work the answer out first, then write only the final "
+                            "reasoning, with the marked answer and every number agreeing with it")
             if draft.component == "iteration_table":
                 try:
                     data["rows"] = iteration_rows(data)

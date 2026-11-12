@@ -1,4 +1,5 @@
 import json
+import unicodedata
 import sqlite3
 import threading
 from pathlib import Path
@@ -51,6 +52,9 @@ def connect(path: Path) -> sqlite3.Connection:
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
     db.executescript(OUTLINE_SCHEMA)
+    for r in db.execute("SELECT id, name FROM sources").fetchall():  # names imported before import composed them
+        if not unicodedata.is_normalized("NFC", r["name"]):
+            db.execute("UPDATE OR IGNORE sources SET name=? WHERE id=?", (unicodedata.normalize("NFC", r["name"]), r["id"]))
     for table, column in [("questions", "chapter_id INTEGER"), ("traces", "duration_ms INTEGER"),
                           ("traces", "checks TEXT"), ("traces", "model TEXT"),
                           ("courses", "subject TEXT NOT NULL DEFAULT 'mixed'"),

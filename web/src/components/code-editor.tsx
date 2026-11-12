@@ -2,8 +2,15 @@ import { useEffect, useRef } from "react";
 import { basicSetup, EditorView } from "codemirror";
 import { keymap } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
+import { indentWithTab } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, StreamLanguage, indentUnit, syntaxHighlighting } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
+import { yaml } from "@codemirror/legacy-modes/mode/yaml";
+import { standardSQL } from "@codemirror/legacy-modes/mode/sql";
+import { json } from "@codemirror/legacy-modes/mode/javascript";
+import { http } from "@codemirror/legacy-modes/mode/http";
 import { tags as t } from "@lezer/highlight";
 
 const theme = EditorView.theme({
@@ -22,8 +29,11 @@ const colors = HighlightStyle.define([ // theme tokens, so both themes keep thei
   { tag: [t.function(t.variableName), t.function(t.definition(t.variableName))], color: "var(--foreground)", fontWeight: "600" },
 ]);
 
-/** A Python editor (CodeMirror 6). Shift+Enter runs the cell, like Jupyter. */
-export function CodeEditor({ value, onChange, onRun, label, language = "python" }: { value: string; onChange: (v: string) => void; onRun: () => void; label: string; language?: string }) {
+const MODES = { bash: shell, shell, sh: shell, dockerfile: dockerFile, yaml, yml: yaml, sql: standardSQL, json, http };
+const lang = (l: string) => l === "python" ? [python()] : l in MODES ? [StreamLanguage.define(MODES[l as keyof typeof MODES])] : [];
+
+/** A code editor (CodeMirror 6): Python, or a shell, Dockerfile, YAML, SQL, JSON or HTTP mode. Tab indents; Shift+Enter runs the cell, like Jupyter. */
+export function CodeEditor({ value, onChange, onRun, label, language = "python" }: { value: string; onChange: (v: string) => void; onRun?: () => void; label: string; language?: string }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const cb = useRef({ onChange, onRun });
@@ -33,8 +43,8 @@ export function CodeEditor({ value, onChange, onRun, label, language = "python" 
       parent: host.current!,
       doc: value,
       extensions: [
-        Prec.highest(keymap.of([{ key: "Shift-Enter", run: () => { cb.current.onRun(); return true; } }])),
-        basicSetup, ...(language === "python" ? [python()] : []), theme, syntaxHighlighting(colors),
+        Prec.highest(keymap.of([{ key: "Shift-Enter", run: () => { cb.current.onRun?.(); return !!cb.current.onRun; } }])),
+        basicSetup, keymap.of([indentWithTab]), indentUnit.of("    "), ...lang(language.toLowerCase()), theme, syntaxHighlighting(colors),
         EditorView.contentAttributes.of({ "aria-label": label }),
         EditorView.updateListener.of((u) => { if (u.docChanged) cb.current.onChange(u.state.doc.toString()); }),
       ],
@@ -46,5 +56,8 @@ export function CodeEditor({ value, onChange, onRun, label, language = "python" 
     const v = view.current;
     if (v && v.state.doc.toString() !== value) v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value } });
   }, [value]);
-  return <div ref={host} className="mt-3 overflow-hidden rounded-md border border-input" />;
+  return <>
+    <div ref={host} className="mt-3 overflow-hidden rounded-md border border-input" />
+    <p className="mt-1 text-xs text-muted-foreground">Tab indents, Shift+Tab unindents · Ctrl+/ comments a line · Ctrl+F finds · Alt+↑↓ moves a line{onRun && " · Shift+Enter runs"} · Esc then Tab leaves the editor</p>
+  </>;
 }

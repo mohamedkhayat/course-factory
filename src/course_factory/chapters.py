@@ -1,6 +1,7 @@
 """Generating Chapters Block by Block, checking and repairing Blocks, and the owner's Chapter review."""
 
 import json
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -13,8 +14,8 @@ from .context import Ctx
 from .outline import profile_of
 from .failures import failure_class
 from .progression import flag_progression, section_overlaps
-from .lesson_plan import order_gaps, plan_chapter, plan_gaps
-from .pi_step import MIN_WORDS, MODEL_LANES, StepFailed, attach_checks, last_trace_id, record_owner_action, run_pi_step
+from .lesson_plan import figure_gaps, order_gaps, plan_chapter, plan_gaps
+from .pi_step import MIN_WORDS, MODEL_LANES, StepFailed, attach_checks, escape_latex, last_trace_id, parse_json, record_owner_action, run_pi_step
 
 REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
 PRIORITY_ORDER = {"focus": 0, "normal": 1, "light": 2}
@@ -52,6 +53,79 @@ class SectionDraft(BaseModel):
         if words([b.get("data") for b in self.blocks if isinstance(b, dict)]) < MIN_SECTION_WORDS:
             raise ValueError(f"the Section is a placeholder (under {MIN_SECTION_WORDS} words): write its real content")
         return self
+
+
+BLOCK_MARK = re.compile(r"^==== BLOCK[ \t]+(\w+)[ \t]*$", re.M)
+FIELD_MARK = re.compile(r"^@@[ \t]*([\w.]+)[ \t]*$", re.M)
+DOUBLED, SINGLE = re.compile(r"\\\\[A-Za-z]{2,}"), re.compile(r"(?<!\\)\\[A-Za-z]{2,}")
+FENCED = re.compile(r"```\w*\n(.*)\n```", re.S)
+
+
+def _field(text: str, key: str):
+    """A field's raw text; a value that is a JSON list or object (edges, x0, nodes) is read as one."""
+    text = text.strip("\n")
+    if key in ("code", "starter", "solution", "mermaid") and (m := FENCED.fullmatch(text.strip())):  # a fence the model added anyway
+        text = m[1]
+    if text.lstrip()[:1] in ("[", "{"):
+        for candidate in (text, escape_latex(text)):
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+        try:  # a table's rows, one JSON list per line
+            return [json.loads(escape_latex(line)) for line in text.splitlines() if line.strip()]
+        except json.JSONDecodeError:
+            pass
+    return text
+
+
+def _lists(node):
+    """{"0": a, "1": b} written as steps.0, steps.1 becomes [a, b]."""
+    if not isinstance(node, dict):
+        return node
+    node = {k: _lists(v) for k, v in node.items()}
+    return [node[k] for k in sorted(node, key=int)] if node and all(k.isdigit() for k in node) else node
+
+
+def section_from_text(raw: str) -> object:
+    """Reads a Section written as plain text: "==== BLOCK <component>", header lines, then "@@ <field path>" lines each
+    followed by the field's raw text. Nothing is escaped, so LaTeX and code cannot break it. JSON is still accepted."""
+    if not BLOCK_MARK.search(raw):
+        return parse_json(raw)
+    body, _, proposals = raw.partition("\n==== PROPOSALS")
+    parts = BLOCK_MARK.split(body)[1:]
+    blocks = []
+    for component, chunk in zip(parts[::2], parts[1::2]):
+        if DOUBLED.search(chunk) and not SINGLE.search(chunk):  # the model fell back to JSON escaping for this Block
+            chunk = chunk.replace("\\\\", "\\")
+        head, *fields = FIELD_MARK.split(chunk)
+        block: dict = {"component": component, "data": {}, "citations": [], "origin": "model_added"}
+        for line in head.splitlines():
+            key, _, value = line.partition(":")
+            key, value = key.strip().lower(), value.strip()
+            if key == "cite":
+                source, _, rest = value.partition("|")
+                page, _, quote = rest.partition("|")
+                block["citations"].append({"source": source.strip(), "page": re.sub(r"\D", "", page) or page,
+                                           **({"quote": quote.strip()} if quote.strip() else {})})
+            elif key == "origin":
+                block["origin"] = value
+            elif key in ("exam_types", "tests"):
+                block[key] = [v.strip() for v in value.split(";") if v.strip()]
+            elif key.isidentifier() and value:  # a short field written as a header line ("tone: exam")
+                block["data"][key] = value
+        for path, text in zip(fields[::2], fields[1::2]):
+            *parents, last = path.split(".")
+            node = block["data"]
+            for key in parents:
+                node = node.setdefault(key, {})
+                if not isinstance(node, dict):
+                    break
+            else:
+                node[last] = _field(text, last)
+        block["data"] = _lists(block["data"])
+        blocks.append(block)
+    return {"blocks": blocks, "proposals": parse_json(proposals) if proposals.strip() else []}
 
 
 def catalogue_text(ctx: Ctx) -> str:
@@ -192,16 +266,17 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
                   "chapter_map": chapter_map}
 
         def gaps(blocks):
-            return ([f"plan: {g}" for g in plan_gaps(lesson, blocks)] if lesson else []) + \
+            return ([f"plan: {g}" for g in plan_gaps(lesson, blocks)] if lesson else []) + [f"plan: {g}" for g in figure_gaps(pages, blocks)] + \
                 [f"order: {g}" for g in order_gaps(blocks, inputs["teaches"])]
-        draft = run_pi_step(db, ctx.backend, "write_section", inputs, SectionDraft, ctx.course_dir(cid), course_id=cid)
+        draft = run_pi_step(db, ctx.backend, "write_section", inputs, SectionDraft, ctx.course_dir(cid), course_id=cid,
+                            parse=section_from_text)
         missed = gaps(draft.blocks)
         if missed:
             attach_checks(db, last_trace_id(), [{"warnings": missed}])
         # Only a plan gap buys a rewrite: rewriting for order gaps doubled the time per Section and left them in 2 of 5.
         if any(g.startswith("plan: ") for g in missed):
             draft = run_pi_step(db, ctx.backend, "write_section", inputs | {"gaps": "\n".join(f"- {g}" for g in missed)},
-                                SectionDraft, ctx.course_dir(cid), course_id=cid)
+                                SectionDraft, ctx.course_dir(cid), course_id=cid, parse=section_from_text)
             if missed := gaps(draft.blocks):  # still there: kept as warnings on the trace, never a stall
                 attach_checks(db, last_trace_id(), [{"warnings": missed}])
         return sec, pages, draft, last_trace_id()
@@ -396,6 +471,32 @@ def load_chapter(ctx: Ctx, chid: int) -> dict:
                                   "warning": f"section overlap: teaches what \"{other['title']}\" teaches ({', '.join(shared[:6])}); merge them"})
     return {"id": ch["id"], "title": ch["title"], "priority": ch["priority"], "exam_weight": ch["exam_weight"],
             "status": ch["status"], "overview": stored.get("overview", ""), "sections": sections}
+
+
+def merge_chapters(db, cid: int, chid: int, into: int) -> None:
+    """Moves Chapter `chid`'s Sections to the end of `into` (an exercise sheet filed as a Chapter of its own belongs to the
+    Chapter it practises), carries its plan, exam weight and everything that points at it over, and deletes it."""
+    rows = {r["id"]: r for r in db.execute("SELECT * FROM chapters WHERE course_id=? AND id IN (?,?)", (cid, chid, into))}
+    if chid == into or len(rows) != 2:
+        raise ValueError("merge two different Chapters of one Course")
+    n = db.execute("SELECT COUNT(*) FROM sections WHERE chapter_id=?", (into,)).fetchone()[0]
+    db.execute("UPDATE sections SET chapter_id=?, position=position+? WHERE chapter_id=?", (into, n, chid))
+    mine, theirs = (json.loads(rows[i]["plan"] or '{"sections": []}') for i in (into, chid))
+    plan = {"overview": mine.get("overview", ""), "sections": mine["sections"] + theirs["sections"]}  # the reader lists the Sections itself
+    status = "in_review" if "in_review" in (rows[into]["status"], rows[chid]["status"]) else rows[into]["status"]
+    db.execute("UPDATE chapters SET plan=?, status=?, exam_hits=exam_hits+?, exam_weight=exam_weight+? WHERE id=?",
+               (json.dumps(plan, ensure_ascii=False), status, rows[chid]["exam_hits"], rows[chid]["exam_weight"], into))
+    for table in ("questions", "question_types", "actions"):
+        db.execute(f"UPDATE {table} SET chapter_id=? WHERE chapter_id=?", (into, chid))
+    for table in ("exams", "labs"):
+        for r in db.execute(f"SELECT id, chapters FROM {table} WHERE course_id=?", (cid,)).fetchall():
+            ids = json.loads(r["chapters"])
+            if chid in ids:
+                db.execute(f"UPDATE {table} SET chapters=? WHERE id=?", (json.dumps(list(dict.fromkeys(into if i == chid else i for i in ids))), r["id"]))
+    db.execute("DELETE FROM chapters WHERE id=?", (chid,))
+    for pos, r in enumerate(db.execute("SELECT id FROM chapters WHERE course_id=? ORDER BY position", (cid,)).fetchall()):
+        db.execute("UPDATE chapters SET position=? WHERE id=?", (pos, r["id"]))
+    flag_progression(db, cid)
 
 
 def merge_sections(db, cid: int, sid: int, into: int) -> None:

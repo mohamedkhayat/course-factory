@@ -15,6 +15,7 @@ from .chapters import language_rule, block_json
 from .checks import GAP
 from .grading import QuestionGrade, Transcription, save_upload, score_steps
 from .pi_step import StepFailed, run_pi_step
+from .progression import PRACTICE
 from .context import Ctx
 
 SCHEDULER = Scheduler(enable_fuzzing=False)
@@ -50,13 +51,44 @@ CREATE TABLE IF NOT EXISTS actions (
   correct INTEGER, at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notes (block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE, text TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS confidence (section_id INTEGER PRIMARY KEY REFERENCES sections(id) ON DELETE CASCADE, level TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS written_answers (block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
   text TEXT NOT NULL DEFAULT '', files TEXT NOT NULL DEFAULT '[]', grade TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS outcomes (id INTEGER PRIMARY KEY, block_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  score REAL NOT NULL, at TEXT NOT NULL);
 """
 
 
 def now() -> dt.datetime:
     return dt.datetime.now(dt.UTC)
+
+
+PASS = 0.8  # a practice Block counts as right from this score
+GAPS = (1, 3, 7, 14, 30)  # days until a Block is due again after 1, 2, ... sittings right in a row
+
+
+def standing(events: list[tuple[str, float, int]]) -> dict:
+    """How a practice Block stands from its attempts (when, score 0..1, part), oldest first. A day is one sitting, scored as
+    the mean of each part's latest answer that day. A miss makes the Block due at once; each sitting right in a row pushes
+    the next one further out."""
+    sittings: dict[dt.date, dict[int, float]] = {}
+    for at, score, part in events:
+        sittings.setdefault(dt.datetime.fromisoformat(at).astimezone().date(), {})[part] = score
+    days = sorted(sittings)
+    means = [sum(sittings[d].values()) / len(sittings[d]) for d in days]
+    run = next((i for i, m in enumerate(reversed(means)) if m < PASS), len(means))
+    due = days[-1] + dt.timedelta(days=GAPS[min(run, len(GAPS)) - 1] if run else 0)
+    return {"tries": len(days), "last": round(means[-1], 2), "last_at": events[-1][0], "run": run, "due": due.isoformat()}
+
+
+def interleave(items: list[dict], limit: int) -> list[dict]:
+    """The first `limit` items in order, except that two from the same Section do not follow each other when another is left."""
+    out, rest = [], list(items)
+    while rest and len(out) < limit:
+        i = next((i for i, x in enumerate(rest) if not out or x["section_id"] != out[-1]["section_id"]), 0)
+        out.append(rest.pop(i))
+    return out
 
 
 def today() -> dt.date:
@@ -65,6 +97,14 @@ def today() -> dt.date:
 
 class Place(BaseModel):
     section_id: int
+
+
+class NoteIn(BaseModel):
+    text: str = Field(max_length=20000)
+
+
+class ConfidenceIn(BaseModel):
+    level: Literal["solid", "shaky", "lost"]
 
 
 class FlagIn(BaseModel):
@@ -88,6 +128,10 @@ class WrittenText(BaseModel):
 
 class SelfMark(BaseModel):
     mark: Literal["got", "partly", "missed"]
+
+
+class Outcome(BaseModel):
+    score: float = Field(ge=0, le=1)
 
 
 class QuizAnswer(BaseModel):
@@ -272,6 +316,49 @@ def router(ctx: Ctx) -> APIRouter:
             raise HTTPException(404, "no such published Block")
         return row
 
+    def outcome(bid: int, score: float) -> None:
+        db.execute("INSERT INTO outcomes (block_id, score, at) VALUES (?,?,?)", (bid, score, now().isoformat()))
+
+    def standings(cid: int) -> dict[int, dict]:
+        """Every attempted practice Block of the Course with how it stands: quiz answers per question, every other kind per Block."""
+        events: dict[int, list] = {}
+        for a in db.execute(
+                "SELECT x.* FROM (SELECT block_id, at, correct AS score, question AS part, 0 AS kind, id FROM quiz_attempts "
+                "UNION ALL SELECT block_id, at, score, 0, 1, id FROM outcomes) x JOIN blocks b ON b.id=x.block_id "
+                "JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id WHERE c.course_id=? "
+                "ORDER BY x.at, x.kind, x.id", (cid,)):
+            events.setdefault(a["block_id"], []).append((a["at"], a["score"], a["part"]))
+        return {bid: standing(e) for bid, e in events.items()}
+
+    def practice_blocks(cid: int):
+        """Each published Section, in reading order, with its practice Blocks and the Concepts each one tests (its own, else
+        the Section's)."""
+        for ch in db.execute("SELECT * FROM chapters WHERE course_id=? AND status='published' ORDER BY position", (cid,)).fetchall():
+            for sec in db.execute(
+                    "SELECT s.id, s.title, s.teaches, r.read_at, f.level FROM sections s LEFT JOIN reads r ON r.section_id=s.id "
+                    "LEFT JOIN confidence f ON f.section_id=s.id WHERE s.chapter_id=? ORDER BY s.position", (ch["id"],)).fetchall():
+                blocks = db.execute("SELECT * FROM blocks WHERE section_id=? AND status='ok' ORDER BY position", (sec["id"],)).fetchall()
+                yield ch, sec, [(b, json.loads(b["tests"]) or json.loads(sec["teaches"])) for b in blocks if b["component"] in PRACTICE]
+
+    def mastery(cid: int, stands: dict[int, dict]) -> dict[str, dict]:
+        """Per Concept: the practice Blocks that test it, how many were tried, and the mean of their latest scores."""
+        out: dict[str, dict] = {}
+        for ch, sec, blocks in practice_blocks(cid):
+            where = {"section_id": sec["id"], "section": sec["title"], "chapter": ch["title"]}
+            for name in json.loads(sec["teaches"]):
+                out.setdefault(name, {"name": name, **where, "blocks": 0, "tried": 0, "mastery": None, "scores": []})
+            for b, tests in blocks:
+                for name in tests:
+                    c = out.setdefault(name, {"name": name, **where, "blocks": 0, "tried": 0, "mastery": None, "scores": []})
+                    c["blocks"] += 1
+                    if b["id"] in stands:
+                        c["tried"] += 1
+                        c["scores"].append(stands[b["id"]]["last"])
+        for c in out.values():
+            scores = c.pop("scores")
+            c["mastery"] = round(sum(scores) / len(scores), 2) if scores else None
+        return out
+
     # Reader
 
     @r.put("/api/courses/{cid}/place")
@@ -317,6 +404,124 @@ def router(ctx: Ctx) -> APIRouter:
             "SELECT f.* FROM block_flags f JOIN blocks b ON b.id=f.block_id JOIN sections s ON s.id=b.section_id "
             "JOIN chapters c ON c.id=s.chapter_id WHERE c.course_id=? ORDER BY f.id", (cid,))]
 
+    # The learner's own notes and how sure they feel
+
+    @r.put("/api/courses/{cid}/blocks/{bid}/note")
+    def put_note(cid: int, bid: int, body: NoteIn):
+        """The learner's note on a Block; an empty note removes it."""
+        published_block(cid, bid)
+        text = body.text.strip()
+        if text:
+            db.execute("INSERT INTO notes VALUES (?,?,?) ON CONFLICT(block_id) DO UPDATE SET text=excluded.text, updated_at=excluded.updated_at",
+                       (bid, text, now().isoformat()))
+        else:
+            db.execute("DELETE FROM notes WHERE block_id=?", (bid,))
+        return {"block_id": bid, "text": text}
+
+    @r.get("/api/courses/{cid}/notes")
+    def list_notes(cid: int):
+        """Every note in the Course's published Chapters, in reading order, with where it sits."""
+        course_or_404(cid)
+        return [dict(x) for x in db.execute(
+            "SELECT n.block_id, n.text, n.updated_at, b.component, s.id section_id, s.title section, c.title chapter "
+            "FROM notes n JOIN blocks b ON b.id=n.block_id JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id "
+            "WHERE c.course_id=? AND c.status='published' ORDER BY c.position, s.position, b.position", (cid,))]
+
+    @r.put("/api/courses/{cid}/sections/{sid}/confidence")
+    def put_confidence(cid: int, sid: int, body: ConfidenceIn):
+        """How well the learner feels they know a Section after reading it; Progress sends them back to the shaky ones."""
+        published_section(cid, sid)
+        db.execute("INSERT INTO confidence VALUES (?,?,?) ON CONFLICT(section_id) DO UPDATE SET level=excluded.level, at=excluded.at",
+                   (sid, body.level, now().isoformat()))
+        return {"section_id": sid, "level": body.level}
+
+    @r.get("/api/courses/{cid}/progress")
+    def progress(cid: int):
+        """Where the learner stands: per Section what is read, how sure they feel, how the quizzes went (latest answer per
+        question) and how its practice Blocks stand; per Concept its mastery from every kind of practice; and the Sections to
+        work on next, weakest first."""
+        course_or_404(cid)
+        latest = {(a["block_id"], a["question"]): bool(a["correct"]) for a in db.execute(
+            "SELECT a.block_id, a.question, a.correct FROM quiz_attempts a WHERE a.id = (SELECT MAX(id) FROM quiz_attempts "
+            "WHERE block_id=a.block_id AND question=a.question)")}
+        stands = standings(cid)
+        chapters, weak, unread = {}, [], []
+        for ch, sec, blocks in practice_blocks(cid):
+            where = {"section_id": sec["id"], "section": sec["title"], "chapter": ch["title"]}
+            questions = answered = correct = missed = tried = 0
+            for b, _ in blocks:
+                st = stands.get(b["id"])
+                tried += st is not None
+                if b["component"] == "quiz":
+                    for n in range(len(json.loads(b["data"])["questions"])):
+                        got = latest.get((b["id"], n))
+                        questions, answered, correct = questions + 1, answered + (got is not None), correct + bool(got)
+                elif st and st["last"] < PASS:
+                    missed += 1
+            chapters.setdefault(ch["id"], {"id": ch["id"], "title": ch["title"], "exam_weight": ch["exam_weight"], "sections": []})[
+                "sections"].append({"id": sec["id"], "title": sec["title"], "read": sec["read_at"] is not None, "confidence": sec["level"],
+                                    "questions": questions, "answered": answered, "correct": correct,
+                                    "practice": len(blocks), "tried": tried, "missed": missed})
+            wrong = answered - correct
+            if sec["level"] in ("lost", "shaky") or wrong or missed:
+                reason = " · ".join(x for x in (
+                    {"lost": "you rated it lost", "shaky": "you rated it shaky"}.get(sec["level"]),
+                    f"{wrong} quiz question{'s' if wrong > 1 else ''} wrong" if wrong else None,
+                    f"{missed} exercise{'s' if missed > 1 else ''} missed" if missed else None) if x)
+                weak.append({**where, "reason": reason, "weight": ch["exam_weight"],
+                             "score": (sec["level"] == "lost") * 3 + (sec["level"] == "shaky") * 2 + wrong + missed})
+            elif sec["read_at"] is None:
+                unread.append({**where, "reason": "not read yet"})
+        weak.sort(key=lambda w: (-w.pop("score"), -w.pop("weight")))
+        return {"chapters": list(chapters.values()), "concepts": list(mastery(cid, stands).values()), "next": weak[:8] + unread[:1]}
+
+    @r.get("/api/courses/{cid}/results")
+    def results(cid: int):
+        """How each attempted practice Block stands, by Block id: the reader shows it under the Block."""
+        course_or_404(cid)
+        return standings(cid)
+
+    @r.post("/api/courses/{cid}/blocks/{bid}/outcome")
+    def fill_outcome(cid: int, bid: int, body: Outcome):
+        """Gaps (fill_blanks, or a code exercise with blanks) are checked in the browser; this keeps the share got right."""
+        row = published_block(cid, bid)
+        if row["component"] not in ("fill_blanks", "code_exercise"):
+            raise HTTPException(422, "not a Block with gaps")
+        outcome(bid, body.score)
+        record(ctx, "blanks_answer", row["chapter_id"], body.score >= PASS)
+        return {"ok": True}
+
+    @r.get("/api/courses/{cid}/practice")
+    def practice(cid: int, limit: int = 8):
+        """What to practise now, from the learner's own results: Blocks missed last time first, then Blocks on Concepts that
+        are weak, then Blocks due for review (right before, long enough ago), then untried Blocks of Sections already read.
+        Heavier Chapters and Sections rated shaky or lost come first within each kind; Sections are interleaved."""
+        course_or_404(cid)
+        stands = standings(cid)
+        concepts = mastery(cid, stands)
+        day, picks = today().isoformat(), []
+        for ch, sec, blocks in practice_blocks(cid):
+            for b, tests in blocks:
+                st = stands.get(b["id"])
+                weak = [t for t in tests if (concepts[t]["mastery"] if concepts[t]["mastery"] is not None else 1) < PASS]
+                if st and st["last"] < PASS:
+                    kind, rank, reason = "missed", 3 + (1 - st["last"]), "You missed this last time"
+                elif st and st["due"] <= day:
+                    kind, rank = "due", 2
+                    reason = f"Right {st['run']} time{'s' if st['run'] > 1 else ''} in a row: due again so it sticks"
+                elif st or sec["read_at"] is None:
+                    continue  # right and not due yet, or its Section is not read yet
+                elif weak:
+                    kind, rank, reason = "weak", 2.5, f"Not tried yet · tests “{weak[0]}”, where you are weak"
+                else:
+                    kind, rank, reason = "new", 1, "Not tried yet"
+                picks.append({"kind": kind, "reason": reason, "section_id": sec["id"], "section": sec["title"], "chapter": ch["title"],
+                              "standing": st, "block": block_json(b),
+                              "rank": rank + ch["exam_weight"] + 0.5 * (sec["level"] in ("lost", "shaky"))})
+        picks.sort(key=lambda x: -x.pop("rank"))
+        counts = {k: sum(x["kind"] == k for x in picks) for k in ("missed", "weak", "due", "new")}
+        return {"counts": counts, "items": interleave(picks, max(1, min(limit, 30)))}
+
     # Quizzes and mistakes
 
     @r.post("/api/courses/{cid}/blocks/{bid}/answers")
@@ -349,6 +554,7 @@ def router(ctx: Ctx) -> APIRouter:
         except StepFailed as e:
             raise HTTPException(502, f"grading failed: {e}")
         record(ctx, "code_answer", row["chapter_id"], grade.correct)
+        outcome(bid, float(grade.correct))
         return grade.model_dump()
 
     @r.post("/api/courses/{cid}/blocks/{bid}/self-mark")
@@ -358,6 +564,7 @@ def router(ctx: Ctx) -> APIRouter:
         if row["component"] not in WRITTEN:
             raise HTTPException(422, "not an exercise Block")
         record(ctx, "self_mark", row["chapter_id"], body.mark == "got")
+        outcome(bid, {"got": 1, "partly": 0.5, "missed": 0}[body.mark])
         if body.mark != "got":
             due_again(cid, row)
         return {"ok": True}
@@ -452,6 +659,7 @@ def router(ctx: Ctx) -> APIRouter:
                  "transcription": transcribed, "steps": steps}
         save_written(bid, grade=json.dumps(grade, ensure_ascii=False))
         record(ctx, "written_grade", row["chapter_id"], grade["total"] >= grade["max"])
+        outcome(bid, grade["total"] / grade["max"] if grade["max"] else 0)
         if grade["total"] < grade["max"] / 2:
             due_again(cid, row)
         return written_json(cid, bid)

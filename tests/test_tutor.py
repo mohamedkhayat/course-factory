@@ -159,8 +159,8 @@ def test_a_tutor_proposal_is_checked_then_added_or_replaced_on_accept(client, ma
     done = ask(client, cid, "ajoute un bloc", section_id=sid)
     prompt = next(p for s, p in model.prompts if s == "tutor")
     assert f"[{first['id']}] {first['component']}:" in prompt and "- theorem_box {" in prompt  # its Blocks and the Catalogue
-    assert done["proposal"]["block"]["component"] == "theorem_box" and done["proposal"]["flags"]["errors"] == []
-    added = client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").json()
+    assert done["proposal"]["changes"][0]["block"]["component"] == "theorem_box" and done["proposal"]["flags"]["errors"] == []
+    added = client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").json()[1]
     assert [b["id"] for b in blocks_of(client, cid, sid)] == [first["id"], added["id"], *(b["id"] for b in rest)]
     assert client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept").status_code == 409  # once only
     assert any(t["owner_action"] == "accepted_proposal" for t in client.get(f"/api/courses/{cid}/traces").json())
@@ -168,6 +168,66 @@ def test_a_tutor_proposal_is_checked_then_added_or_replaced_on_accept(client, ma
     done = ask(client, cid, "remplace le premier bloc", section_id=sid)
     client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept")
     assert blocks_of(client, cid, sid)[0]["id"] == first["id"] and blocks_of(client, cid, sid)[0]["data"]["title"] == "Remplacé"
+    ids = [b["id"] for b in blocks_of(client, cid, sid)]
+    proposing(model, {"action": "move", "block_id": ids[0], "after_block_id": ids[-1]})  # reorder: first goes last
+    done = ask(client, cid, "mets le premier bloc à la fin", section_id=sid)
+    assert done["proposal"]["changes"][0]["action"] == "move" and done["proposal"]["changes"][0]["block"]["id"] == ids[0]
+    client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept")
+    assert [b["id"] for b in blocks_of(client, cid, sid)] == [*ids[1:], ids[0]]
+    proposing(model, {"action": "move", "block_id": ids[0]})  # no "after": back to the start
+    done = ask(client, cid, "remets-le au début", section_id=sid)
+    client.post(f"/api/courses/{cid}/tutor/messages/{done['message_id']}/accept")
+    assert [b["id"] for b in blocks_of(client, cid, sid)] == ids
+    proposing(model, {"action": "move", "block_id": ids[0], "after_block_id": 999999})
+    assert ask(client, cid, "déplace", section_id=sid)["proposal"]["flags"]["errors"]
+    proposing(model, {"changes": [{"block_id": ids[0]}]})  # the error names what is missing, so the tutor can fix it
+    assert ask(client, cid, "déplace", section_id=sid)["proposal"]["flags"]["errors"] == ['proposal: a change has no "action" key']
+
+
+def test_a_plan_of_changes_is_previewed_applied_together_and_rolled_back(client, material, model):
+    cid, sections = published(client, material, model)
+    sid = sections[0]["id"]
+    before = blocks_of(client, cid, sid)
+    a, b, *rest = [x["id"] for x in before]
+    proposing(model, {"changes": [{"action": "remove", "block_id": a}, {"action": "add", "after_block_id": b, "block": NEW},
+                                  {"action": "move", "block_id": b, "after_block_id": rest[-1]}]})
+    done = ask(client, cid, "réorganise la section", section_id=sid)
+    mid = done["message_id"]
+    assert [c["action"] for c in done["proposal"]["changes"]] == ["remove", "add", "move"] and not done["proposal"]["can_undo"]
+    seen = client.get(f"/api/courses/{cid}/tutor/messages/{mid}/preview").json()  # the Section as it would be, nothing written
+    assert [(x["id"] if x["id"] > 0 else "new", x["mark"]) for x in seen] == [(a, "removed"), ("new", "added"), *((i, None) for i in rest), (b, "moved")]
+    assert blocks_of(client, cid, sid) == before
+    assert client.post(f"/api/courses/{cid}/tutor/messages/{mid}/rollback").status_code == 409  # nothing to roll back yet
+    after = client.post(f"/api/courses/{cid}/tutor/messages/{mid}/accept").json()
+    assert [x["id"] for x in after][1:] == [*rest, b] and after[0]["component"] == "theorem_box" and a not in [x["id"] for x in after]
+    assert client.get(f"/api/courses/{cid}/tutor/{done['conversation_id']}").json()[-1]["proposal"]["can_undo"]
+    client.post(f"/api/courses/{cid}/tutor/messages/{mid}/rollback")
+    assert blocks_of(client, cid, sid) == before  # same ids, same order, same content
+    assert client.get(f"/api/courses/{cid}/tutor/{done['conversation_id']}").json()[-1]["proposal"]["status"] == "rolled_back"
+    proposing(model, {"action": "remove", "block_id": a})  # a Section edited since can't be rolled back over the edit
+    one = ask(client, cid, "supprime le premier", section_id=sid)["message_id"]
+    client.post(f"/api/courses/{cid}/tutor/messages/{one}/accept")
+    proposing(model, {"action": "remove", "block_id": b})
+    two = ask(client, cid, "et le suivant", section_id=sid)["message_id"]
+    client.post(f"/api/courses/{cid}/tutor/messages/{two}/accept")
+    assert client.post(f"/api/courses/{cid}/tutor/messages/{one}/rollback").status_code == 409
+
+
+def test_a_question_is_taken_back_with_what_follows_unless_a_change_from_it_was_applied(client, material, model):
+    cid, sections = published(client, material, model)
+    sid = sections[0]["id"]
+    one = ask(client, cid, "première", section_id=sid)
+    conv = one["conversation_id"]
+    two = ask(client, cid, "deuxième", section_id=sid, conversation_id=conv)
+    assert client.delete(f"/api/courses/{cid}/tutor/messages/{two['question_id']}").status_code == 204
+    assert [m["text"] for m in client.get(f"/api/courses/{cid}/tutor/{conv}").json() if m["role"] == "learner"] == ["première"]
+    proposing(model, {"action": "add", "block": NEW})
+    three = ask(client, cid, "ajoute", section_id=sid, conversation_id=conv)
+    client.post(f"/api/courses/{cid}/tutor/messages/{three['message_id']}/accept")
+    assert client.delete(f"/api/courses/{cid}/tutor/messages/{three['question_id']}").status_code == 409
+    client.post(f"/api/courses/{cid}/tutor/messages/{three['message_id']}/rollback")
+    assert client.delete(f"/api/courses/{cid}/tutor/messages/{one['question_id']}").status_code == 204  # the whole conversation
+    assert client.get(f"/api/courses/{cid}/tutor/{conv}").status_code == 404
 
 
 def test_a_proposal_failing_the_checks_cannot_be_accepted(client, material, model):

@@ -1,9 +1,10 @@
 import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, ListChecks, MessageSquareText, Sparkles, Timer, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, ListChecks, MessageSquareText, NotebookPen, Sparkles, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { exported, get, pageUrl, send, type Block, type Citation } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { exported, get, pageUrl, send, type Block, type Citation, type Standing } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fadedSteps, lastStage, LIKELIHOOD } from "@/lib/cram";
 import { Md, MdLine, Tex } from "./md";
@@ -38,9 +39,10 @@ function TheoremBox({ data }: P) {
 function WorkedExample({ data }: P) {
   const [stage, setStage] = useState(0);
   const [revealed, setRevealed] = useState(false);
+  const [mine, setMine] = useState<Record<number, string>>({});
   const steps: string[] = data.steps;
   const hidden = new Set(fadedSteps(steps.length, stage));
-  const next = (got: boolean) => { setRevealed(false); if (got) setStage(stage >= lastStage(steps.length) ? 0 : stage + 1); };
+  const next = (got: boolean) => { setRevealed(false); setMine({}); if (got) setStage(stage >= lastStage(steps.length) ? 0 : stage + 1); };
   return (
     <div>
       <h4 className="flex items-baseline justify-between gap-3 font-medium"><MdLine>{data.title}</MdLine>
@@ -50,8 +52,12 @@ function WorkedExample({ data }: P) {
       <ol className="mt-2 space-y-1 border-l border-border pl-4">
         {steps.map((s, i) => (
           <li key={i} className="flex gap-3"><span className="tabular pt-1 text-sm text-muted-foreground">{i + 1}</span>
-            {hidden.has(i) && !revealed ? <span className="my-1 flex-1 rounded border border-dashed border-input px-3 py-1 text-sm text-muted-foreground">Your turn: write this step on paper</span>
-              : <div className={cn(hidden.has(i) && "rounded bg-ok/10 px-2")}><Md>{s}</Md></div>}
+            {hidden.has(i) && !revealed ? <Textarea aria-label={`Step ${i + 1}, your answer`} className="my-1 min-h-16 flex-1 border-dashed text-sm" placeholder="Your turn: write this step here (or on paper)"
+                value={mine[i] ?? ""} onChange={(e) => setMine({ ...mine, [i]: e.target.value })} />
+              : <div className="flex-1">
+                  {hidden.has(i) && mine[i]?.trim() && <p className="mb-1 whitespace-pre-wrap rounded border border-dashed border-input px-2 py-1 text-sm"><span className="text-muted-foreground">Yours: </span>{mine[i]}</p>}
+                  <div className={cn(hidden.has(i) && "rounded bg-ok/10 px-2")}><Md>{s}</Md></div>
+                </div>}
           </li>
         ))}
       </ol>
@@ -375,9 +381,13 @@ function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]
 }
 
 function Figure({ data, cid }: P) {
+  const [big, setBig] = useState(false);
   return (
     <figure>
-      <img src={pageUrl(cid, data.source, data.page)} alt={data.caption || `${data.source} page ${data.page}`} className="max-h-[480px] rounded-md border border-border" loading="lazy" />
+      <button type="button" onClick={() => setBig(true)} className="block cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-primary" aria-label="Open the figure larger">
+        <img src={pageUrl(cid, data.source, data.page)} alt={data.caption || `${data.source} page ${data.page}`} className="max-h-[480px] rounded-md border border-border" loading="lazy" />
+      </button>
+      <PageViewer cid={cid} cite={big ? { source: data.source, page: data.page } : null} onClose={() => setBig(false)} />
       <figcaption className="mt-2 text-sm text-muted-foreground"><Md>{data.caption || `${data.source}, p. ${data.page}`}</Md></figcaption>
     </figure>
   );
@@ -467,20 +477,29 @@ function BlockRender({ block, cid }: { block: Block; cid: number }) {
 export function PageViewer({ cid, cite, onClose }: { cid: number; cite: Citation | null; onClose: () => void }) {
   return (
     <Dialog open={!!cite} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-[min(96vw,80rem)] sm:max-w-[min(96vw,80rem)]">
         <DialogHeader><DialogTitle>{cite?.source}, page {cite?.page}</DialogTitle></DialogHeader>
         {cite?.quote && <blockquote className="border-l border-foreground/40 pl-3 font-serif italic">{cite.quote}</blockquote>}
-        {cite && <img src={pageUrl(cid, cite.source, cite.page)} alt={`${cite.source} page ${cite.page}`} className="max-h-[70vh] w-full rounded-md border border-border object-contain" />}
+        {cite && <img src={pageUrl(cid, cite.source, cite.page)} alt={`${cite.source} page ${cite.page}`} className="max-h-[82vh] w-full rounded-md border border-border object-contain" />}
       </DialogContent>
     </Dialog>
   );
 }
 
 /** A Block as the learner sees it: content, then its Citations and origin, and a way to flag it. */
-export function ReaderBlock({ block, cid, onCite, onExplain }: {
+/** "3 days ago", for a result shown under a practice Block. */
+const ago = (iso: string) => {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  return days < 1 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+};
+
+export function ReaderBlock({ block, cid, onCite, onExplain, note, onNote, standing }: {
   block: Block; cid: number; onCite: (c: Citation) => void; onExplain?: (block_id: number, style: Style, label: string) => void;
+  note?: string; onNote?: (text: string) => Promise<unknown>; standing?: Standing;
 }) {
   const [explaining, setExplaining] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);  // the note being edited; null when closed
+  const saveNote = async () => { if (draft !== null && draft.trim() !== (note ?? "")) await onNote?.(draft); setDraft(null); };
   const [flagging, setFlagging] = useState(false);
   const [flagged, setFlagged] = useState(false);
   const [compare, setCompare] = useState(false);
@@ -516,6 +535,25 @@ export function ReaderBlock({ block, cid, onCite, onExplain }: {
           <span className="font-medium">The source has a slip here: </span><MdLine>{f.slice("source error: ".length)}</MdLine>
         </p>
       ))}
+      {draft !== null ? (
+        <form className="mt-3 rounded-md border border-border bg-muted/40 p-2" onSubmit={(e) => { e.preventDefault(); saveNote(); }}>
+          <Textarea autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} rows={2} aria-label="Your note on this Block"
+                    placeholder="In your own words: what is the point here, what tripped you up? Markdown and $math$ work."
+                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveNote(); } if (e.key === "Escape") setDraft(null); }}
+                    className="min-h-0 border-0 bg-transparent font-sans shadow-none focus-visible:ring-0" />
+          <div className="mt-1 flex items-center justify-end gap-2 font-sans">
+            <span className="mr-auto pl-3 text-xs text-muted-foreground">Ctrl+Enter saves · empty removes the note</span>
+            <Button type="button" size="sm" variant="ghost" onClick={() => setDraft(null)}>Cancel</Button>
+            <Button type="submit" size="sm">Save note</Button>
+          </div>
+        </form>
+      ) : note && (
+        <button type="button" onClick={() => setDraft(note)} aria-label="Edit your note"
+                className="mt-3 block w-full rounded-md border-l-2 border-primary bg-primary/5 px-3 py-2 text-left font-sans text-sm hover:bg-primary/10">
+          <span className="mb-0.5 flex items-center gap-1 text-xs font-medium text-primary"><NotebookPen className="size-3" />Your note</span>
+          <Md className="tutor-answer">{note}</Md>
+        </button>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground opacity-80 transition-opacity group-hover/block:opacity-100">
         {block.citations.map((c, i) => (
           <button key={i} type="button" onClick={() => onCite(c)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
@@ -527,6 +565,11 @@ export function ReaderBlock({ block, cid, onCite, onExplain }: {
             {compare ? "Hide the slide" : "Compare with the slide"}</button>
         )}
         <span>{block.origin === "from_source" ? "From source" : "Model-added"}</span>
+        {standing && (
+          <span className={cn("rounded-full px-2 py-0.5 font-medium", standing.last >= 0.8 ? "bg-ok/15 text-ok" : "bg-destructive/15 text-destructive")}>
+            {standing.last >= 0.8 ? "Right" : standing.last > 0 ? "Partly right" : "Missed"} {ago(standing.last_at)}
+            {standing.last >= 0.8 ? (standing.due <= new Date().toLocaleDateString("sv") ? " · due again" : "") : " · comes back in Practice"}</span>
+        )}
         {onExplain && !PRACTICE.has(block.component) && (explaining ? (
           <span role="group" aria-label="Explain this differently" className="flex flex-wrap items-center gap-1">
             {STYLES.map(([s, l]) => <Button key={s} size="sm" variant="ghost" className="h-6 px-2 text-xs"
@@ -536,7 +579,10 @@ export function ReaderBlock({ block, cid, onCite, onExplain }: {
           <button type="button" onClick={() => setExplaining(true)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
             <Sparkles className="size-3" />Explain differently</button>
         ))}
-        <span className="ml-auto flex items-center gap-1">
+        <span className="ml-auto flex items-center gap-3">
+          {onNote && !note && draft === null && (
+            <button type="button" onClick={() => setDraft("")} className="inline-flex items-center gap-1 hover:text-foreground"><NotebookPen className="size-3" />Note</button>
+          )}
           {flagged ? <span className="text-warn">Flagged, thanks</span> : flagging ? (
             <>
               <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => flag("wrong")}>Wrong</Button>

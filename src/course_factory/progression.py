@@ -1,6 +1,7 @@
 """Progression (#22): a practice Block tests only what the Course has taught before it, in reading order, and gives the facts
 it needs. Plain code, no model: it reads the Blocks' own text, so it also catches a model that under-declares what it tests."""
 
+import difflib
 import itertools
 import json
 import re
@@ -276,7 +277,9 @@ def course_blocks(db, cid: int) -> tuple[list[dict], dict[str, tuple[int, str]]]
     rows = db.execute(f"SELECT b.id, b.component, b.data, b.tests, s.id sid, s.title section, c.id chapter FROM blocks b "
                       f"JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id "
                       f"WHERE c.id IN ({','.join('?' * len(chapters))}) ORDER BY c.position, s.position, b.position", chapters).fetchall()
-    return [{"id": r["id"], "component": r["component"], "data": json.loads(r["data"]), "tests": json.loads(r["tests"]),
+    # a model retypes a Concept's name with another subscript, a typo or a lost brace: read it as the Concept it is nearest to
+    near = lambda t: t if t in concepts else next(iter(difflib.get_close_matches(t, concepts, 1, 0.85)), t)  # noqa: E731
+    return [{"id": r["id"], "component": r["component"], "data": json.loads(r["data"]), "tests": [near(t) for t in json.loads(r["tests"])],
              "chapter": r["chapter"], "section": r["section"], "at": at[r["sid"]]} for r in rows], concepts
 
 
@@ -288,7 +291,9 @@ def flag_progression(db, cid: int) -> dict[int, list[str]]:
     for bid, errs in [*ledger_errors(blocks, concepts).items(), *repeat_errors(blocks).items()]:
         errors.setdefault(bid, []).extend(errs)
     for b in blocks:
-        row = db.execute("SELECT status, flags FROM blocks WHERE id=?", (b["id"],)).fetchone()
+        row = db.execute("SELECT status, flags, tests FROM blocks WHERE id=?", (b["id"],)).fetchone()
+        if (tests := json.dumps(b["tests"], ensure_ascii=False)) != row["tests"]:  # keep the Concept's own name: mastery is counted by it
+            db.execute("UPDATE blocks SET tests=? WHERE id=?", (tests, b["id"]))
         old = json.loads(row["flags"])
         kept = [f for f in old if not f.startswith(MARK)]
         new = kept + [MARK + e for e in errors.get(b["id"], [])]

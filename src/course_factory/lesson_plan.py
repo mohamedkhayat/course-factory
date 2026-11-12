@@ -138,6 +138,22 @@ def plan_gaps(lesson: dict, blocks: list[dict]) -> list[str]:
     return gaps
 
 
+FIGURE_LINE = re.compile(r"\[figure\s*:\s*([^\]]+)\]", re.I)
+DECOR = re.compile(r"\blogos?\b|\bphoto|\bportrait|\bbanner|\bbandeau|\bwatermark|\bfiligrane", re.I)  # not a figure that teaches
+
+
+def figure_gaps(pages: list[dict], blocks: list[dict]) -> list[str]:
+    """The Section's pages carry figures of the material and it shows none of them: the material's own figure comes first,
+    a diagram or plot of the model's is for when there is none or to go deeper."""
+    figures = [(p["source"], p["page"], d.strip()) for p in pages for d in FIGURE_LINE.findall(p.get("text") or "") if not DECOR.search(d)]
+    if not figures or any(b.get("component") == "figure" for b in blocks):
+        return []
+    listed = "; ".join(f'{s} p.{n} ("{d[:90]}")' for s, n, d in figures[:4])
+    return [f"the pages carry {len(figures)} figure(s) of the material and the Section shows none: {listed}. Show each one that teaches "
+            "this Section with a figure Block (source, page, a caption saying what to look at), then add your own diagram or plot "
+            "only to go deeper"]
+
+
 def explained(concept: str, seen: set[str]) -> bool:
     """Half the stems of the Concept's name (before any parenthesis, its notation) appear in what came before."""
     terms = name_stems(concept)

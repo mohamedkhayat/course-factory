@@ -21,7 +21,7 @@ function accepts(b: Blank, value: string) {
 }
 
 /** Text or code with gaps; each gap is checked against its accepted answers, case and spacing ignored. */
-export function FillBlanks({ data }: P<{ title: string; language: string; template: string; blanks: Blank[]; explanation: string }>) {
+export function FillBlanks({ data, cid, block }: P<{ title: string; task?: string; language: string; template: string; blanks: Blank[]; explanation: string }>) {
   const [values, setValues] = useState<string[]>(data.blanks.map(() => ""));
   const [checked, setChecked] = useState(false);
   const [shown, setShown] = useState<Set<number>>(new Set());
@@ -44,12 +44,17 @@ export function FillBlanks({ data }: P<{ title: string; language: string; templa
   return (
     <div>
       <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
+      {data.task && <div className="mt-1 text-[0.95rem]"><Md>{data.task}</Md></div>}
       {data.language ? <pre className="mt-2 overflow-x-auto rounded-md bg-muted px-4 py-3 font-mono text-[0.85rem] leading-loose">{body}</pre>
                      : <p className="mt-2 whitespace-pre-wrap leading-loose">{body}</p>}
       {missed.map((i) => data.blanks[i].hint && (
         <p key={i} className="mt-1 flex gap-2 text-sm"><Lightbulb className="mt-0.5 size-4 shrink-0 text-warn" />Blank {i + 1}: {data.blanks[i].hint}</p>))}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={() => setChecked(true)}>Check</Button>
+        <Button size="sm" onClick={() => {
+          setChecked(true);  // a gap that was shown counts as missed
+          if (!exported) send(`/api/courses/${cid}/blocks/${block.id}/outcome`,
+            { score: data.blanks.filter((_, i) => ok(i) && !shown.has(i)).length / data.blanks.length }).catch(() => {});
+        }}>Check</Button>
         {missed.length > 0 && <Button size="sm" variant="outline" onClick={() => setShown(new Set([...shown, missed[0]]))}>Show blank {missed[0] + 1}</Button>}
         {all && <span className="flex items-center gap-1 text-sm text-ok"><Check className="size-4" />All correct</span>}
       </div>
@@ -91,7 +96,7 @@ function ExportedCode({ data }: { data: CodeData }) {
     <div>
       <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
       <Md>{data.task}</Md>
-      <CodeEditor value={code} onChange={setCode} onRun={() => {}} label={`${data.language} answer`} language={data.language} />
+      <CodeEditor value={code} onChange={setCode} label={`${data.language} answer`} language={data.language} />
       {data.hints.slice(0, shown).map((h, i) => <div key={i} className="mt-2 flex gap-2 text-sm"><Lightbulb className="mt-1 size-4 shrink-0 text-warn" /><Md>{h}</Md></div>)}
       <div className="mt-3 flex flex-wrap gap-2">
         {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}

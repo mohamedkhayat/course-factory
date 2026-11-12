@@ -1,5 +1,6 @@
 """Import, page reading and Role proposals: everything before the found Approval Gate."""
 
+import unicodedata
 import hashlib
 import json
 import shutil
@@ -50,7 +51,8 @@ def import_sources(ctx: Ctx, cid: int) -> None:
     folder = Path(db.execute("SELECT folder FROM courses WHERE id=?", (cid,)).fetchone()["folder"])
     dest = ctx.course_dir(cid) / "sources"
     for f in sorted(p for p in folder.rglob("*") if p.is_file() and is_material(p.relative_to(folder))):
-        rel = f.relative_to(folder)
+        # composed Unicode: a model cites "é" as one character, and names are matched as plain strings everywhere
+        rel = Path(unicodedata.normalize("NFC", f.relative_to(folder).as_posix()))
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, dest / rel)
         pages = len(pdfium.PdfDocument(str(f))) if f.suffix.lower() == ".pdf" else 0
@@ -63,16 +65,24 @@ def read_pages(ctx: Ctx, cid: int) -> None:
     db, backend = ctx.db, ctx.backend
     img_dir = ctx.course_dir(cid) / "pages"
     img_dir.mkdir(parents=True, exist_ok=True)
+    failed: list[tuple[int, int]] = []  # pages the model did not answer for in this call
+    answered = 0
     # shortcut: notebooks are not transcribed yet; they get read when Labs are built.
     for src in db.execute("SELECT * FROM sources WHERE course_id=? AND pages>0", (cid,)).fetchall():
         pdf = pdfium.PdfDocument(src["path"])
         pending: dict[Future[PageReading], tuple[int, Path]] = {}
 
         def save_finished():
+            nonlocal answered
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in done:
                 n, img = pending.pop(future)
                 reading = future.result()
+                if reading is None:
+                    failed.append((src["id"], n))
+                    reading = PageReading(text="", readable=False)
+                else:
+                    answered += 1
                 db.execute("INSERT OR REPLACE INTO pages (source_id, n, image, text, readable, figures) VALUES (?,?,?,?,?,?)",
                            (src["id"], n, str(img), reading.text, int(reading.readable),
                             json.dumps([f.model_dump() for f in reading.figures], ensure_ascii=False)))
@@ -101,14 +111,20 @@ def read_pages(ctx: Ctx, cid: int) -> None:
                     save_finished()
             finally:
                 pdf.close()
+    # One bad page is listed at the found gate; no page answered at all is the model being unreachable (no key, server
+    # down), and a Course built on that would be empty: fail the step and leave the pages to be read again on Retry.
+    if not answered and len(failed) >= 3:
+        db.executemany("DELETE FROM pages WHERE source_id=? AND n=?", failed)
+        last = db.execute("SELECT error FROM traces WHERE course_id=? AND step='read_page' AND error IS NOT NULL ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+        raise StepFailed(f"read_pages: the model read none of {len(failed)} pages. {last['error'][:500] if last else ''}")
 
 
-def _read_page(db, backend, source: str, page: int, pdf_text: str, workdir: Path, image: Path, cid: int) -> PageReading:
+def _read_page(db, backend, source: str, page: int, pdf_text: str, workdir: Path, image: Path, cid: int) -> PageReading | None:
     try:
         return run_pi_step(db, backend, "read_page", {"source": source, "page": str(page), "pdf_text": pdf_text},
                            PageReading, workdir, (image,), course_id=cid)
     except StepFailed:  # one bad page must not stop the Run: the found gate lists it as unreadable
-        return PageReading(text="", readable=False)
+        return None
 
 def propose_roles(ctx: Ctx, cid: int) -> None:
     db, backend = ctx.db, ctx.backend

@@ -12,14 +12,24 @@ The Section's pages:
 Passages found in the course for this question:
 {{passages}}
 
-The Section's Blocks, in order (Block ids, Component, start of the content):
+The Section's Blocks, in order (Block ids, Component, content):
 {{blocks}}
 
-When the learner asks to add or change content in the Section, first check these Blocks: when one already covers it, say so and name it, and propose nothing. Otherwise explain in a sentence what you propose, then end the answer with one proposal, a single Block from the Catalogue below, as JSON in a fence:
+When the learner asks to add, change, reorder or remove content in the Section, first check these Blocks: when one already covers what they ask to add, say so and name it, and propose nothing. Otherwise say what you propose, then end the answer with one proposal as JSON in a fence. A proposal is a list of changes, applied in order:
 ```proposal
-{"action": "add", "after_block_id": 12, "block": {"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1}], "origin": "from_source", "tests": []}}
+{"changes": [
+  {"action": "add", "after_block_id": 12, "block": {"component": "<name>", "data": {...}, "citations": [{"source": "...", "page": 1}], "origin": "from_source", "tests": []}},
+  {"action": "replace", "block_id": 14, "block": {...}},
+  {"action": "move", "block_id": 15, "after_block_id": 7},
+  {"action": "remove", "block_id": 16}
+]}
 ```
-"action" is "add" (after "after_block_id", or at the end without it) or "replace" (with "block_id", the Block it replaces). "origin" is "from_source" only when the Block restates the pages it cites, otherwise "model_added". The learner accepts or dismisses it; never claim the Section changed.
+- "add" puts a new Block from the Catalogue below after "after_block_id", or at the end without it.
+- "replace" changes an existing Block: its wording, its content or its Component (say a callout turned into a table or a quiz). Write the whole new Block: start from that Block's content above and keep everything the learner did not ask to change.
+- "move" puts Block "block_id" right after "after_block_id"; leave "after_block_id" out to put it first.
+- "remove" deletes Block "block_id". Remove only what the learner asked to remove, or what a change of yours makes redundant.
+When you name a Block in the answer, write "Block <id>" (for example Block 1234), so the learner can click it. Use only Block ids listed above; a change cannot refer to a Block added by the same proposal. "origin" is "from_source" only when the Block restates the pages it cites, otherwise "model_added".
+A small request is one change. For a bigger rework (restructure the Section, make it more visual, split or merge Blocks), first map it out in the answer as a short numbered list, one line per change saying what and why, then give every change in the one proposal, at most 12. The learner previews the Section with the changes, then accepts or dismisses them, and can undo afterwards; never claim the Section changed.
 Catalogue:
 {{catalogue}}
 

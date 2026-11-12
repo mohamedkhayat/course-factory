@@ -138,3 +138,22 @@ def test_concepts_are_named_for_an_outline_made_before_them_without_touching_it(
     assert [tuple(r) for r in db.execute("SELECT id, chapter_id, position, title, pages FROM sections ORDER BY id")] == before
     teaches = [json.loads(r[0]) for r in db.execute("SELECT teaches FROM sections ORDER BY id")]
     assert teaches == [["idée de Ensembles convexes", "gradient"], ["idée de Gradient"], ["idée de Exercices"]]  # once each
+
+
+def test_a_model_that_reads_no_page_fails_the_run_instead_of_an_empty_course(client, material, model):
+    good = model.handlers["read_page"]
+    model.handlers["read_page"] = lambda prompt, files: "not an answer"
+    cid = client.post("/api/courses", json={"name": "Optimisation", "folder": str(material)}).json()["id"]
+    run = client.get(f"/api/courses/{cid}/run").json()
+    assert run["status"] == "failed" and "read none of" in run["error"]
+    model.handlers["read_page"] = good  # the model is back: Retry reads the pages again
+    client.post(f"/api/courses/{cid}/run/retry")
+    assert client.get(f"/api/courses/{cid}/run").json()["gate"] == "found"
+    assert client.get(f"/api/courses/{cid}/found").json()["unreadable_pages"] == []
+
+
+def test_a_source_name_is_stored_composed_so_a_citation_of_it_matches(client, material):
+    import unicodedata
+    (material / unicodedata.normalize("NFD", "Espérance.pdf")).write_bytes(next(material.glob("*.pdf")).read_bytes())
+    cid = client.post("/api/courses", json={"name": "Optimisation", "folder": str(material)}).json()["id"]
+    assert "Espérance.pdf" in [s["name"] for s in client.get(f"/api/courses/{cid}/found").json()["sources"]]

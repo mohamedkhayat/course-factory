@@ -92,7 +92,7 @@ class Exercise(BaseModel):
 class QuizQuestion(BaseModel):
     prompt: Md = Field(validation_alias=AliasChoices("prompt", "question"))
     options: list[Md] = Field(min_length=2)
-    correct: Annotated[list[int], BeforeValidator(lambda v: [v] if isinstance(v, int) else v)] = Field(
+    correct: Annotated[list[int], BeforeValidator(lambda v: [int(v)] if isinstance(v, int) or isinstance(v, str) and v.strip().isdigit() else v)] = Field(
         min_length=1, validation_alias=AliasChoices("correct", "correct_index", "answer"))  # the model writes one answer as a bare index
     explanation: Md
     explanations: list[Md] = []  # optional: why each option is right or wrong, in option order
@@ -329,6 +329,7 @@ class FillBlanks(BaseModel):
     """Use when the learner should recall key terms or syntax: text (language "") or code with gaps [[1]], [[2]]... each with accepted answers. Gaps never inside $math$."""
 
     title: str
+    task: Md = ""  # what the completed code must do, shown above it: the learner picks `gte` over `gt` from this, not by guessing
     language: str = ""
     template: str
     blanks: list[Blank] = Field(min_length=1)
@@ -474,7 +475,11 @@ def describe(catalogue: dict[str, type[BaseModel]] = CATALOGUE) -> str:
                            for f, info in schema.model_fields.items() if f != "rows" or name != "iteration_table")
         doc = (schema.__doc__ or "").strip().split("\n")[0]
         lines.append(f"- {name} {{{fields}}}" + (f"  ({doc})" if doc else ""))
-    return "\n".join(lines)
+    text = "\n".join(lines)
+    # the shapes inside the lists (QuizQuestion, Blank...): unnamed, the model guesses their fields and the Block goes to repair
+    nested = [f"- {n} {{{', '.join(f'{f}: {_type_name(i.annotation)}' + ('' if i.is_required() else '?') for f, i in m.model_fields.items())}}}"
+              for n, m in globals().items() if isinstance(m, type) and issubclass(m, BaseModel) and re.search(rf"\b{n}\b", text)]
+    return text + ("\nShapes used above:\n" + "\n".join(nested) if nested else "")
 
 
 def _type_name(t) -> str:

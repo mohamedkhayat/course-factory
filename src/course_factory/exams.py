@@ -104,15 +104,46 @@ def build_mock_exams(ctx: Ctx, cid: int) -> None:
     """Tops Mock exams up to MOCK_EXAMS, in the past papers' style. Safe to re-run."""
     db = ctx.db
     have = db.execute("SELECT COUNT(*) FROM exams WHERE course_id=? AND kind='mock'", (cid,)).fetchone()[0]
-    for n in range(have, MOCK_EXAMS):
-        past = [load_exam(ctx, e["id"], with_answers=False) for e in db.execute(
-            "SELECT id FROM exams WHERE course_id=? AND (kind!='past_paper' OR in_scope=1) ORDER BY id", (cid,))]
-        weights = [{"chapter": r["title"], "exam_weight": r["exam_weight"]} for r in db.execute(
-            "SELECT title, exam_weight FROM chapters WHERE course_id=? AND priority!='skip' ORDER BY position", (cid,))]
-        plan = run_pi_step(db, ctx.backend, "write_mock_exam", {
-            "number": n + 1, "past_papers": past, "chapters": weights, "language": language_rule(db, cid)},
-            ExamPlan, ctx.course_dir(cid), course_id=cid)
-        save_exam(ctx, cid, plan, "mock", None)
+    for _ in range(have, MOCK_EXAMS):
+        write_mock_exam(ctx, cid)
+
+
+def write_mock_exam(ctx: Ctx, cid: int) -> int:
+    """One more Mock exam, grounded in the course digest and different from the exams already there."""
+    db = ctx.db
+    n = db.execute("SELECT COUNT(*) FROM exams WHERE course_id=? AND kind='mock'", (cid,)).fetchone()[0]
+    past = [load_exam(ctx, e["id"], with_answers=False) for e in db.execute(
+        "SELECT id FROM exams WHERE course_id=? AND (kind!='past_paper' OR in_scope=1) ORDER BY id", (cid,))]
+    weights = [{"chapter": r["title"], "exam_weight": r["exam_weight"]} for r in db.execute(
+        "SELECT title, exam_weight FROM chapters WHERE course_id=? AND priority!='skip' ORDER BY position", (cid,))]
+    plan = run_pi_step(db, ctx.backend, "write_mock_exam", {
+        "number": n + 1, "past_papers": past, "chapters": weights, "digest": course_digest(ctx, cid),
+        "language": language_rule(db, cid)}, ExamPlan, ctx.course_dir(cid), course_id=cid)
+    return save_exam(ctx, cid, plan, "mock", None)
+
+
+DIGEST_CHARS = 5000  # per Chapter: keeps a 7-Chapter course's digest near 35k characters
+
+
+def course_digest(ctx: Ctx, cid: int) -> list[dict]:
+    """Per Chapter: the Concepts its Sections teach and the commands and code its Blocks show, so a Mock exam asks what was
+    taught. Empty before the Chapters are written (the Run writes Mock exams after them)."""
+    db = ctx.db
+    out = []
+    for ch in db.execute("SELECT id, title FROM chapters WHERE course_id=? AND priority!='skip' ORDER BY position", (cid,)).fetchall():
+        concepts = [c for r in db.execute("SELECT teaches FROM sections WHERE chapter_id=? ORDER BY position", (ch["id"],))
+                    for c in json.loads(r["teaches"])]
+        shown, size = [], 0
+        for b in db.execute("SELECT b.component, b.data FROM blocks b JOIN sections s ON s.id=b.section_id WHERE s.chapter_id=? "
+                            "AND b.component IN ('terminal', 'code') ORDER BY s.position, b.position", (ch["id"],)):
+            data = json.loads(b["data"])
+            text = "\n".join(e.get("command", "") for e in data.get("entries", [])) if b["component"] == "terminal" else data.get("code", "")
+            text = text.strip()[:800]
+            if text and text not in shown and size + len(text) <= DIGEST_CHARS:
+                shown.append(text)
+                size += len(text)
+        out.append({"chapter": ch["title"], "concepts": concepts, "commands_and_code": shown})
+    return out
 
 
 def pages_of(ctx: Ctx, cid: int, src) -> list[dict]:

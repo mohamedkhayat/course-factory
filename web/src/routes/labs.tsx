@@ -123,7 +123,7 @@ function StepCell({ cid, lid, step, run, onChange }: { cid: number; lid: number;
         {!step.passed && !step.gave_up && <Button size="sm" variant="ghost" onClick={() => send(`${base}/give-up`).then(onChange)}>Show the solution</Button>}
         <Button size="sm" variant="ghost" className="ml-auto" aria-expanded={tutor} onClick={() => setTutor(!tutor)}><MessageCircle className="size-4" />Ask the tutor</Button>
       </div>
-      {tutor && <Tutor cid={cid} className="mt-3 h-96 rounded-md border" onCite={() => {}} onClose={() => setTutor(false)}
+      {tutor && <Tutor cid={cid} className="mt-3 h-96 min-h-64 resize-y overflow-hidden rounded-md border" onCite={() => {}} onClose={() => setTutor(false)}
                        lab={() => ({ lab_step_id: step.id, code, outputs: out })} />}
     </li>
   );

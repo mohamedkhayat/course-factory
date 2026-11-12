@@ -35,6 +35,13 @@ def test_tablet_needs_pairing_with_a_one_time_code(client, tablet):
     assert tablet.get("/api/components").status_code == 401
 
 
+def test_a_tailnet_device_needs_no_code_but_is_not_the_host(client):
+    with TestClient(client.app, base_url="http://100.80.43.34:8765", client=("100.112.230.87", 40000)) as friend:
+        assert friend.get("/api/components").status_code == 200
+        assert friend.get("/api/pairing/me").json()["label"] == "Tailscale 100.112.230.87"
+        assert friend.post("/api/pairing/start").status_code == 403
+
+
 def test_guessing_revokes_the_code(client, tablet):
     code = client.post("/api/pairing/start").json()["code"]
     wrong = [f"{n:06d}" for n in range(6) if f"{n:06d}" != code][:5]

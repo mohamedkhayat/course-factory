@@ -288,3 +288,76 @@ def test_an_explain_back_is_graded_on_its_rubric_or_self_marked_and_a_miss_comes
     assert client.post(f"/api/courses/{cid}/blocks/{block['id']}/self-mark", json={"mark": "missed"}).status_code == 200
     due = [c for c in client.get(f"/api/courses/{cid}/cards/due").json() if c["block_id"] == block["id"]]
     assert due and "Pourquoi" in due[0]["front"]
+
+
+def test_notes_confidence_and_progress(client, material, model, clock):
+    cid, sections = published(client, material, model)
+    first, second = sections[0], sections[1]
+    quiz = next(b for s in sections for b in s["blocks"] if b["component"] == "quiz")
+    quiz_section = next(s for s in sections if quiz in s["blocks"])
+    block = first["blocks"][0]["id"]
+    assert client.put(f"/api/courses/{cid}/blocks/{block}/note", json={"text": " le pas doit rester sous 2/L "}).json()["text"] == "le pas doit rester sous 2/L"
+    (note,) = client.get(f"/api/courses/{cid}/notes").json()
+    assert (note["block_id"], note["section_id"], note["text"]) == (block, first["id"], "le pas doit rester sous 2/L")
+    client.put(f"/api/courses/{cid}/blocks/{block}/note", json={"text": "  "})  # an empty note removes it
+    assert client.get(f"/api/courses/{cid}/notes").json() == []
+
+    client.put(f"/api/courses/{cid}/place", json={"section_id": first["id"]})
+    assert client.put(f"/api/courses/{cid}/sections/{second['id']}/confidence", json={"level": "meh"}).status_code == 422
+    client.put(f"/api/courses/{cid}/sections/{second['id']}/confidence", json={"level": "shaky"})
+    wrong = next(i for i in range(len(quiz["data"]["questions"][0]["options"])) if i not in quiz["data"]["questions"][0]["correct"])
+    client.post(f"/api/courses/{cid}/blocks/{quiz['id']}/answers", json={"question": 0, "chosen": [wrong]})
+    p = client.get(f"/api/courses/{cid}/progress").json()
+    rows = {s["id"]: s for ch in p["chapters"] for s in ch["sections"]}
+    assert rows[first["id"]]["read"] and not rows[second["id"]]["read"] and rows[second["id"]]["confidence"] == "shaky"
+    assert (rows[quiz_section["id"]]["answered"], rows[quiz_section["id"]]["correct"]) == (1, 0)
+    reasons = {n["section_id"]: n["reason"] for n in p["next"]}
+    assert "shaky" in reasons[second["id"]] and "1 quiz question wrong" in reasons[quiz_section["id"]]
+    client.post(f"/api/courses/{cid}/blocks/{quiz['id']}/answers", json={"question": 0, "chosen": quiz["data"]["questions"][0]["correct"]})
+    p = client.get(f"/api/courses/{cid}/progress").json()  # the latest answer counts
+    assert {s["id"]: s for ch in p["chapters"] for s in ch["sections"]}[quiz_section["id"]]["correct"] == 1
+
+
+def test_a_block_standing_follows_its_sittings():
+    day = lambda d, h=10: dt.datetime(2026, 11, d, h, tzinfo=dt.UTC).isoformat()  # noqa: E731
+    missed = learner.standing([(day(1), 1, 0), (day(1), 0, 1)])  # a quiz: one question right, one wrong
+    assert (missed["last"], missed["run"], missed["due"]) == (0.5, 0, "2026-11-01")
+    again = learner.standing([(day(1), 0, 0), (day(1, 11), 1, 0), (day(3), 1, 0)])  # the latest answer of a day counts
+    assert (again["tries"], again["last"], again["run"], again["due"]) == (2, 1, 2, "2026-11-06")
+    a, b, c = ({"section_id": s, "n": n} for n, s in enumerate((1, 1, 2)))
+    assert [x["n"] for x in learner.interleave([a, b, c], 3)] == [0, 2, 1]
+
+
+def test_practice_follows_the_learners_results(client, material, model, clock):
+    cid, sections = published(client, material, model)
+    quiz = next(b for s in sections for b in s["blocks"] if b["component"] == "quiz")
+    quiz_section = next(s for s in sections if quiz in s["blocks"])
+    assert client.get(f"/api/courses/{cid}/practice").json()["items"] == []  # nothing read yet
+    client.put(f"/api/courses/{cid}/place", json={"section_id": quiz_section["id"]})
+    first = client.get(f"/api/courses/{cid}/practice").json()
+    assert quiz["id"] in [i["block"]["id"] for i in first["items"]] and {i["kind"] for i in first["items"]} <= {"new", "weak"}
+    q = quiz["data"]["questions"][0]
+    wrong = next(i for i in range(len(q["options"])) if i not in q["correct"])
+    client.post(f"/api/courses/{cid}/blocks/{quiz['id']}/answers", json={"question": 0, "chosen": [wrong]})
+    top = client.get(f"/api/courses/{cid}/practice").json()["items"][0]
+    assert (top["block"]["id"], top["kind"]) == (quiz["id"], "missed")
+    assert client.get(f"/api/courses/{cid}/results").json()[str(quiz["id"])]["last"] == 0
+    for n, question in enumerate(quiz["data"]["questions"]):
+        client.post(f"/api/courses/{cid}/blocks/{quiz['id']}/answers", json={"question": n, "chosen": question["correct"]})
+    assert quiz["id"] not in [i["block"]["id"] for i in client.get(f"/api/courses/{cid}/practice").json()["items"]]  # right: not due yet
+    clock["now"] += dt.timedelta(days=2)  # right once: due again a day later
+    due = next(i for i in client.get(f"/api/courses/{cid}/practice").json()["items"] if i["block"]["id"] == quiz["id"])
+    assert due["kind"] == "due"
+    assert client.post(f"/api/courses/{cid}/blocks/{quiz['id']}/outcome", json={"score": 1}).status_code == 422  # a quiz has no gaps
+
+
+def test_a_published_chapter_is_rewritten_and_stays_published_with_its_block_ids(client, material, model):
+    cid, sections = published(client, material, model)
+    first = client.get(f"/api/courses/{cid}/chapters/{next(iter(chapters(client, cid).values()))['id']}").json()
+    before = [b["id"] for s in first["sections"] for b in s["blocks"]]
+    model.prompts.clear()
+    assert client.post(f"/api/courses/{cid}/chapters/{first['id']}/regenerate").status_code == 202
+    assert client.get(f"/api/courses/{cid}/job").json()["state"] == "done"
+    assert sum(step == "write_section" for step, _ in model.prompts) == len(first["sections"])
+    again = client.get(f"/api/courses/{cid}/chapters/{first['id']}").json()
+    assert chapters(client, cid)[first["title"]]["status"] == "published" and [b["id"] for s in again["sections"] for b in s["blocks"]] == before

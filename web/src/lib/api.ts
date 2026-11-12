@@ -21,7 +21,10 @@ export const send = <T,>(path: string, body?: unknown, method = "POST") =>
     method,
     headers: body === undefined || body instanceof FormData ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
-  }).then((r) => handle<T>(r));
+  }).then((r) => handle<T>(r)).then((out) => {
+    if (/\/(answers|self-mark|grade|outcome)$/.test(path)) dispatchEvent(new Event("cf-attempt"));  // the reader and Practice refresh results
+    return out;
+  });
 
 /** Reads a server-sent event stream from a fetch response, calling onEvent for each event. */
 export async function readEvents(res: Response, onEvent: (event: string, data: any) => void) {
@@ -71,6 +74,19 @@ export type Block = {
   cram?: { likelihood: Likelihood | null; types: string[]; questions: { id: number; exam: string; points: number }[]; minutes: number | null };
 };
 export type Section = { id: number; title: string; pages: Citation[]; blocks: Block[]; teaches?: string[]; objectives?: string[] };
+export type Note = { block_id: number; text: string; updated_at: string; component: string; section_id: number; section: string; chapter: string };
+export type Confidence = "solid" | "shaky" | "lost";
+/** How a practice Block stands: sittings, latest score 0..1, sittings right in a row, the day it is due again. */
+export type Standing = { tries: number; last: number; last_at: string; run: number; due: string };
+export type PracticeQueue = { counts: Record<"missed" | "weak" | "due" | "new", number>;
+  items: { kind: "missed" | "weak" | "due" | "new"; reason: string; section_id: number; section: string; chapter: string; standing: Standing | null; block: Block }[] };
+export type Progress = {
+  chapters: { id: number; title: string; exam_weight: number;
+    sections: { id: number; title: string; read: boolean; confidence: Confidence | null; questions: number; answered: number; correct: number;
+      practice: number; tried: number; missed: number }[] }[];
+  concepts: { name: string; section_id: number; section: string; chapter: string; blocks: number; tried: number; mastery: number | null }[];
+  next: { section_id: number; section: string; chapter: string; reason: string }[];
+};
 export type Chapter = { id: number; title: string; priority: string; exam_weight: number; status: string; sections: Section[]; profile?: string; overview?: string };
 export type Course = { id: number; name: string; folder: string; goal: string | null; exam_date: string | null; run_error: string | null; hours_per_day?: number; auto_resolve?: number; language: "mixed" | "en" | "fr" };
 

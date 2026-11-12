@@ -1,6 +1,7 @@
 """Refresh Sources (#21): after files in the Course folder changed, redo only what changed.
 Unchanged files are skipped by content hash; a changed PDF's pages are compared one by one, and only pages whose text
 differs after reading count as changed. Only Sections citing a changed or removed page are regenerated."""
+import unicodedata
 import hashlib
 import json
 import shutil
@@ -22,7 +23,7 @@ def _folder_files(ctx: Ctx, cid: int) -> dict[str, Path]:
     folder = Path(ctx.db.execute("SELECT folder FROM courses WHERE id=?", (cid,)).fetchone()["folder"])
     if not folder.is_dir():
         return {}
-    return {p.relative_to(folder).as_posix(): p for p in sorted(folder.rglob("*"))
+    return {unicodedata.normalize("NFC", p.relative_to(folder).as_posix()): p for p in sorted(folder.rglob("*"))
             if p.is_file() and ingest.is_material(p.relative_to(folder))}
 
 

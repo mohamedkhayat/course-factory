@@ -3,11 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import { get, type Course } from "@/lib/api";
-import { cn } from "@/lib/utils";
 import { Home, Pair, Settings } from "./routes/home";
 import { Run } from "./routes/run";
 import { Reader } from "./routes/reader";
 import { Review } from "./routes/review";
+import { ProgressPage } from "./routes/progress";
+import { PracticePage } from "./routes/adaptive";
 import { Exams, ExamMode } from "./routes/exams";
 import { Cards, Focus } from "./routes/practice";
 import { Labs, LabView } from "./routes/labs";
@@ -30,7 +31,7 @@ function ThemeToggle() {
   );
 }
 
-const NAV = [["read", "Read"], ["exams", "Exams"], ["cards", "Cards"], ["sheet", "Cheat Sheet"], ["labs", "Labs"], ["focus", "Focus"], ["review", "Review"]] as const;
+const NAV = [["read", "Read"], ["practice", "Practice"], ["exams", "Exams"], ["cards", "Cards"], ["sheet", "Cheat Sheet"], ["labs", "Labs"], ["focus", "Focus"], ["progress", "Progress"], ["review", "Review"]] as const;
 
 function CourseNav() {
   const { cid } = useParams({ strict: false }) as { cid?: string };
@@ -43,7 +44,7 @@ function CourseNav() {
       <nav className="ml-2 flex min-w-0 gap-1 overflow-x-auto sm:ml-4">
         {(course?.goal === "cram" ? [["cram", "Cram"] as const, ...NAV] : NAV).map(([to, label]) => (
           <Link key={to} to={`/c/$cid/${to}`} params={{ cid }}
-                className="rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
+                className="shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
                 activeProps={{ className: "bg-accent !text-foreground" }}>{label}</Link>
         ))}
       </nav>
@@ -60,8 +61,8 @@ function Shell() {
           <span className="hidden sm:inline">course-factory</span>
         </Link>
         <CourseNav />
-        <span className="ml-auto flex items-center gap-1">
-          <Link to="/components" className={cn("rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground")}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <Link to="/components" className="hidden rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground md:block"
                 activeProps={{ className: "!text-foreground" }}>Components</Link>
           <Link to="/settings" className="rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
                 activeProps={{ className: "!text-foreground" }}>Settings</Link>
@@ -79,7 +80,7 @@ const r = <P extends string>(path: P, component: () => React.ReactNode) => creat
 export const router = createRouter({
   routeTree: root.addChildren([
     r("/", Home), r("/pair", Pair), r("/settings", Settings), r("/components", ComponentsPage),
-    r("/c/$cid", Run), r("/c/$cid/read", Reader), r("/c/$cid/review", Review),
+    r("/c/$cid", Run), r("/c/$cid/read", Reader), r("/c/$cid/review", Review), r("/c/$cid/progress", ProgressPage), r("/c/$cid/practice", PracticePage),
     r("/c/$cid/exams", Exams), r("/c/$cid/exams/$eid", ExamMode),
     r("/c/$cid/cards", Cards), r("/c/$cid/focus", Focus),
     r("/c/$cid/labs", Labs), r("/c/$cid/labs/$lid", LabView),

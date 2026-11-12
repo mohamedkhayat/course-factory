@@ -23,7 +23,7 @@ OUTLINE = {"chapters": [
         {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}], "teaches": ["pas optimal"]}]}]}
 
 # The real Elasticsearch fill_blanks (course 5): the first Section drilled health, index creation and _update.
-ES_DRILL = {"title": "Type the ES/Kibana commands", "language": "http",
+ES_DRILL = {"title": "Type the ES/Kibana commands", "language": "http", "task": "Check the cluster, create the index, then update one document.",
             "template": "[[1]] /_cluster/health?pretty\n\nPUT /[[2]]\n{\n  \"settings\" : {\n    \"number_of_shards\" : [[3]],\n"
                         "    \"number_of_replicas\" : [[4]]\n  }\n}\n\nPOST /ventes/_[[5]]/transaction_001\n{\n  \"[[6]]\" : { \"Statut\" : \"annulée\" }\n}",
             "blanks": [{"answers": [a]} for a in ("GET", "ventes", "6", "3", "update", "doc")]}
@@ -261,3 +261,17 @@ def test_a_clause_only_named_before_its_drill_is_flagged_until_an_example_shows_
     shown = {"id": 3, "chapter": 1, "section": "DSL", "component": "terminal", "data": {"entries": [{"command":
              "GET /boutique/_search\n{\"query\": {\"bool\": {\"must\": [{\"term\": {\"genre\": \"piano\"}}, {\"range\": {\"prix\": {\"lt\": 20}}}]}}}"}]}}
     assert progression_errors([mention, shown, exercise]) == {}
+
+
+def test_a_concept_name_retyped_with_other_notation_is_read_as_that_concept(tmp_path):
+    """From proba2: Blocks declared "filtration naturelle F_n = σ(X₁, ..., Xₙ)", the Concept is "… σ(X₁, ..., X_n)"."""
+    from course_factory.db import connect
+    from course_factory.progression import flag_progression
+    db = connect(tmp_path / "t.db")
+    db.execute("INSERT INTO courses (id, name, folder) VALUES (1, 'c', 'f')")
+    db.execute("INSERT INTO chapters (id, course_id, position, title, status) VALUES (1, 1, 0, 'ch', 'in_review')")
+    db.execute("INSERT INTO sections (id, chapter_id, position, title, teaches) VALUES (1, 1, 0, 's', ?)", (json.dumps(["filtration naturelle F_n = σ(X₁, ..., X_n)"]),))
+    db.execute("INSERT INTO blocks (id, section_id, position, component, data, citations, origin, status, flags, tests) VALUES (1, 1, 0, 'callout', '{}', '[]', 'model_added', 'ok', '[]', ?)",
+               (json.dumps(["filtration naturelle F_n = σ(X₁, ..., Xₙ)"]),))
+    assert flag_progression(db, 1) == {}
+    assert json.loads(db.execute("SELECT tests FROM blocks").fetchone()[0]) == ["filtration naturelle F_n = σ(X₁, ..., X_n)"]

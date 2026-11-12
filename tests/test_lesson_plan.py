@@ -254,3 +254,13 @@ def test_a_figure_read_from_a_page_reaches_the_prompt_of_the_section_citing_it(c
     generate(client, material, model)
     prompt = next(p for step, p in model.prompts if step == "write_section")
     assert '"figures"' in prompt and "Node 1 (Master)" in prompt
+
+
+def test_a_section_whose_pages_carry_a_figure_must_show_it_before_drawing_its_own():
+    """Advanced BD, Ch4 p.6: the slide's window diagram was only redrawn. A logo is not a figure to show."""
+    from course_factory.lesson_plan import figure_gaps
+    pages = [{"source": "Ch4.pdf", "page": 1, "text": "[figure: logo ESPRIT]"},
+             {"source": "Ch4.pdf", "page": 6, "text": "Windows\n[figure: two timelines, original DStream and windowed DStream]"}]
+    (gap,) = figure_gaps(pages, [{"component": "diagram"}])
+    assert "1 figure" in gap and "Ch4.pdf p.6" in gap
+    assert figure_gaps(pages, [{"component": "figure"}, {"component": "diagram"}]) == [] and figure_gaps(pages[:1], []) == []

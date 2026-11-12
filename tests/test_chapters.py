@@ -352,3 +352,59 @@ def test_merging_a_section_keeps_each_distinct_block_once(client, material, mode
     [merged] = kept["sections"]
     assert merged["id"] == first["id"] and len(merged["blocks"]) == len(first["blocks"]) and not merged["overlaps"]
     assert client.post(f"/api/courses/{cid}/sections/{first['id']}/merge", json={"into": first["id"]}).status_code == 422
+
+
+def test_a_section_written_as_plain_text_reads_into_blocks():
+    from course_factory.chapters import section_from_text
+    raw = r"""==== BLOCK worked_example
+origin: from_source
+cite: notes.pdf | p. 3 | le gradient
+tests: Gradient; Pas fixe
+@@ title
+Une quadratique
+@@ steps.0
+On dérive : $f'(x) = \frac{1}{2}x$.
+@@ steps.1
+```python
+for i in range(3):
+    print("a\n")
+```
+@@ x0
+[1.0, -2.0]
+@@ solution
+```python
+print(1)
+```
+@@ template
+[[1]] est le pas
+==== BLOCK quiz
+origin: model_added
+@@ questions.0.question
+Que vaut $\nabla f$ ?
+@@ questions.0.options.0.text
+$\beta$
+@@ questions.0.options.1.text
+0
+"""
+    worked, quiz = section_from_text(raw)["blocks"]
+    assert worked["citations"] == [{"source": "notes.pdf", "page": "3", "quote": "le gradient"}]
+    assert worked["tests"] == ["Gradient", "Pas fixe"] and worked["origin"] == "from_source"
+    assert worked["data"] == {
+        "title": "Une quadratique",
+        "steps": [r"On dérive : $f'(x) = \frac{1}{2}x$.", '```python\nfor i in range(3):\n    print("a\\n")\n```'],
+        "x0": [1.0, -2.0], "solution": "print(1)", "template": "[[1]] est le pas"}
+    assert quiz["data"] == {"questions": [{"question": r"Que vaut $\nabla f$ ?", "options": [{"text": r"$\beta$"}, {"text": "0"}]}]}
+    doubled = section_from_text("==== BLOCK prose\norigin: model_added\n@@ markdown\n$\\\\rho \\\\\\\\ \\\\frac{1}{2}$")["blocks"][0]
+    assert doubled["data"] == {"markdown": r"$\rho \\ \frac{1}{2}$"}  # a Block escaped as JSON throughout is unescaped
+    assert section_from_text('{"blocks": [{"a": 1}]}') == {"blocks": [{"a": 1}]}  # JSON still reads
+
+
+def test_merging_a_chapter_moves_its_sections_to_the_end_of_the_other(client, material, model):
+    cid = generate(client, material, model)
+    by_title = chapters(client, cid)
+    (into, a), (gone, b) = [(c["id"], client.get(f"/api/courses/{cid}/chapters/{c['id']}").json()["sections"]) for c in list(by_title.values())[:2]]
+    kept = client.post(f"/api/courses/{cid}/chapters/{gone}/merge", json={"into": into}).json()
+    assert [s["id"] for s in kept["sections"]] == [s["id"] for s in a + b]
+    assert [s["objectives"] for s in kept["sections"]] == [s["objectives"] for s in a + b]  # each Section keeps its plan
+    assert len(chapters(client, cid)) == len(by_title) - 1
+    assert client.post(f"/api/courses/{cid}/chapters/{into}/merge", json={"into": into}).status_code == 422

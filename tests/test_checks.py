@@ -100,7 +100,7 @@ def check_one(component, data):
 
 DOCKERFILE = "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install -r requirements.txt \\\n    && rm -rf /root/.cache\nCMD [\"python\", \"app.py\"]"
 GOOD = {
-    "fill_blanks": {"title": "Dockerfile", "language": "dockerfile", "template": "FROM [[1]]\nWORKDIR /app\n[[2]] . .",
+    "fill_blanks": {"task": "Write the Dockerfile of a slim Python 3.12 image.", "title": "Dockerfile", "language": "dockerfile", "template": "FROM [[1]]\nWORKDIR /app\n[[2]] . .",
                     "blanks": [{"answers": ["python:3.12-slim"], "regex": "python:3\\.1[0-3](-slim)?"}, {"answers": ["COPY", "ADD"], "hint": "copies files in"}]},
     "code_exercise": {"title": "Containerise the app", "task": "Write a Dockerfile for `app.py`.", "language": "dockerfile",
                       "starter": "FROM python:3.12-slim\n# TODO", "solution": DOCKERFILE, "hints": ["Start from a Python image."]},
@@ -175,9 +175,16 @@ def test_quiz_option_explanations_match_the_options():
     assert any("explanations" in e for e in check_one("quiz", {"questions": [q]})[1])
 
 
+def test_a_quiz_answer_written_as_text_is_an_index():
+    q = {"prompt": "p", "options": ["a", "b"], "correct": "1", "explanation": "e"}
+    assert check_one("quiz", {"questions": [q]})[0]["questions"][0]["correct"] == [1]
+
+
 def test_every_component_tells_the_model_when_to_use_it():
     from course_factory.catalogue import describe
-    assert all("(Use " in line for line in describe().splitlines())
+    components, shapes = describe().split("\nShapes used above:\n")
+    assert all("(Use " in line for line in components.splitlines())
+    assert "- QuizQuestion {prompt: str, options: list[str], correct: list[int]" in shapes  # the model no longer guesses these
 
 
 def test_a_single_correct_index_becomes_a_list():
@@ -274,7 +281,7 @@ def test_shapes_from_the_mlops_review_are_healed_or_accepted():
     assert step["highlight"] == ["T1"]
     src = heal("diagram", {"mermaid": "flowchart TD\n  A[Client] --> B[Web Server : Uvicorn (ASGI)]\n  B --> F[(Database MySQL)]\n  B --> R[Redis]"})["mermaid"]
     assert 'B["Web Server : Uvicorn (ASGI)"]' in src and "F[(Database MySQL)]" in src  # a cylinder keeps its shape
-    console = {"title": "t", "language": "json", "template": 'PUT /[[1]]\n{"settings": {"number_of_replicas": [[2]]}}',
+    console = {"title": "t", "task": "Create the index mlflow-metrics with no replica.", "language": "json", "template": 'PUT /[[1]]\n{"settings": {"number_of_replicas": [[2]]}}',
                "blanks": [{"answers": ["mlflow-metrics"]}, {"answers": ["0"]}]}
     assert heal("fill_blanks", console)  # an Elasticsearch console request: a request line, then JSON
 
@@ -286,3 +293,32 @@ def test_chinese_slipped_into_a_french_block_is_an_error():
     draft["data"]["text"] = "ce qui élimine le goulot d'étranglement I/O — « Spark » ≠ Hadoop."
     (_,), (errors,) = check_blocks([draft], {})
     assert errors == []
+
+
+def test_a_python_solution_that_crashes_when_run_is_an_error():
+    from course_factory.checks import _lab_image_built, run_errors
+    if not _lab_image_built():
+        pytest.skip("the Lab image is not built")
+    assert run_errors("import numpy as np\nprint(np.ones(3).dot(np.ones((1, 1))))")[0].startswith("the solution crashes when run: ValueError")
+    assert run_errors("import numpy as np\nprint(np.ones(3).dot(np.ones(3)))") == []
+    assert run_errors("import pyspark_that_is_not_installed") == []  # a module the image lacks is not the solution's fault
+    assert run_errors("df = spark.read.json('x')") == []  # a fragment written for a Spark shell
+
+
+def test_a_citation_matches_a_file_name_whose_apostrophe_is_typed_differently():
+    """From proba2: the file is "gain d’une stratégie.pdf", the model cited "gain d'une stratégie.pdf"."""
+    (b,), (errors,) = check_blocks([{"component": "prose", "data": {"markdown": "m"}, "citations": [{"source": "gain d'une.pdf", "page": 1}]}],
+                                   {"gain d’une.pdf": 2})
+    assert errors == [] and b["citations"][0]["source"] == "gain d’une.pdf"
+
+
+def test_a_correction_that_argues_with_itself_is_rejected():
+    """From proba2 Block 2540: the marked answer was 7, the explanation said "Attendez — relisons … Total = 6"."""
+    quiz = lambda text: {"component": "quiz", "data": {"questions": [{"prompt": "p ?", "options": ["6", "7", "9"], "correct": [0], "explanation": text}]}}  # noqa: E731
+    _, (bad, good) = check_blocks([quiz("Total : 6. Attendez — relisons : 2+3+1."), quiz("Attendez-vous à 6 arcs : 2+3+1.")], {})
+    assert "argues with itself" in bad[0] and good == []
+
+
+def test_a_code_gap_text_without_its_task_is_rejected():
+    """From Advanced BD Block 1180: a `bool` query with five gaps and no task, so `gte` against `gt` was a guess."""
+    assert "task" in check_one("fill_blanks", GOOD["fill_blanks"] | {"task": ""})[1][0]

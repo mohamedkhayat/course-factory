@@ -51,6 +51,16 @@ def host_ok(host: str) -> bool:
         return False
 
 
+TAILNET = ipaddress.ip_network("100.64.0.0/10")  # Tailscale's addresses; its firewall drops this range off the tailscale0 interface
+
+
+def on_tailnet(client: str) -> bool:
+    try:
+        return ipaddress.ip_address(client) in TAILNET
+    except ValueError:
+        return False
+
+
 class PairingGuard:
     """ASGI middleware for HTTP and WebSocket: loopback is the host; anyone else needs a paired device token."""
 
@@ -68,6 +78,8 @@ class PairingGuard:
         scope.setdefault("state", {})
         if client in LOOPBACK:
             scope["state"]["device"] = {"id": "host", "label": "Host"}
+        elif on_tailnet(client):  # the owner's tailnet (friends they shared the PC with): in without a code, but not the host
+            scope["state"]["device"] = {"id": f"tailnet:{client}", "label": f"Tailscale {client}"}
         elif scope["path"].startswith("/api/") and scope["path"] not in OPEN_PATHS:
             device = authenticate(self.db, token_of(headers))
             if device is None:

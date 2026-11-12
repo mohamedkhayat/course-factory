@@ -80,6 +80,8 @@ def test_an_array_sent_as_a_json_string_is_parsed_before_validation(tmp_path):
         ' + "\\n" + String.raw`x"}]` })));'
         # trace 422: \frac and \nabla start like the JSON escapes \f and \n; once strict parsing failed they are LaTeX
         r'console.log(JSON.stringify(tool.prepareArguments({ blocks: String.raw`[{"t": "$\frac{\partial f}{\partial x_n}$, $\nabla f \in \mathbb{R}^n$"}]` })));'
+        # the string ran on into the next argument, so each Section was written twice: '[...], "proposals": []}'
+        'console.log(JSON.stringify(tool.prepareArguments({ blocks: String.raw`[{"a": 1}], "proposals": []}` })));'
         # trace 2171: the stub that used to end the session
         'process.env.CF_MIN_WORDS = "25"; try { await tool.execute("id", {blocks: [{component: "callout", data: {text: "test", tone: "tip"}}], proposals: []});'
         ' console.log("accepted") } catch (e) { console.log(e.message) }')
@@ -89,7 +91,8 @@ def test_an_array_sent_as_a_json_string_is_parsed_before_validation(tmp_path):
     assert prepared == {"blocks": [{"a": 1}], "title": "[not json]"}
     assert json.loads(out[1]) == {"blocks": [{"t": '$\\alpha + \\beta$ "q" é\nx'}]}
     assert json.loads(out[2]) == {"blocks": [{"t": "$\\frac{\\partial f}{\\partial x_n}$, $\\nabla f \\in \\mathbb{R}^n$"}]}
-    assert out[3].startswith("Rejected: 3 words")
+    assert json.loads(out[3]) == {"blocks": [{"a": 1}], "proposals": []}
+    assert out[4].startswith("Rejected: 3 words")
     events = [
         {"type": "message_end", "message": {"role": "assistant", "content": [
             {"type": "toolCall", "name": "cf_return_result", "arguments": {"blocks": '[{"a": 1}]', "title": "[not json]"}}]}},

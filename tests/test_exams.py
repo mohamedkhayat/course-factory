@@ -116,3 +116,32 @@ def test_exam_weight_comes_from_the_past_papers_and_orders_cram(client, with_exa
     steps = [step for step, _ in model.prompts]
     assert steps.index("rebuild_past_paper") < steps.index("write_section")
     assert sections_written(model) == [GRADIENT, EXERCICES, CONVEXES]  # equal Priority: the heavier Chapter first
+
+
+def test_one_more_mock_exam_on_demand_is_grounded_in_what_the_chapters_teach(client, with_exam, model):
+    cid = generate(client, with_exam, model)
+    model.prompts.clear()
+    assert client.post(f"/api/courses/{cid}/exams/mock").status_code == 202
+    assert client.get(f"/api/courses/{cid}/job").json()["state"] == "done"
+    assert len(exam_by_kind(client, cid)["mock"]) == 3
+    prompt = next(p for step, p in model.prompts if step == "write_mock_exam")
+    digest = prompt.split("DIGEST:", 1)[1].split("PAST:", 1)[0]
+    assert "Convexité" in digest and "commands_and_code" in digest
+    assert "Examen blanc 2" in prompt.split("PAST:", 1)[1]  # the Mock exams already written, so the new one differs
+
+
+def test_digest_lists_each_chapters_commands_once():
+    import json, sqlite3
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript("CREATE TABLE chapters (id, course_id, title, priority, position); CREATE TABLE sections (id, chapter_id, position, teaches);"
+                     "CREATE TABLE blocks (section_id, position, component, data);")
+    db.execute("INSERT INTO chapters VALUES (1, 7, 'Docker', 'focus', 0)")
+    db.execute("INSERT INTO sections VALUES (1, 1, 0, ?)", (json.dumps(["image", "conteneur"]),))
+    run = json.dumps({"entries": [{"command": "docker build -t api ."}, {"command": "docker run -p 8000:8000 api"}]})
+    for pos, (comp, data) in enumerate([("terminal", run), ("terminal", run), ("code", json.dumps({"code": "FROM python:3.11"})),
+                                        ("prose", json.dumps({"markdown": "texte"}))]):
+        db.execute("INSERT INTO blocks VALUES (1, ?, ?, ?)", (pos, comp, data))
+    ctx = type("Ctx", (), {"db": db})()
+    assert exams.course_digest(ctx, 7) == [{"chapter": "Docker", "concepts": ["image", "conteneur"], "commands_and_code": [
+        "docker build -t api .\ndocker run -p 8000:8000 api", "FROM python:3.11"]}]

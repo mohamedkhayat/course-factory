@@ -15,6 +15,7 @@ from typing import Literal
 
 import pypdfium2 as pdfium
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, model_validator
@@ -538,6 +539,67 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         record_owner_action(db, cid, "chapter_review", {"section": sid, "into": body.into}, "merged")
         return chm.load_chapter(ctx, db.execute("SELECT chapter_id FROM sections WHERE id=?", (body.into,)).fetchone()["chapter_id"])
 
+    @app.post("/api/courses/{cid}/chapters/{chid}/merge")
+    def merge_chapter(cid: int, chid: int, body: MergeInto):
+        """Merges a Chapter (an exercise sheet or lab filed on its own) into the Chapter it practises; returns that Chapter."""
+        if cid in advancing:
+            raise HTTPException(409, "the Run is executing: stop it or wait")
+        try:
+            chm.merge_chapters(db, cid, chid, body.into)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        record_owner_action(db, cid, "chapter_review", {"chapter": chid, "into": body.into}, "merged")
+        return chm.load_chapter(ctx, body.into)
+
+    jobs: dict[int, dict] = {}  # a Course's latest on-demand model job (a Chapter rewrite, one more Mock exam)
+
+    def start_job(cid: int, kind: str, work: Callable[[], object], tasks: BackgroundTasks) -> dict:
+        if cid in advancing:
+            raise HTTPException(409, "the Course is busy: wait for the Run, Refresh or job to finish")
+        advancing.add(cid)
+        jobs[cid] = {"kind": kind, "state": "running"}
+
+        def run():
+            try:
+                jobs[cid] = {"kind": kind, "state": "done", "result": work()}
+            except Exception as e:
+                jobs[cid] = {"kind": kind, "state": "failed", "error": str(e)[:2000]}
+            finally:
+                advancing.discard(cid)
+        tasks.add_task(run)
+        return jobs[cid]
+
+    @app.get("/api/courses/{cid}/job")
+    def get_job(cid: int):
+        course_or_404(cid)
+        return jobs.get(cid, {"state": "none"})
+
+    @app.post("/api/courses/{cid}/chapters/{chid}/regenerate", status_code=202)
+    def regenerate_chapter(cid: int, chid: int, tasks: BackgroundTasks):
+        """Rewrites every Section of the Chapter with the current prompts. Blocks keep their ids by position (so Cards keep
+        their history) but not their previous version. A published Chapter is published again once rewritten."""
+        was = chapter_or_404(cid, chid)["status"]
+        sids = [r["id"] for r in db.execute("SELECT id FROM sections WHERE chapter_id=?", (chid,))]
+
+        def work():
+            db.execute("UPDATE sections SET generation_status='pending' WHERE chapter_id=?", (chid,))
+            edits = refresh._edited_sections(ctx, cid, set(sids))  # hand fixes go to the model as owner notes, as a Refresh does
+            chm.generate_chapter(ctx, cid, chid, {sid: json.dumps(e, ensure_ascii=False) for sid, e in edits.items()})
+            refresh.refresh_cards(ctx, sids)
+            if was == "published":
+                db.execute("UPDATE chapters SET status='published' WHERE id=?", (chid,))
+                flag_progression(db, cid)
+                cram.unlock_likely_cards(ctx, cid, chid)
+            return {"chapter": chid, "sections": sids}
+        record_owner_action(db, cid, "chapter_review", {"chapter": chid}, "regenerated")
+        return start_job(cid, "regenerate_chapter", work, tasks)
+
+    @app.post("/api/courses/{cid}/exams/mock", status_code=202)
+    def write_mock(cid: int, tasks: BackgroundTasks):
+        """One more Mock exam, grounded in what the Chapters teach."""
+        course_or_404(cid)
+        return start_job(cid, "write_mock_exam", lambda: {"exam": exm.write_mock_exam(ctx, cid)}, tasks)
+
     @app.get("/api/courses/{cid}/review")
     def review_list(cid: int):
         """Chapters waiting for review, flagged Blocks first."""
@@ -762,6 +824,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
 
     app.include_router(pairing.router(db))
     app.add_middleware(pairing.PairingGuard, db=db)
+    app.add_middleware(GZipMiddleware, minimum_size=1000)  # the 2.4 MB bundle is ~0.7 MB gzipped: it matters over a slow Tailscale link
     app.include_router(components.router(ctx))
     app.include_router(learner.router(ctx))
     app.include_router(cram.router(ctx))

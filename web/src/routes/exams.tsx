@@ -32,6 +32,20 @@ export function Exams() {
     mutationFn: (eid: number) => send<Copy>(`/api/courses/${cid}/exams/${eid}/copies`),
     onSuccess: (c) => nav({ to: "/c/$cid/exams/$eid", params: { cid: String(cid), eid: String(c.exam_id) }, search: { copy: c.id } as never }),
   });
+  const { data: job } = useQuery({
+    queryKey: ["job", cid], queryFn: () => get<{ kind?: string; state: string; error?: string }>(`/api/courses/${cid}/job`),
+    refetchInterval: (q) => (q.state.data?.state === "running" ? 5000 : false),
+  });
+  const writing = job?.state === "running";
+  const wasWriting = useRef(false);
+  useEffect(() => {  // the new Mock exam appears once the job is done
+    if (wasWriting.current && !writing) qc.invalidateQueries({ queryKey: ["exams", cid] });
+    wasWriting.current = writing;
+  }, [writing, cid, qc]);
+  const more = useMutation({
+    mutationFn: () => send(`/api/courses/${cid}/exams/mock`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["job", cid] }),
+  });
   return (
     <Page title="Exams">
       {!exams.length && <p className="text-muted-foreground">No Exam in this Course yet.</p>}
@@ -69,6 +83,14 @@ export function Exams() {
         })}
       </ul>
       {start.error && <p className="mt-2 text-sm text-destructive">{errText(start.error)}</p>}
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
+        <Button size="sm" variant="outline" onClick={() => more.mutate()} disabled={more.isPending || writing}>
+          <PenLine className="size-3.5" aria-hidden />{writing && job?.kind === "write_mock_exam" ? "Writing a Mock exam…" : "Write another Mock exam"}
+        </Button>
+        {writing && <span className="text-muted-foreground">{job?.kind === "write_mock_exam" ? "about a minute or two" : "the Course is busy with another job"}</span>}
+        {job?.state === "failed" && job.kind === "write_mock_exam" && <span className="text-destructive">The last Mock exam failed: {job.error}</span>}
+        {more.error && <span className="text-destructive">{errText(more.error)}</span>}
+      </div>
       {history.length > 0 && (
         <section className="mt-10">
           <h2 className="mb-2 font-medium">Your Copies</h2>
