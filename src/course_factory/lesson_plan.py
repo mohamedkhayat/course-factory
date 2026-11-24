@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .checks import CODE_SPAN, MATH_SPAN, heal_markdown
 from .pi_step import attach_checks, last_trace_id, run_pi_step
 from .progression import PRACTICE, name_stems, stems, strings
 
@@ -18,12 +19,19 @@ Kind = Literal["retrieval", "worked", "faded", "independent", "exam"]
 Relation = Literal["process", "hierarchy", "fan_out", "comparison", "cycle", "state", "quantity", "none"]
 RAMP = ["worked", "faded", "independent", "exam"]
 FITS: dict[str, set[str]] = {  # practice kind -> the Components that can carry it
-    "retrieval": {"quiz", "fill_blanks", "explain_back"}, "worked": {"worked_example"}, "faded": {"exercise", "fill_blanks", "code_exercise"},
+    "retrieval": {"quiz", "fill_blanks", "explain_back"}, "worked": {"worked_example", "derivation"}, "faded": {"exercise", "fill_blanks", "code_exercise"},
     "independent": {"exercise", "code_exercise"}, "exam": {"exercise", "code_exercise"}}
 DRAWS: dict[str, set[str]] = {  # relation -> the Components that draw it
-    "process": {"diagram", "step_diagram"}, "hierarchy": {"diagram"}, "fan_out": {"diagram"}, "comparison": {"table"},
-    "cycle": {"diagram", "step_diagram"}, "state": {"diagram", "step_diagram"},
+    "process": {"diagram", "kind_diagram", "stepped_animation", "step_diagram"}, "hierarchy": {"diagram", "kind_diagram"}, "fan_out": {"diagram", "kind_diagram"},
+    "comparison": {"table"}, "cycle": {"diagram", "kind_diagram", "stepped_animation", "step_diagram"}, "state": {"diagram", "kind_diagram", "stepped_animation", "step_diagram"},
     "quantity": {"plot", "surface_plot", "iteration_table", "optimizer_animation"}}
+BARE_MATH = re.compile(r"[\\^{}]|\b[^\W\d_]_[^\W_]{1,2}\b")  # p_{ij}, P^n, \frac, π_n: maths the reader can't render nor a Voice say
+
+
+def bare_math(text: str) -> str | None:
+    """The first piece of maths written outside $…$ (and outside code), if any."""
+    m = BARE_MATH.search(s := CODE_SPAN.sub(" ", MATH_SPAN.sub(" ", heal_markdown(text))))  # "\\n" escaped twice is a line break
+    return m and s[max(0, m.start() - 12):m.end() + 12].strip()
 
 
 class Objective(BaseModel):
@@ -43,6 +51,7 @@ class Practice(BaseModel):
     objective: str
     kind: Kind
     component: str
+    source: str = ""  # course-first: the course exercise, correction or past Question it reuses ("TD1.pdf p.2, Exercice 3")
 
 
 class Visual(BaseModel):
@@ -72,6 +81,9 @@ def plan_errors(plan: LessonPlan, sections: list[dict], taught: list[str], exam_
         return [f"plan one entry per Section, in this order, with these exact titles: {json.dumps([s['title'] for s in sections], ensure_ascii=False)}"]
     if len(plan.overview.split()) < 15:
         errors.append("write the overview: the Chapter's big picture in 2-3 sentences, then what each Section adds, in order")
+    dollars = "write every formula and indexed symbol as LaTeX inside $…$, e.g. $p_{ij}$, $\\pi_n = \\pi_0 P^n$"
+    if near := bare_math(plan.overview):
+        errors.append(f"the overview writes maths outside $…$ near {near!r}: {dollars}")
     known = set(taught)
     covered = set()
     for n, (sec, lesson) in enumerate(zip(sections, plan.sections)):
@@ -81,6 +93,8 @@ def plan_errors(plan: LessonPlan, sections: list[dict], taught: list[str], exam_
         levels = [LEVELS.index(o.level) for o in lesson.objectives]
         if levels != sorted(levels):
             errors.append(f"{at}: order the objectives from the lowest level to the highest (remember, understand, apply, analyse)")
+        if bare := {o.id: near for o in lesson.objectives if (near := bare_math(o.text))}:
+            errors.append(f"{at}: objectives {list(bare)} write maths outside $…$ near {next(iter(bare.values()))!r}: {dollars}")
         if n == 0 and levels[0] >= LEVELS.index("apply"):
             errors.append(f"{at} opens the Chapter: start with a remember or understand objective before any {lesson.objectives[0].level}")
         order = [[o.id for o in lesson.objectives].index(p.objective) for p in lesson.practice if p.objective in ids]
@@ -129,6 +143,7 @@ def plan_gaps(lesson: dict, blocks: list[dict]) -> list[str]:
     """What the Section's plan asked for that its Blocks don't have: a planned practice Component used fewer times than
     planned, or the planned visual."""
     have = collections.Counter(b.get("component") for b in blocks)
+    have["worked_example"] += have["derivation"]  # course-first: the course's own worked example stands for the planned one
     want = collections.Counter(p["component"] for p in lesson["practice"])
     gaps = [f"the plan has {n} {c} Block(s) for objectives {[p['objective'] for p in lesson['practice'] if p['component'] == c]}, "
             f"the Section has {have[c]}" for c, n in want.items() if have[c] < n]
@@ -162,8 +177,22 @@ def explained(concept: str, seen: set[str]) -> bool:
 
 FORMAL = {"theorem_box", "key_formula"}
 EXAMPLE = re.compile(r"exemple|example|e\.g\.|imagin|consid[ée]r|suppos|prenons|take a|par ex", re.I)  # an opening that works a case
-CONCRETE = {"prose", "intuition", "misconception", "worked_example", "plot", "surface_plot", "explorer", "figure", "table", "diagram", "step_diagram",
+CONCRETE = {"prose", "intuition", "misconception", "worked_example", "derivation", "plot", "surface_plot", "explorer", "figure", "table", "diagram", "kind_diagram", "stepped_animation", "step_diagram",
             "iteration_table", "optimizer_animation", "terminal", "code"}  # after the opening: an example or a case to look at
+
+
+def exam_homes(lessons: dict[str, dict], titles: list[str], exam_types: list[str]) -> dict[str, str]:
+    """Question Type -> the one Section that prepares for it: the last Section whose plan objectives name it, when all the
+    Concepts it needs are taught; the Chapter's last Section when no plan names it. Every Section given every past Question
+    drilled the whole exam from its first Section on, before the Sections that teach it."""
+    named = {t: s for s in titles for o in (lessons.get(s) or {}).get("objectives", []) for t in o.get("exam_types", [])}
+    return {t: named.get(t, titles[-1]) for t in exam_types}
+
+
+def exam_gaps(blocks: list[dict], elsewhere: dict[str, str]) -> list[str]:
+    """Blocks tagged with a Question Type another Section prepares for (`elsewhere`: type -> that Section)."""
+    return [f"a {b.get('component')} prepares for \"{t}\", which Section \"{elsewhere[t]}\" prepares for: leave that "
+            "practice to it, here teach only this Section's part" for b in blocks for t in b.get("exam_types", []) if t in elsewhere]
 
 
 def order_gaps(blocks: list[dict], teaches: list[str]) -> list[str]:

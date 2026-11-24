@@ -146,7 +146,8 @@ export function CramPage() {
       </div>
       {data.exam_date && !plan.days.length && <p className="mb-8 text-muted-foreground">The exam is today. Read the Cheat Sheet once, calmly, and go.</p>}
       <div className="grid gap-x-12 gap-y-10 lg:grid-cols-[minmax(0,1fr)_24rem]">
-        <div className="min-w-0">
+        {/* Today stays in view while the long exam-asks rail scrolls; a tall plan scrolls inside */}
+        <div className="min-w-0 lg:sticky lg:top-[calc(var(--hh)+1rem)] lg:max-h-[calc(100dvh-var(--hh)-2rem)] lg:self-start lg:overflow-y-auto">
           {today && (
             <section aria-labelledby="today" className="rounded-lg border border-border bg-card px-5 py-4">
               <div className="flex items-baseline justify-between gap-4">
@@ -234,7 +235,7 @@ export function CramPage() {
                         <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                           <ChevronRight className="size-3.5 transition-transform duration-200 group-open:rotate-90" />Marks are given for</summary>
                         <ul className="ml-5 mt-1 space-y-0.5">{tech.method_marks.map((m) => (
-                          <li key={m.step} className="flex justify-between gap-3"><MdLine>{m.step}</MdLine><span className="tabular shrink-0 text-muted-foreground">{m.points} pts</span></li>))}</ul>
+                          <li key={m.step} className="flex justify-between gap-3"><span className="min-w-0"><MdLine>{m.step}</MdLine></span><span className="tabular shrink-0 text-muted-foreground">{m.points} pts</span></li>))}</ul>
                       </details>
                     )}
                     <Link to="/c/$cid/mixed" params={{ cid: String(cid) }} search={{ types: t.name } as never} className="inline-flex items-center gap-1 text-primary hover:underline">
@@ -376,7 +377,7 @@ export function Mixed() {
           {!shown ? <Button className="mt-5" onClick={() => setShown(true)}>I've answered on paper: show the answer</Button> : (
             <>
               <div className="prose-cf mt-5 border-t border-dashed border-input pt-4"><Md>{item.answer}</Md></div>
-              {item.scheme && <ul className="mt-3 text-sm">{item.scheme.map((s) => <li key={s.step} className="flex justify-between gap-4"><MdLine>{s.step}</MdLine><span className="tabular text-muted-foreground">{s.points} pts</span></li>)}</ul>}
+              {item.scheme && <ul className="mt-3 text-sm">{item.scheme.map((s) => <li key={s.step} className="flex justify-between gap-4"><span className="min-w-0"><MdLine>{s.step}</MdLine></span><span className="tabular text-muted-foreground">{s.points} pts</span></li>)}</ul>}
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button variant="secondary" disabled={mark.isPending} onClick={() => mark.mutate("got")}>Got it</Button>
                 <Button variant="outline" disabled={mark.isPending} onClick={() => mark.mutate("partly")}>Partly</Button>

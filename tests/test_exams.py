@@ -134,14 +134,17 @@ def test_digest_lists_each_chapters_commands_once():
     import json, sqlite3
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
-    db.executescript("CREATE TABLE chapters (id, course_id, title, priority, position); CREATE TABLE sections (id, chapter_id, position, teaches);"
+    db.executescript("CREATE TABLE chapters (id, course_id, title, priority, position); CREATE TABLE sections (id, chapter_id, position, title, teaches);"
                      "CREATE TABLE blocks (section_id, position, component, data);")
     db.execute("INSERT INTO chapters VALUES (1, 7, 'Docker', 'focus', 0)")
-    db.execute("INSERT INTO sections VALUES (1, 1, 0, ?)", (json.dumps(["image", "conteneur"]),))
+    db.execute("INSERT INTO sections VALUES (1, 1, 0, 'Images', ?)", (json.dumps(["image", "conteneur"]),))
     run = json.dumps({"entries": [{"command": "docker build -t api ."}, {"command": "docker run -p 8000:8000 api"}]})
     for pos, (comp, data) in enumerate([("terminal", run), ("terminal", run), ("code", json.dumps({"code": "FROM python:3.11"})),
-                                        ("prose", json.dumps({"markdown": "texte"}))]):
+                                        ("prose", json.dumps({"markdown": "texte"})),
+                                        ("table", json.dumps({"headers": ["Commande", "Rôle"], "rows": [["`docker ps`", "liste"]]})),
+                                        ("table", json.dumps({"headers": ["Outil", "Rôle"], "rows": [["Kibana", "UI"]]})),
+                                        ("worked_example", json.dumps({"problem": "Soit :\n```bash\ndocker images\n```", "steps": []}))]):
         db.execute("INSERT INTO blocks VALUES (1, ?, ?, ?)", (pos, comp, data))
     ctx = type("Ctx", (), {"db": db})()
     assert exams.course_digest(ctx, 7) == [{"chapter": "Docker", "concepts": ["image", "conteneur"], "commands_and_code": [
-        "docker build -t api .\ndocker run -p 8000:8000 api", "FROM python:3.11"]}]
+        "docker build -t api .\ndocker run -p 8000:8000 api", "FROM python:3.11", "`docker ps` | liste", "docker images"]}]

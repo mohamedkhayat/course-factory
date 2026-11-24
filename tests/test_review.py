@@ -51,7 +51,7 @@ def test_auto_resolve_repairs_with_the_flag_as_note_keeps_an_undo_and_queues_the
 
     report = {r["class"]: r for r in client.get("/api/failures", params={"course": cid}).json()}
     assert report["katex-parse"]["count"] >= 2 and report["katex-parse"]["sources"].get("auto_resolved") == 2
-    assert report["katex-parse"]["examples"] and report["katex-parse"]["handler"] == "none"
+    assert report["katex-parse"]["examples"] and report["katex-parse"]["handler"] == "check"  # harness/failures.yaml
 
 
 def test_a_source_error_keeps_the_block_and_adds_a_note(client, material, model):
@@ -110,3 +110,21 @@ def test_check_messages_map_to_failure_classes():
         "something new": "unclassified",
     }
     assert {m: failure_class(m) for m in cases} == cases
+
+
+def test_auto_resolve_saves_the_tests_the_repair_returns(client, material, model):
+    blocks = one_block("key_formula", {"name": "a", "latex": "\\frac{1}{", "meaning": "m"})
+    cid = generate(client, material, model, blocks=blocks)
+    chid, (a, *_) = chapter_blocks(client, cid)
+
+    def repair(prompt, files):
+        block = json.loads(prompt.split("BLOCK:", 1)[1])
+        block["data"]["latex"], block["tests"] = "\\frac{1}{2}", ["Sqoop"]
+        return {"block": block}
+    model.handlers["repair_block"] = repair
+    out = client.post(f"/api/courses/{cid}/chapters/{chid}/auto-resolve").json()
+    _, (a2, *_) = chapter_blocks(client, cid)
+    assert a2["tests"] == ["Sqoop"]  # saved, so the next repair can drop a tag that isn't a Concept and the flag goes away
+    # its KaTeX is fixed but the Course check flags it again: reported as queued, not "resolved" while it stays flagged
+    assert a2["status"] == "flagged" and any("not a Concept" in f for f in a2["flags"]), a2["flags"]
+    assert out == {"resolved": [], "queued": [a["id"]]} and a2["review_queue"]

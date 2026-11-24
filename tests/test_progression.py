@@ -12,7 +12,7 @@ from course_factory.exams import cohort_of, default_scope
 from course_factory.failures import failure_class
 from pathlib import Path
 
-from course_factory.progression import MARK, ledger_errors, progression_errors, repeat_errors, section_overlaps
+from course_factory.progression import MARK, ledger_errors, practised, progression_errors, repeat_errors, section_overlaps
 from test_chapters import CONVEXES, GRADIENT, chapters, generate
 
 OUTLINE = {"chapters": [
@@ -180,6 +180,21 @@ def test_a_practice_naming_a_later_concept_it_does_not_declare_is_flagged():
     assert ledger_errors([block | {"component": "worked_example"}], concepts) == {}  # showing it is not asking it
 
 
+def test_a_later_concept_is_named_in_one_field_not_pieced_together_from_several():
+    """Course 12 Block 4458: "matrice" in one option and "propriété" in the explanation read as the later "Propriétés de la
+    matrice de transition" ("transition" was known: its stem is the one of "transformation"). Auto-resolve could not fix it."""
+    concepts = {"Stabilité gaussienne par transformation affine Y = a + MX": (1, "Stabilité par transformation linéaire"),
+                "Propriétés de la matrice de transition": (30, "Matrice de transition")}
+    quiz = {"questions": [{"prompt": "Quelle affirmation définit correctement un processus gaussien $(X_t, t \\geq 0)$ ?",
+                           "options": ["Chaque $X_t$ est une variable aléatoire gaussienne.",
+                                       "La matrice $\\bigl(\\operatorname{Cov}(X_{t_i}, X_{t_j})\\bigr)_{i,j}$ est diagonale pour tout choix de temps."],
+                           "explanation": "L'option 2 (accroissements stationnaires) est une propriété du mouvement brownien."}]}
+    block = {"id": 4458, "at": 5, "component": "quiz", "tests": [], "data": quiz}
+    assert ledger_errors([block], concepts) == {}
+    quiz["questions"][0]["options"].append("Une propriété de la matrice de transition.")
+    assert ledger_errors([block], concepts)[4458][0].startswith('asks about "Propriétés de la matrice de transition"')
+
+
 def test_a_paper_set_for_two_years_counts_for_either():
     db = sqlite3.connect(":memory:")
     db.row_factory = sqlite3.Row
@@ -257,7 +272,7 @@ def test_a_clause_only_named_before_its_drill_is_flagged_until_an_example_shows_
         "starter": "GET /ventes/_search\n{\n  \"query\": {\n    \"bool\": {\n      \"must\": [\n        // TODO\n      ]\n    }\n  }\n}",
         "solution": "GET /ventes/_search\n{\"query\": {\"bool\": {\"must\": [{\"term\": {\"Statut\": \"payée\"}}, {\"range\": {\"Prix\": {\"lt\": 500}}}]}}}"}}
     [errs] = progression_errors([mention, exercise]).values()
-    assert {e.split('"')[1] for e in errs} == {"_search", "bool", "must", "term", "range", "lt"}
+    assert {e.split('"')[1] for e in errs} == {"bool", "must", "term", "range", "lt"}  # `GET /ventes/_search` is a starter line kept as is
     shown = {"id": 3, "chapter": 1, "section": "DSL", "component": "terminal", "data": {"entries": [{"command":
              "GET /boutique/_search\n{\"query\": {\"bool\": {\"must\": [{\"term\": {\"genre\": \"piano\"}}, {\"range\": {\"prix\": {\"lt\": 20}}}]}}}"}]}}
     assert progression_errors([mention, shown, exercise]) == {}
@@ -275,3 +290,33 @@ def test_a_concept_name_retyped_with_other_notation_is_read_as_that_concept(tmp_
                (json.dumps(["filtration naturelle F_n = σ(X₁, ..., Xₙ)"]),))
     assert flag_progression(db, 1) == {}
     assert json.loads(db.execute("SELECT tests FROM blocks").fetchone()[0]) == ["filtration naturelle F_n = σ(X₁, ..., X_n)"]
+
+
+def test_a_course_with_no_concepts_named_has_no_ledger_to_break():
+    """Course 3 (MLOps) was outlined before Concepts were named: its rewritten practice declared tests that could match nothing."""
+    assert ledger_errors([{"id": 2839, "at": 3, "component": "quiz", "tests": ["Flake8"], "data": {}}], {}) == {}
+
+
+def test_a_hyphenated_command_in_a_concept_name_is_one_word():
+    """Course 9: "docker-compose" split into docker + compose, and "compo" is also the stem of "composant", so every MLflow
+    quiz that names Docker and its components was flagged as asking about the later Atelier 7."""
+    concepts = {"docker-compose (stack ELK)": (20, "Atelier 7")}
+    block = {"id": 3343, "at": 12, "component": "quiz", "tests": [],
+             "data": {"prompt": "Quel composant de MLflow permet à Docker de charger le modèle ?"}}
+    assert ledger_errors([block], concepts) == {}
+    two = {"docker-compose logs (stack ELK)": (20, "Atelier 7")}
+    asking = block | {"data": {"prompt": "Que montre `docker-compose logs` sur la stack ELK ?"}}
+    assert ledger_errors([asking], two)[3343][0].startswith('asks about "docker-compose logs')
+
+
+def test_a_drill_does_not_expect_what_its_starter_code_already_writes():
+    """Course 9 Blocks 3373 and 3496: the starter computes the rmse and assigns `proba`; the learner only adds the MLflow
+    calls and fills `proba[0]`. A name only in a starter comment still counts as expected."""
+    starter = ("import numpy as np\nfrom sklearn.metrics import mean_squared_error\n\nrmse = float(np.sqrt(mean_squared_error(y, p)))\n"
+               "# TODO : log_metric rmse\n")
+    data = {"title": "", "task": "Enregistrez la métrique.", "language": "python", "starter": starter,
+            "solution": starter + "mlflow.log_metric('rmse', rmse)\n"}
+    assert practised("code_exercise", data) == {"log_metric"}
+    blanks = {"title": "", "task": "", "language": "python", "template": "proba = model.predict([X])\nreturn {'p': [[1]]}",
+              "blanks": [{"answers": ["proba[0]"]}]}
+    assert "proba" not in practised("fill_blanks", blanks)

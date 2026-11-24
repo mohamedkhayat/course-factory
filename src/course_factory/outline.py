@@ -11,7 +11,7 @@ from .context import Ctx, Priority, Profile
 from .pi_step import run_pi_step
 
 PAGE_HEAD_CHARS = 500
-PRACTICE_ONLY = re.compile(r"exerci|r[ée]vision|annales|entra[iî]nement|\bTD\b|\bTP\b|bilan|synth[eè]se|practice|review", re.I)
+PRACTICE_ONLY = re.compile(r"exerci|r[ée]vision|annales|entra[iî]nement|\bT[DP]\d*\b|\bexam(en)?s?\b|bilan|synth[eè]se|practice|review", re.I)
 MIN_PAGE_CHARS = 300  # shorter uncited pages are title pages and section dividers (courses 2-6)
 
 
@@ -65,6 +65,53 @@ def propose_outline(ctx: Ctx, cid: int) -> None:
     db.execute("UPDATE courses SET subject=? WHERE id=?", (plan.kind, cid))
     attach_uncited(db, cid, plan)
     save_outline(ctx, cid, plan)
+
+
+def replan_chapter(ctx: Ctx, cid: int, chid: int) -> None:
+    """Plans one Chapter's Sections again from its Sources and the files added to its folders since (a professor's slides that
+    came later): the Sections are rewritten in place by position, so Blocks and Cards of kept positions keep their ids."""
+    db, current = ctx.db, load_outline(ctx, cid)
+    mine = next(ch for ch in current if ch["id"] == chid)
+    elsewhere = {(p["source"], p["page"]) for ch in current if ch["id"] != chid for s in ch["sections"] for p in s["pages"]}
+    cited = {p["source"] for s in mine["sections"] for p in s["pages"]}
+    folders = {n.rsplit("/", 1)[0] if "/" in n else "" for n in cited}
+    goal = db.execute("SELECT goal FROM courses WHERE id=?", (cid,)).fetchone()["goal"]
+    sources = []
+    for s in db.execute("SELECT id, name, role FROM sources WHERE course_id=? AND excluded=0 AND pages>0 ORDER BY name", (cid,)):
+        if s["name"] not in cited and (s["name"].rsplit("/", 1)[0] if "/" in s["name"] else "") not in folders:
+            continue
+        heads = [{"page": p["n"], "head": (p["text"] or "")[:PAGE_HEAD_CHARS]} for p in db.execute(
+            "SELECT n, text FROM pages WHERE source_id=? AND readable=1 ORDER BY n", (s["id"],)) if (s["name"], p["n"]) not in elsewhere]
+        if heads:
+            sources.append({"name": s["name"], "role": s["role"], "pages": heads})
+    notes = [s["name"] for s in sources if s["role"] == "course notes"]
+
+    class CoveringPlan(OutlinePlan):
+        @model_validator(mode="after")
+        def covers_the_notes(self):
+            got = {p.source for ch in self.chapters for s in ch.sections for p in s.pages}
+            if missing := [n for n in notes if n not in got]:
+                raise ValueError(f"no Section cites the course notes {', '.join(missing)}: plan Sections for them too.")
+            return self
+
+    plan = run_pi_step(db, ctx.backend, "propose_outline", {"goal": goal, "sources": sources}, CoveringPlan,
+                       ctx.course_dir(cid), course_id=cid)
+    one = ChapterPlan(title=mine["title"], sections=[s for ch in plan.chapters for s in ch.sections])  # these sources are one Chapter
+    attach_uncited(db, cid, OutlinePlan(chapters=[one]))
+    taught = {c for ch in current if ch["id"] != chid for s in ch["sections"] for c in s["teaches"]}
+    old = [s["id"] for s in mine["sections"]]
+    for j, sec in enumerate(one.sections):
+        sec.pages = [p for p in sec.pages if (p.source, p.page) not in elsewhere]
+        taught |= set(teaches := [c for c in dict.fromkeys(t.strip() for t in sec.teaches) if c and c not in taught])
+        row = (sec.title, json.dumps(valid_refs(ctx, cid, sec.pages)), json.dumps(teaches, ensure_ascii=False))
+        if j < len(old):
+            db.execute("UPDATE sections SET title=?, pages=?, teaches=?, generation_status='pending' WHERE id=?", (*row, old[j]))
+        else:
+            db.execute("INSERT INTO sections (chapter_id, position, title, pages, teaches) VALUES (?,?,?,?,?)", (chid, j, *row))
+    for sid in old[len(one.sections):]:  # fewer Sections now: the reading place and tutor talk move to the last one kept
+        for table in ("places", "tutor_messages"):
+            db.execute(f"UPDATE {table} SET section_id=? WHERE section_id=?", (old[len(one.sections) - 1], sid))
+        db.execute("DELETE FROM sections WHERE id=?", (sid,))
 
 
 def attach_uncited(db, cid: int, plan: OutlinePlan) -> None:

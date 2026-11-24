@@ -11,10 +11,11 @@ from . import components
 from .catalogue import CATALOGUE, describe
 from .checks import DIAGRAMS, block_warnings, check_blocks
 from .context import Ctx
-from .outline import profile_of
+from .memory import memory_text
+from .outline import backfill_concepts, profile_of
 from .failures import failure_class
 from .progression import flag_progression, section_overlaps
-from .lesson_plan import figure_gaps, order_gaps, plan_chapter, plan_gaps
+from .lesson_plan import exam_gaps, exam_homes, figure_gaps, order_gaps, plan_chapter, plan_gaps
 from .pi_step import MIN_WORDS, MODEL_LANES, StepFailed, attach_checks, escape_latex, last_trace_id, parse_json, record_owner_action, run_pi_step
 
 REPAIRS = 2  # each repair already retries bad output; deterministic healing catches the rest
@@ -128,6 +129,25 @@ def section_from_text(raw: str) -> object:
     return {"blocks": blocks, "proposals": parse_json(proposals) if proposals.strip() else []}
 
 
+def course_text(block: dict) -> dict:
+    """What a Block says from its pages: a Derivation's gap notes are model text, never judged as from_source."""
+    if block["component"] != "derivation":
+        return block
+    return block | {"data": block["data"] | {"lines": [ln | {"note": ""} for ln in block["data"].get("lines", [])]}}
+
+
+COURSE_SHARE = 0.5  # course-first: at least half of a theoretical Section's teaching and practice Blocks restate the pages
+
+
+def low_course_share(blocks: list[dict]) -> str | None:
+    """The Check on a theoretical Section: its from_source share, the opening prose and the recap left out. Flagged, never refused."""
+    body = [b for i, b in enumerate(blocks) if b["component"] != "recap" and not (i == 0 and b["component"] == "prose")]
+    if not body:
+        return None
+    share = sum(b["origin"] == "from_source" for b in body) / len(body)
+    return f"course share: {share:.0%} of the teaching and practice Blocks come from the course (under {COURSE_SHARE:.0%})" if share < COURSE_SHARE else None
+
+
 def catalogue_text(ctx: Ctx) -> str:
     return "\n".join(x for x in (describe(), components.describe_custom(ctx.db)) if x)
 
@@ -194,6 +214,42 @@ def page_texts(ctx: Ctx, cid: int, refs: list[dict]) -> list[dict]:
     return out
 
 
+COURSE_FIRST_PLAN = """Course-first (a theoretical Course): the course is the backbone. Plan objectives only from what the pages and the past \
+Questions contain, never a proof, theorem or method the pages do not give. An apply objective's worked item is the course's own \
+worked example, proof or TD correction, component derivation, whenever the pages have one. Practice comes in this order: the TD \
+exercises of the pages (with their corrections), then the past Questions; plan a model-made item only for a Question Type the \
+pages have no unused exercise for. Give each practice item reused from the course a "source": the file, page and exercise it \
+takes ("Série 2.pdf p.1, Exercice 3", "Examen 2022, Exercice 2 (b)"); leave it out only for a model-made item. \
+Pages without exercises (lecture notes) still carry the course's proofs and computations: plan each as a derivation item with \
+its "source", never a model-made worked_example in its place; plan a model worked_example only for a method no page derives."""
+
+COURSE_FIRST = """Course-first (a theoretical Course): the course is the backbone, whatever the goal. Follow PAGES in their order and \
+notation, and keep its symbols (ρ, X_k, ⟨·,·⟩, ᵗM), never your own.
+- State the course's definitions, theorems and methods exactly as the pages state them: same hypotheses, same symbols, never generalised.
+- Each derivation the pages contain (a proof, a computation, a worked example, a TD correction) becomes a derivation Block, origin \
+from_source, cited to its page: one line per line of the page, each verbatim. Where the course skips a step, that line's "note" \
+says in at most two sentences how it follows ("multiply both sides by A and subtract b"); no other line has a note. Never rewrite \
+the course's own example as a worked_example of yours.
+- Practice in this order: the TD exercises of PAGES as exercise Blocks with their own corrections (origin from_source, cited to \
+the exercise and its correction), then the past Questions below; write a model-made example or exercise only for a Question Type \
+the pages have no unused exercise for. A plan practice item with a "source" is that exercise, its statement as the course words \
+it (origin from_source, cited): this overrides "give every practice Block its own case", which is for model-made items only.
+- Nothing that neither the pages nor the past Questions contain: no proof, theorem, method or example from beyond the course.
+- The opening prose and the recap stay. Write an intuition or misconception Block only when the pages or a past Question's traps \
+call for one. Your own explanations (model_added) stay a small share: fewer than half of the teaching and practice Blocks.
+Past Questions on this Chapter: {questions}"""
+
+
+def course_first(ctx: Ctx, cid: int, chapter, subject: str | None, cram) -> tuple[str, str]:
+    """The plan and writing instructions of a theoretical Course (#30); empty otherwise. A Deep Course gets the past
+    Questions here, as Cram gets them in its brief."""
+    if subject != "theoretical":
+        return "", ""
+    types = cram["question_types"] if isinstance(cram, dict) else cram_brief(ctx, cid, chapter)["question_types"]
+    questions = [{"type": t["name"], **{k: q[k] for k in ("exam", "question", "statement", "model_answer")}} for t in types for q in t["past_questions"]]
+    return COURSE_FIRST_PLAN, COURSE_FIRST.format(questions=json.dumps(questions, ensure_ascii=False) if questions else "none")
+
+
 def cram_brief(ctx: Ctx, cid: int, chapter) -> dict:
     """What a Cram Section is written for: the Chapter's Cram Profile and the Question Types that test it, with their
     past Questions, points and Marking schemes."""
@@ -201,12 +257,12 @@ def cram_brief(ctx: Ctx, cid: int, chapter) -> dict:
     types = []
     for t in db.execute("SELECT DISTINCT t.* FROM question_types t LEFT JOIN questions q ON q.question_type_id=t.id "
                         "WHERE t.course_id=? AND (t.chapter_id=? OR q.chapter_id=?) ORDER BY t.id", (cid, chapter["id"], chapter["id"])):
-        qs = db.execute("SELECT q.statement, q.points, q.model_answer, q.scheme FROM questions q JOIN exams e ON e.id=q.exam_id "
+        qs = db.execute("SELECT e.title AS exam, q.position, q.statement, q.points, q.model_answer, q.scheme FROM questions q JOIN exams e ON e.id=q.exam_id "
                         "WHERE q.question_type_id=? AND (e.kind!='past_paper' OR e.in_scope=1) ORDER BY q.id", (t["id"],)).fetchall()
         if not qs:
             continue  # only another cohort's papers ask it
         types.append({"name": t["name"], "trigger": t["trigger"], "points": sum(q["points"] for q in qs),
-                      "past_questions": [{"statement": q["statement"], "points": q["points"], "model_answer": q["model_answer"],
+                      "past_questions": [{"exam": q["exam"], "question": q["position"] + 1, "statement": q["statement"], "points": q["points"], "model_answer": q["model_answer"],
                                           "scheme": json.loads(q["scheme"] or "null")} for q in qs[:3]]})
     return {"profile": profile_of(ctx, chapter), "question_types": types}
 
@@ -226,6 +282,12 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
     passes the owner's earlier edits)."""
     db = ctx.db
     db.execute("UPDATE chapters SET status='generating' WHERE id=?", (chid,))
+    if not db.execute("SELECT 1 FROM sections s JOIN chapters c ON c.id=s.chapter_id WHERE c.course_id=? AND s.teaches!='[]'",
+                      (cid,)).fetchone():  # outlined before Concepts: with none, nothing checks what is taught before it is asked
+        try:
+            backfill_concepts(ctx, cid)
+        except StepFailed:
+            pass  # written without the ledger, as before, rather than stalling
     chapter = db.execute("SELECT * FROM chapters WHERE id=?", (chid,)).fetchone()
     goal, subject = db.execute("SELECT goal, subject FROM courses WHERE id=?", (cid,)).fetchone()
     cram = cram_brief(ctx, cid, chapter) if goal == "cram" else "none (Deep: no exam focus)"
@@ -245,29 +307,35 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
     planned = [{"title": s["title"], "teaches": json.loads(s["teaches"]),
                 "excerpt": " … ".join(p["text"][:400] for p in page_texts(ctx, cid, json.loads(s["pages"])))[:1200]} for s in sections]
     exam_types = [t["name"] for t in cram["question_types"]] if isinstance(cram, dict) else []
+    first_plan, first_write = course_first(ctx, cid, chapter, subject, cram)
     try:
         lessons = plan_chapter(db, ctx.backend, ctx.course_dir(cid), cid, chapter, planned, {
             "goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "subject": subject, "cram": cram,
             "language": language_rule(db, cid), "taught": json.dumps(before[sections[0]["id"]], ensure_ascii=False),
-            "components": ", ".join(CATALOGUE), "exam_types": json.dumps(exam_types, ensure_ascii=False)}, exam_types)
+            "components": ", ".join(CATALOGUE), "exam_types": json.dumps(exam_types, ensure_ascii=False), "course_first": first_plan}, exam_types)
     except StepFailed:
         lessons = {}  # no plan: the Sections are written as before rather than stalling the Run
 
+    homes = exam_homes(lessons, [s["title"] for s in sections], exam_types)
     overview = json.loads(db.execute("SELECT plan FROM chapters WHERE id=?", (chid,)).fetchone()["plan"] or "{}").get("overview", "")
     chapter_map = json.dumps({"overview": overview, "sections": [s["title"] for s in sections]}, ensure_ascii=False)
 
     def write(sec):
         pages = page_texts(ctx, cid, json.loads(sec["pages"]))
         lesson = lessons.get(sec["title"])
+        elsewhere = {t: home for t, home in homes.items() if home != sec["title"]}
+        brief = cram if not isinstance(cram, dict) else {  # only this Section's Question Types: the rest are drilled where they are taught
+            **cram, "question_types": [t for t in cram["question_types"] if t["name"] not in elsewhere],
+            "prepared_in_other_sections": elsewhere}
         inputs = {"goal": goal, "priority": chapter["priority"], "chapter": chapter["title"], "section": sec["title"],
-                  "pages": pages, "catalogue": catalogue, "language": language_rule(db, cid), "subject": subject, "cram": cram,
+                  "pages": pages, "catalogue": catalogue, "language": language_rule(db, cid), "subject": subject, "cram": brief,
                   "owner_notes": (notes or {}).get(sec["id"], "none"), "taught_before": before[sec["id"]],
                   "teaches": json.loads(sec["teaches"]), "plan": lesson or "none", "gaps": "none",
-                  "chapter_map": chapter_map}
+                  "chapter_map": chapter_map, "memory": memory_text(db, cid), "course_first": first_write}
 
         def gaps(blocks):
             return ([f"plan: {g}" for g in plan_gaps(lesson, blocks)] if lesson else []) + [f"plan: {g}" for g in figure_gaps(pages, blocks)] + \
-                [f"order: {g}" for g in order_gaps(blocks, inputs["teaches"])]
+                [f"order: {g}" for g in order_gaps(blocks, inputs["teaches"])] + [f"plan: {g}" for g in exam_gaps(blocks, elsewhere)]
         draft = run_pi_step(db, ctx.backend, "write_section", inputs, SectionDraft, ctx.course_dir(cid), course_id=cid,
                             parse=section_from_text)
         missed = gaps(draft.blocks)
@@ -319,14 +387,23 @@ def generate_chapter(ctx: Ctx, cid: int, chid: int, notes: dict[int, str] | None
                        "VALUES (?,?,?,?,?,?,?,?,?,?)", (sec["id"], pos, *values))
         for prev in old.values():
             db.execute("DELETE FROM blocks WHERE id=?", (prev["id"],))
-        attach_checks(db, section_trace, [{"block": i, **flags} for i, flags in enumerate(checks)])
+        low = low_course_share(blocks) if subject == "theoretical" else None
+        earlier = db.execute("SELECT checks FROM traces WHERE id=?", (section_trace,)).fetchone() if section_trace else None
+        gaps = [c for c in json.loads((earlier and earlier[0]) or "[]") if "block" not in c]  # the plan and order gaps found at writing
+        attach_checks(db, section_trace, gaps + [{"block": i, **flags} for i, flags in enumerate(checks)] + ([{"warnings": [low]}] if low else []))
         db.execute("UPDATE sections SET generation_status='complete' WHERE id=?", (sec["id"],))
+        if ctx.videos:
+            ctx.videos.sync_section(sec["id"])  # type: ignore[attr-defined]  # its Videos render in the background: the Run does not wait
+        if ctx.listen_ahead:
+            ctx.listen_ahead(sec["id"])  # type: ignore[operator]  # and its Listen audio is made in the chosen Voice
 
     with ThreadPoolExecutor(max_workers=min(MODEL_LANES, len(drafts) or 1)) as pool:
         futures = {pool.submit(check_section, item): item for item in drafts}
         for future in as_completed(futures):
             save_section(futures[future], future.result())
     db.execute("UPDATE chapters SET status='in_review' WHERE id=?", (chid,))
+    if ctx.videos:
+        ctx.videos.ensure_overview(chid)  # type: ignore[attr-defined]
     flag_progression(db, cid)
     if db.execute("SELECT auto_resolve FROM courses WHERE id=?", (cid,)).fetchone()[0]:
         auto_resolve(ctx, cid, chid)
@@ -346,19 +423,25 @@ def auto_resolve(ctx: Ctx, cid: int, chid: int) -> dict:
         blocks, flags = checked_blocks(ctx, cid, [block_json(r) for r in rows], page_texts(ctx, cid, json.loads(sec["pages"])), notes)
         for row, block, f in zip(rows, blocks, flags):
             previous = {k: row[k] for k in ("component", "origin", "status")} | {k: json.loads(row[k]) for k in ("data", "citations", "flags")}
-            db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=?, previous=?, review_queue=? WHERE id=?",
+            # the repair answers with the Block's "tests": saving them is how a progression flag ("tests X, not a Concept") goes away
+            db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=?, previous=?, review_queue=?, tests=? WHERE id=?",
                        (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
                         block["origin"], "flagged" if f["errors"] else "ok", json.dumps(f["errors"] + f["warnings"], ensure_ascii=False),
-                        json.dumps(previous, ensure_ascii=False), int(bool(f["errors"])), row["id"]))
+                        json.dumps(previous, ensure_ascii=False), int(bool(f["errors"])), json.dumps(block.get("tests", []), ensure_ascii=False),
+                        row["id"]))
             (queued if f["errors"] else resolved).append(row["id"])
-    flag_progression(db, cid)  # a repaired Block is checked against the rest of the Course again
+    errors = flag_progression(db, cid)  # a repaired Block is checked against the rest of the Course again
+    # one that passes its own checks can still test ahead of the Course: flagged again, so queued, not resolved
+    if again := [bid for bid in resolved if errors.get(bid)]:
+        db.execute(f"UPDATE blocks SET review_queue=1 WHERE id IN ({','.join('?' * len(again))})", again)
+        resolved, queued = [bid for bid in resolved if bid not in again], queued + again
     record_owner_action(db, cid, "chapter_review", {"chapter": chid, "resolved": resolved, "queued": queued, "classes": classes}, "auto_resolved")
     return {"resolved": resolved, "queued": queued}
 
 
 def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes: dict[int, str] | None = None,
-                   on_stage: Callable[[str], object] = lambda stage: None) -> tuple[list[dict], list[dict]]:
-    """Check a Section's Blocks together, repair failures in parallel, then judge grounding in one call.
+                   on_stage: Callable[[str], object] = lambda stage: None, live: bool = False, repairs: int = REPAIRS) -> tuple[list[dict], list[dict]]:
+    """Check a Section's Blocks together, repair failures in parallel, then judge grounding in one call (live: on the Live work lane).
     A Block that goes beyond its pages becomes model-added; one that contradicts them is repaired once and judged again."""
     sources = source_pages(ctx, cid)
     extra = components.schemas(ctx.db)
@@ -372,7 +455,7 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
             fixed = run_pi_step(ctx.db, ctx.backend, "repair_block", {
                 "block": blocks[index], "errors": errors[index], "pages": pages,
                 "catalogue": catalogue_text(ctx), "language": language_rule(ctx.db, cid)}, RepairedBlock,
-                ctx.course_dir(cid), course_id=cid)
+                ctx.course_dir(cid), course_id=cid, live=live)
             return index, fixed.block, None, last_trace_id()
         except StepFailed as e:
             return index, None, str(e), last_trace_id()
@@ -404,8 +487,8 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
         page_map = {(p["source"], p["page"]): p for i in indices for p in page_texts(ctx, cid, blocks[i]["citations"])}
         try:
             review = run_pi_step(ctx.db, ctx.backend, "judge_grounding", {
-                "blocks": [{"block": i, "content": blocks[i], "citations": blocks[i]["citations"]} for i in indices],
-                "pages": list(page_map.values())}, GroundingBatch, ctx.course_dir(cid), course_id=cid)
+                "blocks": [{"block": i, "content": course_text(blocks[i]), "citations": blocks[i]["citations"]} for i in indices],
+                "pages": list(page_map.values())}, GroundingBatch, ctx.course_dir(cid), course_id=cid, live=live)
         except StepFailed as e:
             for i in indices:
                 warnings[i].append(f"grounding judge failed: {e}")
@@ -427,7 +510,7 @@ def checked_blocks(ctx: Ctx, cid: int, raw: list[dict], pages: list[dict], notes
                 blocks[i]["origin"] = "model_added"  # goes beyond its pages: its Citations stay as references
         return contradicted
 
-    repair_all(REPAIRS, set(range(len(blocks))))
+    repair_all(repairs, set(range(len(blocks))))
     contradicted = judge([i for i, b in enumerate(blocks) if not errors[i] and b["origin"] == "from_source"])
     if contradicted:
         repair_all(1, set(contradicted))
@@ -451,7 +534,7 @@ def block_json(row) -> dict:
     return {"id": row["id"], "position": row["position"], "component": row["component"], "data": json.loads(row["data"]),
             "citations": json.loads(row["citations"]), "origin": row["origin"], "status": row["status"], "flags": json.loads(row["flags"]),
             "exam_types": json.loads(row["exam_types"]), "tests": json.loads(row["tests"]), "review_queue": bool(row["review_queue"]),
-            "previous": json.loads(row["previous"]) if row["previous"] else None,
+            "previous": json.loads(row["previous"]) if row["previous"] else None, "from_chat": row["chat_message"] is not None,
             **({} if row["component"] in CATALOGUE else {"fallback_markdown": fallback_markdown(json.loads(row["data"]))})}
 
 

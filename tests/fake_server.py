@@ -15,13 +15,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 import uvicorn  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from conftest import FakeModel, FakeSearch, make_pdf  # noqa: E402
+from conftest import FakeMedia, FakeModel, FakeSearch, make_pdf  # noqa: E402
 from course_factory.app import create_app  # noqa: E402
 from course_factory.kernels import LocalLauncher  # noqa: E402
 from course_factory.pi_step import report  # noqa: E402
 from test_chapters import generate  # noqa: E402
 from test_checks import GOOD as NEW_COMPONENTS  # noqa: E402
 from test_components import GOOD, PROPOSAL  # noqa: E402
+from test_animation import GOOD as ANIMATION  # noqa: E402
+from test_kind_diagram import CITE, GOOD as KINDS  # noqa: E402
 
 
 def seed(client, model, root: Path) -> int:
@@ -36,11 +38,19 @@ def seed(client, model, root: Path) -> int:
         **write(prompt, files), "proposals": [PROPOSAL],
         "blocks": write(prompt, files)["blocks"] + [{"component": "saddle_point", "data": {"title": "Point selle"}, "origin": "model_added"}]
         + [{"component": c, "data": d, "origin": "model_added"} for c, d in NEW_COMPONENTS.items()]
+        + [{"component": "kind_diagram", "data": KINDS["tree"], "citations": [CITE], "origin": "from_source"}]
+        + [{"component": "stepped_animation", "data": ANIMATION, "citations": [CITE], "origin": "from_source"}]
+        + [{"component": "video", "origin": "model_added", "data": {  # pending until the smoke test installs video rendering
+            "template": "equation_transform", "params": {"title": "Une équation", "steps": [{"latex": "3x + 5 = 20"}, {"latex": "3x = 15", "note": "on retire 5"}]},
+            "narration": ["On part de trois x plus cinq égale vingt.", "On retire cinq des deux côtés pour isoler x."]}}]
         + [{"component": "code_exercise", "origin": "model_added", "data": {
             "title": "Complete the Compose file", "task": "Expose the app on port 8000.", "language": "yaml",
             "starter": "services:\n  app:\n    ports: [\"[[1]]\"]", "solution": "services:\n  app:\n    ports: [\"8000:8000\"]",
             "blanks": [{"answers": ["8000:8000"], "regex": "(127\\.0\\.0\\.1:)?8000:8000"}]}}]}
     model.handlers["build_component"] = lambda prompt, files: {"code": GOOD}
+    tutor = model.handlers["tutor"]  # a question about paper makes the tutor remember a preference
+    model.handlers["tutor"] = lambda prompt, files: tutor(prompt, files) + (
+        '\n\n```remember\n{"kind": "preference", "text": "No exercises to write on paper."}\n```' if "paper" in prompt.rsplit("Question:", 1)[-1] else "")
     cid = generate(client, folder, model)
     for ch in client.get(f"/api/courses/{cid}/outline").json()["chapters"]:
         client.post(f"/api/courses/{cid}/chapters/{ch['id']}/publish")
@@ -64,7 +74,7 @@ if __name__ == "__main__":
     port = int(args[0]) if args else 8766
     root = Path(args[1]) if len(args) > 1 else Path(tempfile.mkdtemp(prefix="cf-fake-"))
     model = FakeModel()
-    app = create_app(root / "data", model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher())
+    app = create_app(root / "data", model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher(), media=FakeMedia())
     with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 1)) as c:
         print("seeded course", seed(c, model, root), "in", root, flush=True)
     if "--slow" in sys.argv:

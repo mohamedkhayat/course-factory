@@ -1,0 +1,47 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api-copy",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "CF_DATA=/tmp/claude-1000/-home-mohamed-projects-course-factory/152a8e9e-7602-4915-899b-8d04ed8b10fb/scratchpad/data",
+        "CF_PORT=8799",
+        "CF_HOST=127.0.0.1",
+        "uv",
+        "run",
+        "course-factory"
+      ],
+      "port": 8799
+    },
+    {
+      "name": "web-copy",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "CF_API=http://127.0.0.1:8799",
+        "npm",
+        "--prefix",
+        "web",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5199",
+        "--strictPort"
+      ],
+      "port": 5199
+    },
+    {
+      "name": "fake",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "python",
+        "tests/fake_server.py",
+        "8797",
+        "/tmp/claude-1000/-home-mohamed-projects-course-factory/152a8e9e-7602-4915-899b-8d04ed8b10fb/scratchpad/fake-data"
+      ],
+      "port": 8797
+    }
+  ]
+}

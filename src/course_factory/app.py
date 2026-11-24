@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import datetime as dt
 import json
@@ -18,19 +19,21 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from langgraph.types import Command
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from . import chapters as chm
 from . import db as dbm
 from . import exams as exm
-from . import components, cram, failures, grading, ingest, labs, learner, pairing, refresh, tutor
+from . import chat, components, cram, events, failures, grading, ingest, labs, learner, listen, media as mediam, memory, ocw, pairing, refresh, sandbox, tutor, videos, voices
 from .kernels import DockerLauncher, Launcher, lab_image
+from .pdf import page_count
+from .media_queue import MediaQueue
 from . import search as searchm
 from .context import Ctx, Gate, Priority, Role
 from .checks import DIAGRAMS, check_blocks
 from .generation import build_graph, gpu, pipeline, progress, run_status, seconds_left, thread, time_left
 from .progression import flag_progression
-from .outline import ChapterPlan, OutlinePlan, load_outline, save_outline
+from .outline import ChapterPlan, OutlinePlan, load_outline, replan_chapter, save_outline
 from .pi_step import HARNESS_DIR, STEP_MODELS, STOPPED, Backend, activity, default_model, model_for, record_owner_action, stop_course
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
@@ -42,6 +45,11 @@ RUN_POLL = 0.5
 class NewCourse(BaseModel):
     name: str
     folder: str
+
+
+class OcwCourse(BaseModel):
+    resource_id: int
+    name: str = Field(min_length=1)
 
 
 class SourceEdit(BaseModel):
@@ -96,10 +104,12 @@ class OutlineEdit(BaseModel):
 
 class GoalChange(FoundDecision):
     language: Literal["mixed", "en", "fr"] | None = None  # pyright: ignore[reportIncompatibleVariableOverride]  -- unset: unchanged
+    subject: Literal["theoretical", "practical", "mixed"] | None = None  # unset: unchanged; set, it applies to what is written next (#30)
 
 
 class BlockEdit(BaseModel):
     data: dict
+    component: str | None = None  # set and different: the Block becomes that component, and what was learned on the old one goes
 
 
 class MergeInto(BaseModel):
@@ -119,28 +129,34 @@ def source_json(row: sqlite3.Row) -> dict:
 
 
 def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchModels | None = None,
-               labs_launcher: Callable[[int], Launcher] | None = None) -> FastAPI:
+               labs_launcher: Callable[[int], Launcher] | None = None, media: mediam.Media | None = None) -> FastAPI:
     data_dir.mkdir(parents=True, exist_ok=True)
     db = dbm.connect(data_dir / "course-factory.db")
-    models = search_models or searchm.LocalSearchModels()
+    models = search_models or searchm.LocalSearchModels(lambda: "cuda" if "basalt" in default_model() else "cpu")  # Basalt leaves room on the GPU
     searchm.setup(db, models.dim)
-    ctx = Ctx(db, backend, data_dir, models)
+    ctx = Ctx(db, backend, data_dir, models, media=media or mediam.LocalMedia(data_dir))
+    media_lane = MediaQueue()  # Listen, Videos and Install: one job at a time, apart from the model lanes, shown with pause and stop
+    ctx.videos = videos.Videos(ctx, media_lane)
     app_labs = labs.router(ctx)  # creates the Lab tables the launcher below reads
 
-    def docker_launcher(cid: int) -> Launcher:
-        """The Course's pinned Lab Environment: the image id is fixed the first time a Lab runs."""
+    def pinned_image(cid: int) -> str:
+        """The Course's pinned Lab Environment: the image id is fixed the first time a Lab (or the chat's files shell) runs."""
         row = db.execute("SELECT image FROM lab_envs WHERE course_id=?", (cid,)).fetchone()
         if row is None:
             db.execute("INSERT OR IGNORE INTO lab_envs VALUES (?,?)", (cid, lab_image()))
             row = db.execute("SELECT image FROM lab_envs WHERE course_id=?", (cid,)).fetchone()
-        return DockerLauncher(row["image"])
+        return row["image"]
 
-    ctx.labs_launcher = labs_launcher or docker_launcher
+    ctx.labs_launcher = labs_launcher or (lambda cid: DockerLauncher(pinned_image(cid)))
+    ctx.files_box = lambda cid: sandbox.course_box(ctx, cid, pinned_image(cid))
+    for (course_id,) in db.execute("SELECT id FROM courses").fetchall():  # progression flags follow the current rules, no model
+        flag_progression(db, course_id)
     graph = build_graph(ctx, sqlite3.connect(data_dir / "langgraph.db", check_same_thread=False))
 
     @asynccontextmanager
     async def lifespan(_):
         yield
+        getattr(ctx.media, "stop", lambda: None)()
         ctx.kernels.stop_all()  # a Lab kernel (a Docker container) outlives the app otherwise
 
     app = FastAPI(title="course-factory", lifespan=lifespan)
@@ -205,6 +221,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         return {"model": getattr(backend, "model", None) or model_for("write_section"), "gpu": gpu()}
 
     db.executescript(learner.LEARNER_SCHEMA)  # the settings table, before learner.router creates it
+    ctx.media.gpu = voices.settings(db)["gpu"]  # type: ignore[union-attr]
+    db.executescript(memory.SCHEMA)  # Section writing reads it as well as the tutors
     row = db.execute("SELECT value FROM settings WHERE key='step_models'").fetchone()
     STEP_MODELS.clear()
     STEP_MODELS.update(json.loads(row["value"]) if row else {})
@@ -259,6 +277,27 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
                 shutil.copyfileobj(f.file, out)
         return create_course(NewCourse(name=name, folder=str(folder)), tasks)
 
+    @app.get("/api/ocw/search")
+    def ocw_search(q: str = Query(min_length=2)):
+        try:
+            return ocw.search(q)
+        except (OSError, ValueError) as e:
+            raise HTTPException(502, f"OpenCourseWare could not be reached: {e}")
+
+    @app.post("/api/courses/ocw", status_code=201)
+    def create_course_from_ocw(body: OcwCourse, tasks: BackgroundTasks):
+        """A Course from an OpenCourseWare course: its files are downloaded into an upload folder, then imported as usual."""
+        folder = data_dir / "uploads" / uuid.uuid4().hex[:12]
+        try:
+            saved = ocw.download(body.resource_id, folder)
+        except (OSError, ValueError) as e:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise HTTPException(502, f"OpenCourseWare could not be reached: {e}")
+        if not saved:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise HTTPException(422, "This OpenCourseWare course has no notes, problem sets or exams to download (it may be video only).")
+        return create_course(NewCourse(name=body.name, folder=str(folder)), tasks)
+
     @app.get("/api/courses")
     def list_courses():
         """Every Course with what the home hub shows: its Run, Chapters, Cards due and exam countdown."""
@@ -294,7 +333,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             try:
                 searchm.drop_passages(db, cid)
                 for sql in [
-                    "DELETE FROM places WHERE course_id=?", "DELETE FROM tutor_messages WHERE course_id=?",
+                    "DELETE FROM places WHERE course_id=?", "DELETE FROM tutor_messages WHERE course_id=?", "DELETE FROM chat_outcomes WHERE course_id=?",
+                    "DELETE FROM memory WHERE course_id=?",  # its patterns; preferences have no Course and stay
                     "DELETE FROM cards WHERE course_id=?",
                     "DELETE FROM copies WHERE exam_id IN (SELECT id FROM exams WHERE course_id=?)",
                     "DELETE FROM exams WHERE course_id=?", "DELETE FROM question_types WHERE course_id=?", "DELETE FROM labs WHERE course_id=?", "DELETE FROM lab_envs WHERE course_id=?",
@@ -372,7 +412,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         if len(data) > grading.MAX_UPLOAD:
             raise HTTPException(413, "file too large")
         try:
-            pages = len(pdfium.PdfDocument(data))
+            pages = page_count(data)
         except pdfium.PdfiumError:
             raise HTTPException(422, "send a readable PDF")
         stem = re.sub(r"[^\w.-]+", "_", Path(file.filename or "notes").stem)[:60] or "notes"
@@ -450,8 +490,8 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         course_or_404(cid)
         if status(cid)["gate"] == "found":
             raise HTTPException(409, "choose the Goal by approving the found gate")
-        db.execute("UPDATE courses SET goal=?, exam_date=?, language=COALESCE(?, language) WHERE id=?",
-                   (body.goal, body.exam_date and body.exam_date.isoformat(), body.language, cid))
+        db.execute("UPDATE courses SET goal=?, exam_date=?, language=COALESCE(?, language), subject=COALESCE(?, subject) WHERE id=?",
+                   (body.goal, body.exam_date and body.exam_date.isoformat(), body.language, body.subject, cid))
         return dict(course_or_404(cid))
 
     @app.get("/api/courses/{cid}/outline")
@@ -522,6 +562,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         flag_progression(db, cid_of_block(bid))
         if db.execute("SELECT status FROM blocks WHERE id=?", (bid,)).fetchone()["status"] == "ok":
             db.execute("UPDATE blocks SET review_queue=0 WHERE id=?", (bid,))
+        ctx.videos.ensure(bid)  # type: ignore[attr-defined]  # a changed Video renders again
         return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
 
     @app.get("/api/courses/{cid}/chapters/{chid}")
@@ -575,14 +616,20 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         return jobs.get(cid, {"state": "none"})
 
     @app.post("/api/courses/{cid}/chapters/{chid}/regenerate", status_code=202)
-    def regenerate_chapter(cid: int, chid: int, tasks: BackgroundTasks):
+    def regenerate_chapter(cid: int, chid: int, tasks: BackgroundTasks, replan: bool = False):
         """Rewrites every Section of the Chapter with the current prompts. Blocks keep their ids by position (so Cards keep
-        their history) but not their previous version. A published Chapter is published again once rewritten."""
+        their history) but not their previous version. A published Chapter is published again once rewritten. `replan` plans
+        its Sections again first, from its Sources and the files added to its folders since."""
         was = chapter_or_404(cid, chid)["status"]
         sids = [r["id"] for r in db.execute("SELECT id FROM sections WHERE chapter_id=?", (chid,))]
 
         def work():
+            nonlocal sids
+            if replan:
+                replan_chapter(ctx, cid, chid)
+                sids = [r["id"] for r in db.execute("SELECT id FROM sections WHERE chapter_id=?", (chid,))]
             db.execute("UPDATE sections SET generation_status='pending' WHERE chapter_id=?", (chid,))
+            db.execute("UPDATE chapters SET plan=NULL WHERE id=?", (chid,))  # planned again with the current prompts too
             edits = refresh._edited_sections(ctx, cid, set(sids))  # hand fixes go to the model as owner notes, as a Refresh does
             chm.generate_chapter(ctx, cid, chid, {sid: json.dumps(e, ensure_ascii=False) for sid, e in edits.items()})
             refresh.refresh_cards(ctx, sids)
@@ -611,20 +658,27 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
             order = [s["id"] for s in chapter["sections"]]
             overlaps = [{"section": s["id"], "title": s["title"], "into": o["id"], "into_title": o["title"], "shared": o["shared"]}
                         for s in chapter["sections"] for o in s["overlaps"] if order.index(o["id"]) < order.index(s["id"])]
-            out.append({"id": chapter["id"], "title": chapter["title"], "overlaps": overlaps,
+            theoretical = db.execute("SELECT subject FROM courses WHERE id=?", (cid,)).fetchone()[0] == "theoretical"
+            shares = [{"section": s["id"], "title": s["title"], "note": low} for s in chapter["sections"]
+                      if theoretical and (low := chm.low_course_share(s["blocks"]))]
+            out.append({"id": chapter["id"], "title": chapter["title"], "overlaps": overlaps, "course_share": shares,
                         "blocks": sorted(blocks, key=lambda b: (b["status"] != "flagged", not b["flags"]))})
         return out
 
     @app.put("/api/courses/{cid}/blocks/{bid}")
     def edit_block(cid: int, bid: int, body: BlockEdit):
         row = block_or_404(cid, bid)
-        draft = {"component": row["component"], "data": body.data, "citations": json.loads(row["citations"]), "origin": row["origin"],
+        component = body.component or row["component"]
+        draft = {"component": component, "data": body.data, "citations": json.loads(row["citations"]), "origin": row["origin"],
                  "tests": json.loads(row["tests"])}
         (block,), (errors,) = check_blocks([draft], chm.source_pages(ctx, cid), components.schemas(db))
         if errors:
             raise HTTPException(422, {"errors": errors})
-        record_owner_action(db, cid, "chapter_review", {"block": bid, "data": body.data, "classes": classes_of(row)}, "edited")
-        state_errors, warnings = components.status_flags(db, row["component"])
+        record_owner_action(db, cid, "chapter_review", {"block": bid, "data": body.data, "component": component, "classes": classes_of(row)}, "edited")
+        if component != row["component"]:  # the old parts are gone: their Cards, results and answers would point at nothing
+            for table in ("cards", "outcomes", "quiz_attempts", "written_answers"):
+                db.execute(f"DELETE FROM {table} WHERE block_id=?", (bid,))
+        state_errors, warnings = components.status_flags(db, component)
         return save_block(bid, block, {"errors": state_errors, "warnings": warnings})
 
     @app.post("/api/courses/{cid}/blocks/{bid}/approve")
@@ -665,6 +719,7 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
                    (p["component"], json.dumps(p["data"], ensure_ascii=False), json.dumps(p["citations"], ensure_ascii=False), p["origin"],
                     p["status"], json.dumps(p["flags"], ensure_ascii=False), bid))
         record_owner_action(db, cid, "chapter_review", {"block": bid}, "undone")
+        ctx.videos.ensure(bid)  # type: ignore[attr-defined]
         return chm.block_json(db.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone())
 
     @app.put("/api/courses/{cid}/auto-resolve")
@@ -672,6 +727,13 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         """Per-Run option: auto-resolve each Chapter's flags as soon as it is written, before review."""
         course_or_404(cid)
         db.execute("UPDATE courses SET auto_resolve=? WHERE id=?", (int(body.on), cid))
+        return dict(course_or_404(cid))
+
+    @app.put("/api/courses/{cid}/qcu-practice")
+    def set_qcu_practice(cid: int, body: AutoResolve):
+        """For an exam that is all single-choice questions (QCU): Practice offers only single-choice quiz Blocks."""
+        course_or_404(cid)
+        db.execute("UPDATE courses SET qcu_practice=? WHERE id=?", (int(body.on), cid))
         return dict(course_or_404(cid))
 
     @app.get("/api/review-blocks")
@@ -716,6 +778,31 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         course_or_404(cid)
         return cram.annotate(ctx, cid, [chm.load_chapter(ctx, r["id"]) for r in db.execute(
             "SELECT id FROM chapters WHERE course_id=? AND status='published' ORDER BY position", (cid,))])
+
+    @app.get("/api/courses/{cid}/events")
+    async def course_events(cid: int):
+        """Server-Sent Events: one `blocks` event per changed Section, so every open device refetches without a reload."""
+        course_or_404(cid)
+
+        async def stream():
+            q = events.subscribe(cid)
+            try:
+                yield ": open\n\n"
+                while True:
+                    try:
+                        first = await asyncio.wait_for(q.get(), 25)
+                    except TimeoutError:
+                        yield ": ping\n\n"  # keeps proxies (tailscale serve) from closing an idle stream
+                        continue
+                    await asyncio.sleep(0.3)  # the trigger fires before its statement commits; also folds a burst into one event per Section
+                    seen = [first]
+                    while not q.empty():
+                        seen.append(q.get_nowait())
+                    for e in {json.dumps(e): e for e in seen}:
+                        yield f"data: {e}\n\n"
+            finally:
+                events.unsubscribe(cid, q)
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/courses/{cid}/export")
     def export_course(cid: int):
@@ -763,8 +850,12 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     @app.get("/api/courses/{cid}/exams")
     def list_exams(cid: int):
         course_or_404(cid)
-        return [{k: e[k] for k in ("id", "kind", "title", "duration_min", "cohort")} | {"chapters": json.loads(e["chapters"]),
-                                                                                    "in_scope": bool(e["in_scope"])}
+        # a sitting still open, so another device (the phone with the camera) can join it
+        cutoff = (exm.now() - dt.timedelta(seconds=exm.GRACE_SECONDS)).isoformat()
+        return [{k: e[k] for k in ("id", "kind", "title", "duration_min", "cohort")} | {
+                    "chapters": json.loads(e["chapters"]), "in_scope": bool(e["in_scope"]),
+                    "open_copy": (o := db.execute("SELECT id FROM copies WHERE exam_id=? AND handed_in_at IS NULL AND deadline>? ORDER BY id DESC",
+                                                  (e["id"], cutoff)).fetchone()) and o["id"]}
                 for e in db.execute("SELECT * FROM exams WHERE course_id=? ORDER BY kind DESC, id", (cid,))]
 
     @app.put("/api/courses/{cid}/exams/{eid}/scope")
@@ -827,14 +918,38 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
     app.add_middleware(GZipMiddleware, minimum_size=1000)  # the 2.4 MB bundle is ~0.7 MB gzipped: it matters over a slow Tailscale link
     app.include_router(components.router(ctx))
     app.include_router(learner.router(ctx))
+    app.include_router(memory.router(ctx))
     app.include_router(cram.router(ctx))
     app.include_router(tutor.router(ctx))
+    app.include_router(chat.router(ctx))
+    @app.get("/api/media")
+    def media_queue_view():
+        """What the media lane is doing (Listen audio, Video renders, installs), how far each job is, and whether it is paused."""
+        return media_lane.view()
+
+    @app.post("/api/media/pause")
+    def media_pause(body: dict):
+        media_lane.pause(bool(body.get("paused")))
+        return media_lane.view()
+
+    @app.post("/api/media/jobs/{jid}/stop")
+    def media_stop(jid: int):
+        if not media_lane.stop(jid):
+            raise HTTPException(404, "no such job, or it cannot be stopped")
+        return media_lane.view()
+
+    app.include_router(voices.router(ctx, media_lane))
+    app.include_router(listen.router(ctx, media_lane))
+    app.include_router(videos.router(ctx, ctx.videos, media_lane))  # type: ignore[arg-type]
     app.include_router(grading.router(ctx))
     app.include_router(app_labs)
     if (WEB_DIST / "index.html").exists():  # the built frontend; any other path is a client-side route
         @app.get("/{path:path}", include_in_schema=False)
         def frontend(path: str):
             f = (WEB_DIST / path).resolve()
-            return FileResponse(f if path and f.is_file() and WEB_DIST in f.parents else WEB_DIST / "index.html")
+            hit = path and f.is_file() and WEB_DIST in f.parents
+            # hashed asset names change with their content, so a device keeps them; over a slow link each re-check is a round trip
+            cache = "public, max-age=31536000, immutable" if hit and path.startswith("assets/") else "no-cache"
+            return FileResponse(f if hit else WEB_DIST / "index.html", headers={"Cache-Control": cache})
 
     return app

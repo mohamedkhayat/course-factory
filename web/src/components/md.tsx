@@ -1,4 +1,4 @@
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -21,10 +21,10 @@ function displayDoubleDollar() {
 }
 
 /** Markdown with $inline$ and $$display$$ math. Raw HTML is never rendered. */
-export function Md({ children, className }: { children: string; className?: string }) {
+export function Md({ children, className, components }: { children: string; className?: string; components?: Components }) {
   return (
     <div className={cn("prose-cf", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, displayDoubleDollar]} rehypePlugins={[rehypeKatex]}>{children}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, displayDoubleDollar]} rehypePlugins={[rehypeKatex]} components={components}>{children}</ReactMarkdown>
     </div>
   );
 }

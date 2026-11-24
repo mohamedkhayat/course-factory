@@ -14,7 +14,7 @@ GAP = re.compile(r"\[\[\d+\]\]")
 JSON_KEY = re.compile(r'"([A-Za-z_]\w*)"\s*:')  # a query DSL's clauses (`"bool":`, `"range":`) are its keys
 NAMED = re.compile(r"\b(?:index|indices?|documents?|champs?|fields?|tables?|fichiers?|files?|dossiers?|topics?|colonnes?|columns?)\s+[«\"]?\s*`([^`]+)`", re.I)
 STOP = set("""a an and are as at be by de des du en et for from if in is it la le les of on or ou par pas pour que qui sur the
-to un une with dans est sont ce cette il elle on ne se sa son ses au aux y oui non yes no true false none null self print return
+to un une with avec dans est sont ce cette il elle on ne se sa son ses au aux y oui non yes no true false none null self print return
 def import from int str float len list dict set range open sum min max map filter lambda""".split())
 
 
@@ -22,14 +22,19 @@ def words(text: str) -> set[str]:
     return {w.lower() for w in WORD.findall(text)}
 
 
+HYPHENATED = re.compile(r"\w+(?:-\w+)+")
+
+
 def stems(text: str) -> set[str]:
     """Word stems (5 letters: "minimiseur" and "minimum" meet), so a Concept's name matches the way the Blocks phrase it."""
-    return {w[:5] for w in words(text.replace("-", " ")) if len(w) >= 3 and w not in STOP}
+    return {w[:5] for w in words(text.replace("-", " ")) if len(w) >= 3 and w not in STOP} | {h.lower() for h in HYPHENATED.findall(text)}
 
 
 def name_stems(concept: str) -> set[str]:
     """The stems of a Concept's name, without its notation in parentheses."""
-    return stems(re.split(r"\s*\(", concept)[0])
+    name = re.split(r"\s*\(", concept)[0]
+    # a hyphenated name (docker-compose) is one word: its parts' stems ("compo") also stem unrelated words ("composant")
+    return stems(HYPHENATED.sub(" ", name)) | {h.lower() for h in HYPHENATED.findall(name)}
 
 
 def strings(data) -> list[str]:
@@ -100,11 +105,15 @@ def practised(component: str, data: dict) -> set[str]:
     its title and task give. A hint or a starter comment naming them does not teach them."""
     if component == "code_exercise" or (component == "fill_blanks" and data.get("language")):
         code = answer_text(data)
+        if not data.get("blanks"):  # the lines the learner writes: a starter line kept as is in the solution is given
+            given = {line.strip() for line in data.get("starter", "").splitlines()}
+            code = "\n".join(line for line in code.splitlines() if line.strip() not in given)
         keys = set() if data.get("language") == "python" else {k.lower() for k in JSON_KEY.findall(code)}  # a Python dict's keys are data
         terms = (code_terms(code) - STOP) | keys  # a query's `"range":` is a clause, not the builtin
         if data.get("blanks"):
             terms = set().union(*(in_context(data.get("template") or data.get("starter", ""), i, b["answers"][0])
                                   for i, b in enumerate(data["blanks"], 1) if b.get("answers"))) - STOP
+            terms -= words(re.sub(r"\[\[\d+\]\]|#.*", " ", data.get("template") or data.get("starter", "")))  # its code, not comments
         return terms - words(data.get("title", "") + " " + data.get("task", ""))
     return set()
 
@@ -132,6 +141,7 @@ def progression_errors(blocks: list[dict]) -> dict[int, list[str]]:
     """`blocks` in reading order, each {"id", "component", "data", "chapter", "section"}. Returns id -> errors for each
     practice Block that expects a term no earlier Block has taught (or one a later Section of its Chapter is named after)
     and that its own text does not give."""
+    blocks = [b for b in blocks if b["component"] != "video"]  # a Video's parameters (a Chapter map's titles) teach nothing
     sections = list(dict.fromkeys((b["chapter"], b["section"]) for b in blocks))
     first_seen: dict[str, str] = {}
     for b in blocks:
@@ -244,12 +254,14 @@ def ledger_errors(blocks: list[dict], concepts: dict[str, tuple[int, str]]) -> d
     for b in blocks:
         if b.get("component") in PRACTICE:  # undeclared: its text names a later Concept by words no Concept taught by now uses
             known = set().union(*(names[c] for c, (i, _) in concepts.items() if i <= b["at"]))
-            text = {w for x in strings(b["data"]) for w in stems(x)}
+            # one field (a prompt, an option, an explanation) must hold all its new words: "matrice" in an option and "propriété"
+            # in an explanation are not "Propriétés de la matrice de transition"
+            texts = [stems(x) for x in strings(b["data"])]
             if later := [f"asks about \"{c}\", which is taught later, in Section \"{t}\": move this practice after it or leave it out"
                          for c, (i, t) in concepts.items() if i > b["at"] and c not in b.get("tests", [])
-                         and len(new := names[c] - known) >= 2 and new <= text]:
+                         and len(new := names[c] - known) >= 2 and any(new <= text for text in texts)]:
                 errors[b["id"]] = later
-        for c in b.get("tests", []):
+        for c in b.get("tests", []) if concepts else []:  # a Course outlined before Concepts were named has no ledger
             if c not in concepts:
                 errors.setdefault(b["id"], []).append(f"tests \"{c}\", which is not a Concept of this Course; use one of: "
                                                       + ", ".join(list(concepts)[:60]))

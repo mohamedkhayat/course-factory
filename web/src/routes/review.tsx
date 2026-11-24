@@ -87,7 +87,7 @@ function ReviewBlock({ cid, b }: { cid: number; b: RBlock }) {
 export function Review() {
   const cid = useCid();
   const qc = useQueryClient();
-  const { data = [] } = useQuery({ queryKey: ["review", cid], queryFn: () => get<{ id: number; title: string; blocks: RBlock[]; overlaps: Overlap[] }[]>(`/api/courses/${cid}/review`) });
+  const { data = [] } = useQuery({ queryKey: ["review", cid], queryFn: () => get<{ id: number; title: string; blocks: RBlock[]; overlaps: Overlap[]; course_share?: { section: number; title: string; note: string }[] }[]>(`/api/courses/${cid}/review`) });
   const merge = useMutation({ mutationFn: (o: Overlap) => send(`/api/courses/${cid}/sections/${o.section}/merge`, { into: o.into }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["review", cid] }) });
   const resolve = useMutation({ mutationFn: (chid: number) => send<{ resolved: number[]; queued: number[] }>(`/api/courses/${cid}/chapters/${chid}/auto-resolve`),
@@ -111,6 +111,7 @@ export function Review() {
                 <Button size="sm" disabled={!!flagged || publish.isPending} onClick={() => publish.mutate(ch.id)}>Publish</Button>
               </span>
             </div>
+            {!!flagged && <p className="mt-2 text-sm text-muted-foreground">Flagged Blocks are listed first, then the rest; the Reader keeps the Section order.</p>}
             {publish.error && <p className="mt-2 text-sm text-destructive">{errText(publish.error)}</p>}
             {resolve.data && resolve.variables === ch.id && <p className="mt-2 text-sm text-muted-foreground">
               Resolved {resolve.data.resolved.length}; {resolve.data.queued.length ? `${resolve.data.queued.length} left for the Review Queue (run /review-blocks in Claude Code)` : "nothing left"}.</p>}
@@ -123,6 +124,10 @@ export function Review() {
               </div>
             ))}
             {merge.error && <p className="mt-2 text-sm text-destructive">{errText(merge.error)}</p>}
+            {ch.course_share?.map((s) => (
+              <p key={s.section} className="mt-3 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-sm"
+                 title="A theoretical Course follows its pages: rewrite this Section from its cited pages, or edit its Blocks">
+                “{s.title}”: {s.note.replace(/^course share: /, "")}.</p>))}
             <ul className="divide-y divide-border">{ch.blocks.map((b) => <ReviewBlock key={b.id} cid={cid} b={b} />)}</ul>
           </section>
         );

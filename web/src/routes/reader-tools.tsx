@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, FileText, Lightbulb, NotebookPen, Search } from "lucide-react";
+import { BookOpen, FileText, GraduationCap, Lightbulb, NotebookPen, Search } from "lucide-react";
+import { ExamDialog, PastQuestions } from "@/components/blocks";
 import { MdLine } from "@/components/md";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -8,8 +9,8 @@ import { get, send, type Block, type Chapter, type Citation, type Confidence, ty
 import { cn } from "@/lib/utils";
 
 const KIND: Record<string, string> = {
-  prose: "Explanation", theorem_box: "Statement", worked_example: "Example", exercise: "Exercise", quiz: "Quiz", key_formula: "Formula",
-  callout: "Note", algorithm: "Method", iteration_table: "Iterations", plot: "Plot", explorer: "Explorer", diagram: "Diagram", figure: "Figure",
+  prose: "Explanation", theorem_box: "Statement", worked_example: "Example", derivation: "Derivation", exercise: "Exercise", quiz: "Quiz", key_formula: "Formula",
+  callout: "Note", algorithm: "Method", iteration_table: "Iterations", plot: "Plot", explorer: "Explorer", diagram: "Diagram", kind_diagram: "Diagram", stepped_animation: "Animation", figure: "Figure",
   table: "Table", code: "Code", fill_blanks: "Fill the gaps", code_exercise: "Code exercise", surface_plot: "Surface", optimizer_animation: "Animation",
   step_diagram: "Walkthrough", terminal: "Terminal", intuition: "Intuition", misconception: "Common mistake", recap: "Recap", explain_back: "Explain back",
 };
@@ -47,7 +48,7 @@ export function ReadingBar() {
     addEventListener("resize", on);
     return () => { removeEventListener("scroll", on); removeEventListener("resize", on); };
   }, []);
-  return <div className="pointer-events-none fixed inset-x-0 top-12 z-30 h-0.5 print:hidden" role="progressbar" aria-label="Reading progress"
+  return <div className="pointer-events-none fixed inset-x-0 top-(--hh) z-30 h-0.5 print:hidden" role="progressbar" aria-label="Reading progress"
               aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(p * 100)}>
     <div className="h-full origin-left bg-primary transition-transform duration-100" style={{ transform: `scaleX(${p})` }} /></div>;
 }
@@ -222,7 +223,7 @@ export function SearchPalette({ cid, open, onClose, chapters, notes, go, onCite 
   );
 }
 
-const KEYS: [string, string][] = [["/ or Ctrl K", "Search the Course"], ["n and p", "Next and previous Section (also ] and [)"], ["t", "Open or close the tutor"],
+const KEYS: [string, string][] = [["/ or Ctrl K", "Search the Course"], ["n and p", "Next and previous Section (also ] and [)"], ["b", "Hide or show the Chapters"], ["t", "Open or close the tutor"], ["w", "Open or close your notes"],
   ["+ and −", "Larger and smaller text"], ["?", "This list"]];
 
 export function ShortcutsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -245,11 +246,57 @@ export function useShortcuts(on: (key: string, e: KeyboardEvent) => void) {
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
-      const typing = !!t?.closest?.("input, textarea, select, [contenteditable], .cm-editor, [role=dialog]");
+      const typing = !!t?.closest?.("input, textarea, select, [contenteditable], .cm-editor, .excalidraw, [role=dialog]");
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") return ref.current("search", e);
       if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey) ref.current(e.key, e);
     };
     addEventListener("keydown", h);
     return () => removeEventListener("keydown", h);
   }, []);
+}
+
+/** How much the tutor does (#30). Unset: a Step answer when the question quotes the course of a theoretical Course, else Explain. */
+export type Mode = "step" | "explain" | "test" | "beyond";
+const MODES: [Mode | "", string, string][] = [["", "Auto", "Step when you quote the course (theoretical Courses), else Explain"],
+  ["step", "Step", "Only the missing step, in a few lines"], ["explain", "Explain", "A full answer, within the course"], ["test", "Test me", "Questions on it, one at a time"],
+  ["beyond", "Beyond", "The wider theory, marked as not from the course"]];
+
+/** The mode the next typed question is answered in, in the tutor's and the Course chat's message box. */
+export function ModeSelect({ mode, setMode, disabled }: { mode: Mode | ""; setMode: (m: Mode | "") => void; disabled?: boolean }) {
+  return (
+    <select value={mode} onChange={(e) => setMode(e.target.value as Mode | "")} aria-label="How the tutor answers" disabled={disabled}
+            title={MODES.find(([v]) => v === mode)?.[2]} className="mb-1 h-8 shrink-0 rounded-md border border-input bg-background px-1.5 text-xs">
+      {MODES.map(([v, label, hint]) => <option key={v} value={v} title={hint}>{label}</option>)}
+    </select>
+  );
+}
+
+const pts = (qs: { points: number }[]) => `${+qs.reduce((s, q) => s + q.points, 0).toFixed(1)} pts`;
+
+/** The Chapter's past exam Questions with their wording and points, before reading: what to get out of it (#29). */
+export function InExam({ chapter, open }: { chapter: Chapter; open: boolean }) {
+  const qs = chapter.exam ?? [];
+  if (!qs.length) return null;
+  const papers = new Set(qs.map((q) => q.exam)).size;
+  return (
+    <details open={open} className="group mt-3 rounded-lg border border-border px-4 py-3 text-sm">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-2">
+        <GraduationCap className="size-4 text-primary" aria-hidden /><span className="font-medium">In the exam</span>
+        <span className="tabular text-muted-foreground">{qs.length} question{qs.length > 1 ? "s" : ""} · {pts(qs)} · {papers} past paper{papers > 1 ? "s" : ""}</span>
+      </summary>
+      <div className="mt-3"><PastQuestions questions={qs} /></div>
+    </details>
+  );
+}
+
+/** "In the exam" under a Step answer: the past Questions on the Chapter of the page it explains (#30). */
+export function InExamLink({ chapters, anchor }: { chapters: Chapter[]; anchor?: Pick<Citation, "source" | "page"> | null }) {
+  const [open, setOpen] = useState(false);
+  const ch = anchor && chapters.find((c) => c.sections.some((s) => s.pages.some((p) => p.source === anchor.source && p.page === anchor.page)));
+  if (!ch?.exam?.length) return null;
+  return <>
+    <button type="button" onClick={() => setOpen(true)} className="flex items-center gap-1 text-xs text-primary hover:underline">
+      <GraduationCap className="size-3.5" aria-hidden />In the exam: {ch.exam.length} question{ch.exam.length > 1 ? "s" : ""} on {ch.title} · {pts(ch.exam)}</button>
+    <ExamDialog title={`In the exam: ${ch.title}`} questions={open ? ch.exam : null} onClose={() => setOpen(false)} />
+  </>;
 }

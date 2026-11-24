@@ -12,6 +12,7 @@ import pypdfium2 as pdfium
 from . import chapters as chm
 from . import cram, exams, ingest, search
 from .context import Ctx
+from .pdf import LOCK, page_count
 from .pi_step import record_owner_action
 
 
@@ -73,14 +74,16 @@ def diff(ctx: Ctx, cid: int) -> dict:
 def _page_fingerprints(path: Path) -> list[str]:
     """One hash per page of a PDF: its text layer and its rendering, so identical pages are skipped without the model."""
     out = []
-    pdf = pdfium.PdfDocument(str(path))
-    try:
-        for page in pdf:
-            text = page.get_textpage().get_text_range()
-            pixels = page.render(scale=0.5).to_pil().tobytes()
-            out.append(hashlib.sha256(text.encode() + b"\0" + pixels).hexdigest())
-    finally:
-        pdf.close()
+    with LOCK:
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            for page in pdf:
+                text = page.get_textpage().get_text_range()
+                pixels = page.render(scale=0.5).to_pil().tobytes()
+                out.append(hashlib.sha256(text.encode() + b"\0" + pixels).hexdigest())
+                page.close()
+        finally:
+            pdf.close()
     return out
 
 
@@ -123,7 +126,7 @@ def apply(ctx: Ctx, cid: int, edited: str = "keep") -> dict:
         f = files[name]
         (dest / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, dest / name)
-        pages = len(pdfium.PdfDocument(str(f))) if f.suffix.lower() == ".pdf" else 0
+        pages = page_count(str(f)) if f.suffix.lower() == ".pdf" else 0
         role = "data" if f.suffix.lower() in ingest.DATA_SUFFIXES else None
         db.execute("INSERT INTO sources (course_id, name, path, pages, role, sha256) VALUES (?,?,?,?,?,?)",
                    (cid, name, str(dest / name), pages, role, sha256(f)))

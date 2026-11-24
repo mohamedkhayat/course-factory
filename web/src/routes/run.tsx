@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { PageViewer } from "@/components/blocks";
 import { Md } from "@/components/md";
-import { duration, get, pageUrl, readEvents, send, type Citation, type Course, type Gpu } from "@/lib/api";
+import { duration, get, pageUrl, readEvents, send, type Citation, type Course, type Gpu, type Subject } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Cover, courseHue, DeleteCourse, errText, Page } from "./home";
 
@@ -790,7 +790,7 @@ function Settings({ cid, course }: { cid: number; course: Course }) {
   const qc = useQueryClient();
   const [date, setDate] = useState(course.exam_date ?? "");
   const goal = useMutation({
-    mutationFn: ({ g, d, l }: { g: "cram" | "deep"; d: string; l?: Language }) => send(`/api/courses/${cid}`, { goal: g, exam_date: d || null, language: l }, "PATCH"),
+    mutationFn: ({ g, d, l, s }: { g: "cram" | "deep"; d: string; l?: Language; s?: Subject }) => send(`/api/courses/${cid}`, { goal: g, exam_date: d || null, language: l, subject: s }, "PATCH"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["course", String(cid)] }),
   });
   const upload = useMutation({ mutationFn: (f: File) => { const d = new FormData(); d.append("file", f); return send(`/api/courses/${cid}/sources`, d); } });
@@ -806,6 +806,13 @@ function Settings({ cid, course }: { cid: number; course: Course }) {
                 onClick={() => goal.mutate({ g: course.goal === "cram" ? "deep" : "cram", d: date })}>{course.goal === "cram" ? "Switch to deep" : "Switch to cram"}</Button>
       </div>
       <LanguagePicker value={course.language} onChange={(l) => goal.mutate({ g: course.goal === "cram" ? "cram" : "deep", d: date, l })} />
+      <label className="flex items-center gap-2" title="Theoretical: when you quote the course, the tutor gives only the missing step">
+        Subject
+        <select value={course.subject ?? "mixed"} aria-label="Subject" className="h-8 rounded-md border border-input bg-background px-2"
+                onChange={(e) => goal.mutate({ g: course.goal === "cram" ? "cram" : "deep", d: date, s: e.target.value as Subject })}>
+          <option value="theoretical">Theoretical (maths, proofs)</option><option value="practical">Practical</option><option value="mixed">Mixed</option>
+        </select>
+      </label>
       <p className="text-xs text-muted-foreground">Applies to what is written from now on.</p>
       {goal.error && <p className="text-destructive">{errText(goal.error)}</p>}
       <div><AutoResolveToggle cid={cid} /></div>

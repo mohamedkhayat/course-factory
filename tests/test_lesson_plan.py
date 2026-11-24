@@ -180,10 +180,12 @@ def test_an_all_or_none_of_the_above_option_is_an_error():
     assert [failure_class(e) for e in errs] == ["quiz-cue"]
 
 
-def test_the_right_option_always_longest_is_a_warning():
-    q = {"prompt": "?", "options": ["court", "la réponse juste et longue"], "correct": [1], "explanation": "."}
-    quiz = lambda n: {"component": "quiz", "data": {"questions": [q] * n}}
-    assert block_warnings(quiz(2)) == [] and failure_class(block_warnings(quiz(3))[0]) == "quiz-cue"
+def test_the_right_option_always_longest_is_an_error_not_a_warning():
+    q = {"prompt": "?", "options": ["un peu court", "la réponse juste"], "correct": [1], "explanation": "."}  # longest, not clearly
+    quiz = lambda n: {"component": "quiz", "origin": "model_added", "data": {"questions": [q] * n}}
+    assert check_blocks([quiz(2)], {})[1] == [[]] and block_warnings(quiz(3)) == []
+    [(err,)] = check_blocks([quiz(3)], {})[1]
+    assert failure_class(err) == "quiz-cue" and "questions 1, 2, 3" in err
 
 
 # The real course-3 modularisation diagram: 13 nodes in one view.
@@ -264,3 +266,47 @@ def test_a_section_whose_pages_carry_a_figure_must_show_it_before_drawing_its_ow
     (gap,) = figure_gaps(pages, [{"component": "diagram"}])
     assert "1 figure" in gap and "Ch4.pdf p.6" in gap
     assert figure_gaps(pages, [{"component": "figure"}, {"component": "diagram"}]) == [] and figure_gaps(pages[:1], []) == []
+
+
+def test_each_question_type_is_prepared_in_one_section_where_it_is_taught():
+    """Spark course 5: every Section got the whole Chapter's past Questions, so the first one already drilled the DAG question."""
+    from course_factory.lesson_plan import exam_gaps, exam_homes
+    titles = ["Concepts des RDD", "Transformations et actions", "Révision : DAG"]
+    lessons = {"Concepts des RDD": {"objectives": [{"exam_types": ["Définir un RDD"]}]},
+               "Transformations et actions": {"objectives": [{"exam_types": ["Classer les opérations"]}, {"exam_types": ["Dessiner le DAG"]}]},
+               "Révision : DAG": {"objectives": [{"exam_types": ["Dessiner le DAG"]}]}}
+    homes = exam_homes(lessons, titles, ["Définir un RDD", "Classer les opérations", "Dessiner le DAG", "Partitions"])
+    assert homes == {"Définir un RDD": "Concepts des RDD", "Classer les opérations": "Transformations et actions",
+                     "Dessiner le DAG": "Révision : DAG", "Partitions": "Révision : DAG"}  # the last Section naming it; unplanned: the last
+    elsewhere = {t: h for t, h in homes.items() if h != "Concepts des RDD"}
+    gaps = exam_gaps([{"component": "theorem_box", "exam_types": ["Définir un RDD"]},
+                      {"component": "exercise", "exam_types": ["Dessiner le DAG"]}], elsewhere)
+    assert len(gaps) == 1 and '"Dessiner le DAG"' in gaps[0] and "Révision : DAG" in gaps[0]
+
+
+def test_numbered_exercise_sheets_and_past_exams_may_teach_no_concept():
+    from course_factory.outline import PRACTICE_ONLY
+    for title in ["TD1 — Gradient, hessienne et points critiques", "TP 2 : Spark", "Examen SP 2024/2025 : Taylor et quadratique",
+                  "Exercices", "Révision : Examen BDA"]:
+        assert PRACTICE_ONLY.search(title), title
+    for title in ["Exemple : interpolation circulaire par lots", "Méthode de Newton", "STDP rules"]:
+        assert not PRACTICE_ONLY.search(title), title
+
+
+@pytest.mark.parametrize("text,overview,expected", [
+    # course 12, Chapter IV: Objectives and the overview wrote p_{ij} and π_n bare, shown as code and narrated by title alone
+    ("State la définition de la probabilité de transition p_{ij} = P(X_1 = x_j | X_0 = x_i)", "", "objectives ['o0'] write maths outside $…$"),
+    ("Compute π_n la loi de la chaîne", "", "objectives ['o0'] write maths outside $…$ near 'Compute π_n"),
+    ("…", "La loi de la chaîne au temps n vaut π_n = π_0 P^n.", "the overview writes maths outside $…$"),
+    # Chapter III wrote it right; code keeps its braces; snake_case is not an index
+    ("Compute $\\mathbb{E}(M_{n+p}\\mid\\mathcal{F}_n)$ for a given martingale", "", None),
+    ("Utiliser `{k: v for k, v in d.items()}` et train_test_split", "", None),
+    # course 9's overview: "\n" escaped twice is a line break, not a backslash
+    ("…", "Les Sections suivent.\\n- Section 1 : Elasticsearch.", None),
+])
+def test_maths_in_a_plan_is_written_inside_dollars(text, overview, expected):
+    sections = json.loads(json.dumps(GOOD))
+    sections[0]["objectives"][0]["text"] = text
+    base = "Le pas fixe d'abord, la méthode la plus simple qui converge, puis le pas optimal qui choisit le meilleur pas à chaque itération. "
+    found = plan_errors(LessonPlan.model_validate({"overview": base + overview, "sections": sections}), SECTIONS, ["gradient"], ["Type descente"])
+    assert (found == []) if expected is None else any(expected in e for e in found), found

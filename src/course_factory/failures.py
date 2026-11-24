@@ -12,6 +12,10 @@ from .pi_step import HARNESS_DIR
 # (pattern, class); the first match wins. Validation errors are classed by their field path in schema_class.
 CLASSES = [
     (r"^owner note:", "owner-note"),
+    (r"^step answer:", "long-step-answer"),
+    (r"^course share:", "low-course-share"),
+    (r"^listen:", "listen-formula"),
+    (r"^video:", "video-render"),
     (r"^progression: repeat:", "repeat"),
     (r"^progression:", "progression"),
     (r"should branch", "diagram-chain"),
@@ -41,6 +45,8 @@ CLASSES = [
     (r"^question \d+: explanation", "quiz-explanations"),
     (r"the plotter cannot draw|expression does not parse|expr must be|not differentiable", "expr"),
     (r"does not parse:", "code-parse"),
+    (r"^dockerfile:", "dockerfile-runtime"),
+    (r"^blank \d+: (regex|the regex)", "blank-regex"),
     (r"Extra data|Expecting value|Unterminated string|Invalid \\escape|Invalid control character", "bad-json"),
     (r"^not a Block", "not-a-block"),
     (r"^the Check ", "lab-check"),

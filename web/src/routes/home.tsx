@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, BookOpen, ClipboardList, Cpu, Flame, FolderOpen, Hand, Layers, Loader2, Plus, Timer, TriangleAlert, Trash2, type LucideIcon } from "lucide-react";
+import { ArrowRight, BookOpen, ClipboardList, Cpu, Flame, FolderOpen, Hand, Layers, Loader2, Pencil, Plus, Timer, TriangleAlert, Trash2, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError, duration, get, send, upload, type CourseSummary, type Gpu } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { VideoSettings, VoiceSettings } from "@/components/voices";
 import { Heatmap } from "./practice";
 
 export function Page({ title, children, wide }: { title?: string; children: React.ReactNode; wide?: boolean | "full" }) {
@@ -21,6 +23,58 @@ export function Page({ title, children, wide }: { title?: string; children: Reac
 }
 
 export const errText = (e: unknown) => (e instanceof ApiError ? (typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail)) : String(e));
+
+type Fact = { id: number; course_id: number | null; course: string | null; kind: "preference" | "pattern"; text: string; origin: { by: string }; updated_at: string };
+const ORIGINS: Record<string, string> = { said: "you said so", results: "from your results", explain_differently: "from your Explain differently choices", challenge: "found by a Challenge" };
+
+/** Learner memory: what the app has learned about how the owner studies; preferences first, then each Course's patterns. */
+function LearnerMemory() {
+  const qc = useQueryClient();
+  const { data: facts = [] } = useQuery({ queryKey: ["memory"], queryFn: () => get<Fact[]>("/api/memory") });
+  const [editing, setEditing] = useState<{ id: number; text: string } | null>(null);
+  const [adding, setAdding] = useState("");
+  const [error, setError] = useState("");
+  const done = { onSuccess: () => { setError(""); qc.invalidateQueries({ queryKey: ["memory"] }); }, onError: (e: Error) => setError(e.message) };
+  const edit = useMutation({ mutationFn: (f: { id: number; text: string }) => send(`/api/memory/${f.id}`, { text: f.text }, "PUT"), ...done, onSuccess: () => { setEditing(null); done.onSuccess(); } });
+  const del = useMutation({ mutationFn: (id: number) => send(`/api/memory/${id}`, undefined, "DELETE"), ...done });
+  const add = useMutation({ mutationFn: (text: string) => send("/api/memory", { text }), ...done, onSuccess: () => { setAdding(""); done.onSuccess(); } });
+  const groups = [...new Set(facts.map((f) => f.course_id))].map((id) => ({ id, title: id === null ? "Preferences, in every Course" : `Patterns in ${facts.find((f) => f.course_id === id)!.course}`,
+    facts: facts.filter((f) => f.course_id === id) }));
+  if (!groups.some((g) => g.id === null)) groups.unshift({ id: null, title: "Preferences, in every Course", facts: [] });
+  return (
+    <section className="border-t border-border pt-6">
+      <h2 className="font-medium">Learner memory</h2>
+      <p className="mt-1 text-sm text-muted-foreground">What the tutor, the Course chat and the writing of Sections know about how you learn. Delete or reword anything.</p>
+      {groups.map((g) => (
+        <div key={g.id ?? "all"} className="mt-4">
+          <h3 className="text-sm font-medium">{g.title}</h3>
+          <ul className="mt-1 divide-y divide-border">
+            {!g.facts.length && <li className="py-2 text-sm text-muted-foreground">Nothing yet.</li>}
+            {g.facts.map((f) => (
+              <li key={f.id} className="flex items-start gap-2 py-2">
+                {editing?.id === f.id ? (
+                  <form className="flex min-w-0 flex-1 gap-2" onSubmit={(e) => { e.preventDefault(); edit.mutate(editing); }}>
+                    <Input autoFocus value={editing.text} aria-label="Fact" onChange={(e) => setEditing({ id: f.id, text: e.target.value })} onKeyDown={(e) => e.key === "Escape" && setEditing(null)} />
+                    <Button size="sm" type="submit" disabled={edit.isPending}>Save</Button>
+                  </form>
+                ) : (
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm [overflow-wrap:anywhere]">{f.text}</p>
+                    <p className="text-xs text-muted-foreground">{ORIGINS[f.origin.by] ?? f.origin.by} · {new Date(f.updated_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</p>
+                  </div>)}
+                <Button size="icon" variant="ghost" className="size-7" aria-label={`Edit “${f.text}”`} onClick={() => setEditing({ id: f.id, text: f.text })}><Pencil className="size-3.5" /></Button>
+                <Button size="icon" variant="ghost" className="size-7" aria-label={`Delete “${f.text}”`} disabled={del.isPending} onClick={() => del.mutate(f.id)}><Trash2 className="size-3.5" /></Button>
+              </li>))}
+          </ul>
+        </div>))}
+      <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (adding.trim()) add.mutate(adding.trim()); }}>
+        <Input value={adding} aria-label="Add a preference" placeholder="Add a preference: always start with an example" maxLength={200} onChange={(e) => setAdding(e.target.value)} />
+        <Button type="submit" variant="outline" disabled={add.isPending || !adding.trim()}>Add</Button>
+      </form>
+      {error && <p className="mt-2 text-xs text-destructive" role="alert">{error}</p>}
+    </section>
+  );
+}
 
 function Pairing() {
   const me = useQuery({ queryKey: ["me"], queryFn: () => get<{ id: string; label: string }>("/api/pairing/me") });
@@ -155,8 +209,13 @@ function NewCourse({ open, onOpenChange }: { open: boolean; onOpenChange: (o: bo
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New Course</DialogTitle>
-          <DialogDescription>Pick the folder with the course's PDFs, notebooks and data. The files are copied; the originals are never touched, and nothing leaves this machine.</DialogDescription>
+          <DialogDescription>Pick the folder with the course's PDFs, notebooks and data, or start from an MIT OpenCourseWare course.</DialogDescription>
         </DialogHeader>
+        <Tabs defaultValue="folder">
+        <TabsList><TabsTrigger value="folder" disabled={create.isPending}>Folder</TabsTrigger><TabsTrigger value="ocw" disabled={create.isPending}>OpenCourseWare</TabsTrigger></TabsList>
+        <TabsContent value="ocw"><FromOcw /></TabsContent>
+        <TabsContent value="folder">
+        <p className="mb-4 text-sm text-muted-foreground">The files are copied; the originals are never touched, and nothing leaves this machine.</p>
         <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
           <div
             onDragOver={(e) => { e.preventDefault(); setOver(true); }}
@@ -188,26 +247,95 @@ function NewCourse({ open, onOpenChange }: { open: boolean; onOpenChange: (o: bo
             <Button type="submit" disabled={!files.length || !name.trim() || create.isPending}>Import {files.length ? `${files.length} files` : ""}</Button>
           </DialogFooter>
         </form>
+        </TabsContent>
+        </Tabs>
       </DialogContent>
     </Dialog>
   );
 }
 
+type OcwCourse = { id: number; title: string; number: string | null; semester: string | null; year: number | null; url: string; features: string[]; description: string };
+const OCW_KINDS = ["Lecture Notes", "Exams", "Problem Sets", "Problem Set Solutions", "Exam Solutions", "Assignments", "Programming Assignments", "Readings"];
+
+/** A Course from an MIT OpenCourseWare course: search, pick, and its notes, problem sets and exams are downloaded. */
+function FromOcw() {
+  const nav = useNavigate();
+  const [q, setQ] = useState("");
+  const [picked, setPicked] = useState<OcwCourse | null>(null);
+  const [name, setName] = useState("");
+  const found = useMutation({ mutationFn: () => get<OcwCourse[]>(`/api/ocw/search?q=${encodeURIComponent(q.trim())}`), onSuccess: () => setPicked(null) });
+  const create = useMutation({
+    mutationFn: () => send<{ id: number }>("/api/courses/ocw", { resource_id: picked!.id, name: name.trim() }),
+    onSuccess: (c) => nav({ to: "/c/$cid", params: { cid: String(c.id) } }),
+  });
+  return (
+    <div className="space-y-4">
+      <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); found.mutate(); }}>
+        <Input placeholder="e.g. convex optimization, 18.06" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search OpenCourseWare" />
+        <Button type="submit" variant="outline" disabled={q.trim().length < 2 || found.isPending}>{found.isPending ? <Loader2 className="size-4 animate-spin" aria-label="Searching" /> : "Search"}</Button>
+      </form>
+      {found.error && <p className="text-sm text-destructive">{errText(found.error)}</p>}
+      {found.data && !found.data.length && <p className="text-sm text-muted-foreground">No OpenCourseWare course matches.</p>}
+      {!!found.data?.length && (
+        <ul className="max-h-72 divide-y divide-border overflow-y-auto rounded-lg border border-border" aria-label="OpenCourseWare courses">
+          {found.data.map((c) => (
+            <li key={c.id}>
+              <button type="button" aria-pressed={picked?.id === c.id} disabled={create.isPending}
+                      onClick={() => { setPicked(c); setName(c.title); }}
+                      className={cn("block w-full px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/60", picked?.id === c.id && "bg-primary/10")}>
+                <span className="font-medium">{c.title}</span>
+                <span className="block text-xs text-muted-foreground">{[c.number, [c.semester, c.year].filter(Boolean).join(" ")].filter(Boolean).join(" · ")}
+                  {c.features.some((f) => OCW_KINDS.includes(f)) ? ` · ${c.features.filter((f) => OCW_KINDS.includes(f)).join(", ")}` : " · no notes or exams listed"}</span>
+                {picked?.id === c.id && <span className="mt-1 block text-xs text-muted-foreground">{c.description}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {picked && (
+        <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+          <label className="block space-y-1.5 text-sm">
+            <span className="font-medium">Name</span>
+            <Input value={name} onChange={(e) => setName(e.target.value)} required aria-label="Course name" />
+          </label>
+          {create.isPending && <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" aria-hidden />Downloading the course's files from ocw.mit.edu…</p>}
+          {create.error && <p className="text-sm text-destructive">{errText(create.error)}</p>}
+          <DialogFooter>
+            <a href={picked.url} target="_blank" rel="noreferrer" className="mr-auto self-center text-sm text-muted-foreground underline-offset-4 hover:underline">Open on ocw.mit.edu</a>
+            <Button type="submit" disabled={!name.trim() || create.isPending}>Import from OpenCourseWare</Button>
+          </DialogFooter>
+        </form>
+      )}
+    </div>
+  );
+}
+
 type Todo = { key: string; to: string; cid: number; icon: LucideIcon; title: string; detail: string; urgent?: boolean; busy?: boolean };
 
-/** What to do next, most pressing first: Runs waiting for the owner, then due Cards, a near exam, reading. */
+const inDays = (d: number) => d === 0 ? "today" : d === 1 ? "tomorrow" : `in ${d} days`;
+const passed = (c: CourseSummary) => c.exam_countdown_days != null && c.exam_countdown_days < 0;
+const near = (c: CourseSummary) => c.run.status === "done" && c.exam_countdown_days != null && c.exam_countdown_days >= 0 && c.exam_countdown_days <= 2;
+
+/** What to do next, most pressing first: Runs waiting for the owner, then a Course whose exam is at most two days away
+ * (its Cram plan, a Mock exam, its Cards), then due Cards, a near exam, reading; Cards of a Course whose exam is over come last. */
 function todos(courses: CourseSummary[]): Todo[] {
   const out: Todo[] = [];
   for (const c of courses) {
+    if (near(c) && c.goal === "cram")
+      out.push({ key: `cram${c.id}`, to: "/c/$cid/cram", cid: c.id, icon: Timer, title: "Today's Cram plan", detail: `${c.name} · exam ${inDays(c.exam_countdown_days!)}` });
     const line = runLine(c.run);
     if (line.needsYou || line.bad) out.push({ key: `run${c.id}`, to: "/c/$cid", cid: c.id, icon: line.bad ? TriangleAlert : Hand, title: line.text, detail: c.name, urgent: true });
     else if (line.busy) out.push({ key: `run${c.id}`, to: "/c/$cid", cid: c.id, icon: Loader2, title: line.text, detail: c.name, busy: true });
     if (c.cards_due) out.push({ key: `cards${c.id}`, to: "/c/$cid/cards", cid: c.id, icon: Layers, title: `Review ${c.cards_due} Card${c.cards_due === 1 ? "" : "s"}`, detail: c.name });
     if (c.run.status === "done" && c.exam_countdown_days != null && c.exam_countdown_days >= 0 && c.exam_countdown_days <= 30)
-      out.push({ key: `exam${c.id}`, to: "/c/$cid/exams", cid: c.id, icon: ClipboardList, title: "Sit a Mock exam", detail: `${c.name} · exam ${c.exam_countdown_days ? `in ${c.exam_countdown_days} days` : "today"}` });
+      out.push({ key: `exam${c.id}`, to: "/c/$cid/exams", cid: c.id, icon: ClipboardList, title: "Sit a Mock exam", detail: `${c.name} · exam ${inDays(c.exam_countdown_days!)}` });
     if (c.chapters_published) out.push({ key: `read${c.id}`, to: "/c/$cid/read", cid: c.id, icon: BookOpen, title: "Keep reading", detail: `${c.name} · ${c.chapters_published} Chapter${c.chapters_published === 1 ? "" : "s"}` });
   }
-  const rank = (t: Todo) => (t.urgent ? 0 : t.busy ? 4 : t.key.startsWith("cards") ? 1 : t.key.startsWith("exam") ? 2 : 3);
+  const course = new Map(courses.map((c) => [c.id, c]));
+  const kind = (t: Todo) => t.key.replace(/\d+$/, "");
+  const rank = (t: Todo) => t.urgent ? 0 : t.busy ? 5
+    : near(course.get(t.cid)!) && kind(t) !== "read" ? 1 + ["cram", "exam", "cards"].indexOf(kind(t)) / 10
+    : kind(t) === "cards" ? (passed(course.get(t.cid)!) ? 4 : 2) : kind(t) === "exam" ? 3 : 3.5;
   return out.sort((a, b) => rank(a) - rank(b)).slice(0, 5);
 }
 
@@ -219,7 +347,7 @@ function Headline({ courses, due }: { courses: CourseSummary[]; due: number }) {
   if (!courses.length) return <>Turn a folder of course material into something you can <span className="mark">study</span>.</>;
   return (
     <>
-      {exam ? <>The {exam.name} exam is <span className="mark whitespace-nowrap">{exam.exam_countdown_days === 0 ? "today" : `in ${exam.exam_countdown_days} day${exam.exam_countdown_days === 1 ? "" : "s"}`}</span>. </>
+      {exam ? <>The {exam.name} exam is <span className="mark whitespace-nowrap">{inDays(exam.exam_countdown_days!)}</span>. </>
         : waiting ? <>{waiting.name} is <span className="mark">waiting for you</span>. </> : null}
       {due ? <>{due} Card{due === 1 ? " is" : "s are"} due.</> : exam || waiting ? <>Nothing is due.</> : <>Nothing is due. <span className="mark">Read ahead</span>.</>}
     </>
@@ -348,7 +476,7 @@ export function Home() {
   const { data: stats } = useQuery({ queryKey: ["stats"], queryFn: () => get<Stats>("/api/stats") });
   const { data: sys } = useQuery({ queryKey: ["system"], queryFn: () => get<System>("/api/system"), refetchInterval: 5000 });
   const [adding, setAdding] = useState(false);
-  const due = courses?.reduce((n, c) => n + c.cards_due, 0) ?? 0;
+  const due = courses?.reduce((n, c) => n + (passed(c) ? 0 : c.cards_due), 0) ?? 0;  // a Course whose exam is over doesn't press
   const next = courses ? todos(courses) : [];
   const focusCid = courses?.filter((c) => c.chapters_published).sort((a, b) => (a.exam_countdown_days ?? 1e9) - (b.exam_countdown_days ?? 1e9))[0]?.id;
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
@@ -401,6 +529,7 @@ export function Home() {
 export function Settings() {
   const qc = useQueryClient();
   const { data: stats } = useQuery({ queryKey: ["stats"], queryFn: () => get<Stats>("/api/stats") });
+  const { data: courses } = useQuery({ queryKey: ["courses"], queryFn: () => get<CourseSummary[]>("/api/courses") });
   const goal = useMutation({ mutationFn: (daily_goal: number) => send("/api/settings", { daily_goal }, "PUT"), onSuccess: () => qc.invalidateQueries({ queryKey: ["stats"] }) });
   return (
     <Page title="Settings">
@@ -415,10 +544,21 @@ export function Settings() {
           </div>
         </section>
         <section className="border-t border-border pt-6">
+          <h2 className="font-medium">Check the Courses</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Where you check what the model wrote: each Course's Chapters with their flagged Blocks, and the Components Blocks are made of.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {courses?.map((c) => <Button key={c.id} asChild variant="outline" size="sm"><Link to="/c/$cid/review" params={{ cid: String(c.id) }}>Review {c.name}</Link></Button>)}
+            <Button asChild variant="outline" size="sm"><Link to="/components">Components</Link></Button>
+          </div>
+        </section>
+        <section className="border-t border-border pt-6">
           <h2 className="font-medium">Models</h2>
           <p className="mt-1 text-sm text-muted-foreground">A change applies to the next call of that step, also mid-run. Less thinking is faster.</p>
           <StepModels />
         </section>
+        <LearnerMemory />
+        <VoiceSettings />
+        <VideoSettings />
         <Pairing />
       </div>
     </Page>

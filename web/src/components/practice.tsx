@@ -1,13 +1,16 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Lightbulb, Upload, X } from "lucide-react";
+import { Camera, Check, Lightbulb, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { exported, get, readEvents, send, type Block, type Gpu } from "@/lib/api";
+import { exported, get, practiceUrl, readEvents, send, type Block, type Gpu } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { appended, DictateButton } from "./dictation";
 import { cn } from "@/lib/utils";
 import { CodeEditor } from "./code-editor";
+import type { Components } from "react-markdown";
 import { Md, MdLine } from "./md";
+import { dataUrl, InkPad } from "./ink";
 
 type P<T = any> = { data: T; cid: number; block: Block };
 type Blank = { answers: string[]; regex?: string; hint: string };
@@ -29,7 +32,7 @@ export function FillBlanks({ data, cid, block }: P<{ title: string; task?: strin
   const parts = data.template.split(/\[\[(\d+)\]\]/);
   const all = checked && data.blanks.every((_, i) => ok(i));
   const gap = (i: number) => {
-    const b = data.blanks[i], width = Math.max(4, ...b.answers.map((a) => a.length)) + 2;
+    const b = data.blanks[i], width = Math.min(28, Math.max(4, ...b.answers.map((a) => a.length)) + 2);
     return (
       <input aria-label={`Blank ${i + 1}`} value={shown.has(i) ? b.answers[0] : values[i]} readOnly={shown.has(i)}
         onChange={(e) => { setValues(values.map((v, k) => (k === i ? e.target.value : v))); setChecked(false); }}
@@ -38,21 +41,26 @@ export function FillBlanks({ data, cid, block }: P<{ title: string; task?: strin
           shown.has(i) ? "border-border text-muted-foreground" : checked ? (ok(i) ? "border-ok bg-ok/10" : "border-destructive bg-destructive/10") : "border-input")} />
     );
   };
-  const body = parts.map((p, k) => (k % 2 ? <Fragment key={k}>{gap(Number(p) - 1)}</Fragment>
-    : data.language ? <Fragment key={k}>{p}</Fragment> : <MdLine key={k}>{p}</MdLine>));
+  const body = parts.map((p, k) => (k % 2 ? <Fragment key={k}>{gap(Number(p) - 1)}</Fragment> : <Fragment key={k}>{p}</Fragment>));
+  // Text is one Markdown document, so a table or a list keeps its gaps in their cells; each gap is a link the renderer swaps for an input.
+  // shortcut: a gap inside a Markdown code span or fence shows as link text, use language mode for code.
+  const blankLink: Components["a"] = ({ href, children }) => {
+    const n = /^#blank-(\d+)$/.exec(href ?? "");
+    return n ? gap(Number(n[1]) - 1) : <a href={href}>{children}</a>;
+  };
   const missed = checked ? data.blanks.map((_, i) => i).filter((i) => !ok(i) && !shown.has(i)) : [];
   return (
     <div>
       <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
       {data.task && <div className="mt-1 text-[0.95rem]"><Md>{data.task}</Md></div>}
       {data.language ? <pre className="mt-2 overflow-x-auto rounded-md bg-muted px-4 py-3 font-mono text-[0.85rem] leading-loose">{body}</pre>
-                     : <p className="mt-2 whitespace-pre-wrap leading-loose">{body}</p>}
+                     : <Md className="mt-2 leading-loose [&_td]:align-middle" components={{ a: blankLink }}>{data.template.replace(/\[\[(\d+)\]\]/g, "[_](#blank-$1)")}</Md>}
       {missed.map((i) => data.blanks[i].hint && (
         <p key={i} className="mt-1 flex gap-2 text-sm"><Lightbulb className="mt-0.5 size-4 shrink-0 text-warn" />Blank {i + 1}: {data.blanks[i].hint}</p>))}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => {
           setChecked(true);  // a gap that was shown counts as missed
-          if (!exported) send(`/api/courses/${cid}/blocks/${block.id}/outcome`,
+          if (!exported) send(practiceUrl(cid, block, "outcome"),
             { score: data.blanks.filter((_, i) => ok(i) && !shown.has(i)).length / data.blanks.length }).catch(() => {});
         }}>Check</Button>
         {missed.length > 0 && <Button size="sm" variant="outline" onClick={() => setShown(new Set([...shown, missed[0]]))}>Show blank {missed[0] + 1}</Button>}
@@ -172,10 +180,38 @@ type Written = { text: string; files: number; subject: string;
 
 /** The learner's answer to an exercise: typed (Markdown and $LaTeX$, with a preview) or uploaded (photos or a tablet PDF),
  * kept per Block, and graded against the exercise's steps. Opens on Upload for a theoretical Course, Type otherwise. */
+/** An Explain back answered in the chat: typed, graded on the rubric, recorded against the Block's Concepts. */
+export function ChatWritten({ cid, block }: { cid: number; block: Block }) {
+  const [text, setText] = useState("");
+  const [grade, setGrade] = useState<{ total: number; max: number; steps: { step: string; awarded: number; points: number; comment: string }[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const run = async () => {
+    setBusy(true); setError("");
+    try { setGrade(await send(practiceUrl(cid, block, "grade"), { text })); } catch (e) { setError(String((e as Error).message)); } finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-3">
+      <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} aria-label="Your explanation" placeholder="In your own words…" />
+      <div className="mt-2 flex items-center gap-2">
+        <DictateButton cid={cid} onText={(said) => setText((t) => appended(t, said))} className="mb-0" />
+        <Button size="sm" disabled={busy || !text.trim()} onClick={run}>{busy ? "Grading…" : "Grade my answer"}</Button>
+        {grade && <span className="text-sm">{grade.total} / {grade.max}</span>}
+        {error && <span className="text-sm text-destructive" role="alert">{error}</span>}
+      </div>
+      {grade && <ul className="mt-2 space-y-1 text-sm">{grade.steps.map((s, i) => (
+        <li key={i} className="flex gap-2"><span className="tabular shrink-0 text-muted-foreground">{s.awarded}/{s.points}</span><span className="min-w-0"><MdLine>{s.step}</MdLine>{s.comment && <span className="text-muted-foreground"> — {s.comment}</span>}</span></li>))}</ul>}
+    </div>
+  );
+}
+
+type WorkingLine = { text: string; ok: boolean | null; hint: string };
+
 export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
   const url = `/api/courses/${cid}/blocks/${block.id}/written`;
   const qc = useQueryClient();
-  const { data: w } = useQuery({ queryKey: ["written", block.id], queryFn: () => get<Written>(url), enabled: !exported });
+  // refetched, so pages photographed on the phone (and their grade) show on the computer too
+  const { data: w } = useQuery({ queryKey: ["written", block.id], queryFn: () => get<Written>(url), enabled: !exported, refetchInterval: 10_000, refetchOnWindowFocus: true });
   const { data: sys } = useQuery({ queryKey: ["system"], queryFn: () => get<{ model: string | null; gpu: Gpu | null }>("/api/system"), enabled: !exported });
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | "upload" | "grade">("");
@@ -193,27 +229,69 @@ export function WrittenAnswer({ cid, block }: { cid: number; block: Block }) {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(""); }
   };
-  const uploadFiles = (files: FileList | null) => act("upload", async () => {
+  const uploadFiles = (files: Iterable<Blob> | null) => act("upload", async () => {
     let r = w as Written;
     for (const f of Array.from(files ?? [])) { const body = new FormData(); body.append("file", f); r = await send<Written>(`${url}/files`, body); }
     return r;
   });
+  // Check as I write: the page goes to the model when the pen pauses; one check at a time, the latest page waits its turn
+  const [watch, setWatch] = useState(true), [working, setWorking] = useState<WorkingLine[] | null>(null), [checking, setChecking] = useState("");
+  const inFlight = useRef(false), waiting = useRef<Blob | null>(null);
+  const check = async (b: Blob) => {
+    if (inFlight.current) { waiting.current = b; return; }
+    inFlight.current = true; setChecking("Checking…");
+    try { setWorking((await send<{ lines: WorkingLine[] }>(`/api/courses/${cid}/blocks/${block.id}/check-working`, { image: await dataUrl(b) })).lines); setChecking(""); }
+    catch (e) { setChecking(`Not checked: ${e instanceof Error ? e.message : String(e)}`); }
+    finally { inFlight.current = false; const n = waiting.current; waiting.current = null; if (n) check(n); }
+  };
+  const typeUp = async (b: Blob) => {
+    setError("");
+    try { const r = await send<{ text: string }>(`/api/courses/${cid}/ink/latex`, { image: await dataUrl(b) }); setText(appended(value, r.text)); setChecking("Typed into your answer under Type."); return true; }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); return false; }
+  };
   const why = sys && !sys.model ? "No model is set up to grade it" : !value.trim() && !w?.files ? "Type or upload an answer first" : "";
   if (exported) return <Textarea className="mt-3" rows={6} aria-label="Your answer" placeholder="Write your answer here…" />;
   if (!w) return null;
   return (
     <div className="mt-3">
       <Tabs defaultValue={w.subject === "theoretical" ? "upload" : "type"}>
-        <TabsList><TabsTrigger value="type">Type</TabsTrigger><TabsTrigger value="upload">Upload{w.files ? ` (${w.files})` : ""}</TabsTrigger></TabsList>
+        <TabsList><TabsTrigger value="type">Type</TabsTrigger><TabsTrigger value="write">Write</TabsTrigger><TabsTrigger value="upload">Pages{w.files ? ` (${w.files})` : ""}</TabsTrigger></TabsList>
         <TabsContent value="type">
           <Textarea rows={6} aria-label="Your answer" placeholder="Write your answer: Markdown, and $math$ in LaTeX…" value={value} onChange={(e) => setText(e.target.value)} />
+          <DictateButton cid={cid} onText={(said) => setText(appended(value, said))} className="mb-0 mt-1" />
           {/\$/.test(value) && <div className="mt-2 rounded-md border border-dashed border-border px-3 py-1 text-sm"><Md>{value}</Md></div>}
         </TabsContent>
+        <TabsContent value="write">
+          <InkPad label={busy === "upload" ? "Adding…" : "Add this page to your answer"} onSave={(b) => { setWorking(null); uploadFiles([b]); }}
+                  onText={typeUp} onPause={sys?.model && watch ? check : undefined} />
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <label className="flex items-center gap-1.5"><input type="checkbox" checked={watch} onChange={(e) => setWatch(e.target.checked)} disabled={!sys?.model} />
+              Check as I write</label>
+            <span>Each page you add joins your answer under Pages; the grader reads your handwriting.</span>
+            <span role="status">{checking}</span>
+          </div>
+          {working && watch && (
+            <ul aria-label="Your working, checked" className="mt-2 space-y-1 rounded-md bg-muted/60 px-3 py-2 text-sm">
+              {working.map((l, i) => (
+                <li key={i} className="flex gap-2">
+                  <span className={cn("w-4 shrink-0 font-medium", l.ok === true && "text-ok", l.ok === false && "text-destructive", l.ok === null && "text-muted-foreground")}
+                        aria-label={l.ok === true ? "right" : l.ok === false ? "wrong" : "not sure"}>{l.ok === true ? "✓" : l.ok === false ? "✗" : "?"}</span>
+                  <span><MdLine>{l.text}</MdLine>{l.hint && <span className="text-muted-foreground"> — {l.hint}</span>}</span>
+                </li>))}
+            </ul>)}
+        </TabsContent>
         <TabsContent value="upload" className="space-y-2">
-          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-dashed border-input px-3 py-4 text-sm text-muted-foreground hover:bg-accent">
-            <Upload className="size-4" aria-hidden />{busy === "upload" ? "Uploading…" : "Photos of your paper, tablet ink as an image, or a PDF"}
-            <input type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf" className="sr-only" onChange={(e) => uploadFiles(e.target.files)} />
-          </label>
+          <div className="flex flex-wrap gap-2">
+            <label className="flex flex-1 cursor-pointer items-center gap-2 rounded-md border border-dashed border-input px-3 py-4 text-sm text-muted-foreground hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+              <Camera className="size-4" aria-hidden />{w.files ? "Photograph another page" : "Photograph a page"}
+              <input type="file" accept="image/*" capture="environment" className="sr-only" disabled={!!busy} onChange={(e) => { uploadFiles(e.target.files); e.target.value = ""; }} />
+            </label>
+            <label className="flex flex-1 cursor-pointer items-center gap-2 rounded-md border border-dashed border-input px-3 py-4 text-sm text-muted-foreground hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+              <Upload className="size-4" aria-hidden />{busy === "upload" ? "Cleaning and adding the pages…" : "Photos of your paper, tablet ink as an image, or a PDF"}
+              <input type="file" multiple accept="image/*,application/pdf" className="sr-only" disabled={!!busy} onChange={(e) => { uploadFiles(e.target.files); e.target.value = ""; }} />
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">Photos are cropped to the sheet, flattened, evened out and turned upright before the grader reads them.</p>
           {w.files > 0 && (
             <div className="flex flex-wrap items-center gap-2">
               {Array.from({ length: w.files }, (_, i) => <a key={i} href={`${url}/files/${i}`} target="_blank" rel="noreferrer">
@@ -254,7 +332,7 @@ export function HandCorrection({ steps, correction, cid, block, intro = "Work it
   const [n, setN] = useState(0);
   const [mark, setMark] = useState<string | null>(null);
   const done = n > steps.length;
-  const rate = (m: string) => { setMark(m); if (!exported) send(`/api/courses/${cid}/blocks/${block.id}/self-mark`, { mark: m }).catch(() => {}); };
+  const rate = (m: string) => { setMark(m); if (!exported) send(practiceUrl(cid, block, "self-mark"), { mark: m }).catch(() => {}); };
   return (
     <div className="mt-3 space-y-2">
       {n === 0 && <p className="text-sm text-muted-foreground">{intro}</p>}
@@ -269,8 +347,9 @@ export function HandCorrection({ steps, correction, cid, block, intro = "Work it
 }
 
 /** A shell session, one command at a time. */
-export function Terminal({ data }: P<{ title: string; shell: string; entries: { command: string; output: string; note: string }[] }>) {
+export function Terminal({ data, block }: P<{ title: string; shell: string; entries: { command: string; output: string; note: string }[] }>) {
   const [n, setN] = useState(1);
+  const example = block.origin !== "from_source";  // output the model wrote, not copied from the source: say so, not shown as a real run
   const prompt = data.shell === "powershell" ? "PS>" : "$";
   return (
     <figure>
@@ -279,7 +358,7 @@ export function Terminal({ data }: P<{ title: string; shell: string; entries: { 
         {data.entries.slice(0, n).map((e, i) => (
           <div key={i} className={cn(i > 0 && "mt-3")}>
             <div className="whitespace-pre-wrap"><span className="select-none text-[#7ee787]">{prompt} </span>{e.command}</div>
-            {e.output && <pre className="whitespace-pre-wrap text-[#a8b0bd]">{e.output}</pre>}
+            {e.output && <>{example && <div className="select-none text-xs italic text-[#7d8590]">example output</div>}<pre className="whitespace-pre-wrap text-[#a8b0bd]">{e.output}</pre></>}
           </div>
         ))}
       </div>

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, Eraser, FileText, PenLine, Upload } from "lucide-react";
+import { Camera, FileText, ImagePlus, PenLine, X } from "lucide-react";
+import { InkPad } from "@/components/ink";
 import { Md } from "@/components/md";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,12 +12,13 @@ import { cn } from "@/lib/utils";
 import { errText, Page } from "./home";
 import { useCid } from "./run";
 
-type ExamItem = { id: number; kind: "past_paper" | "mock"; title: string; duration_min: number; chapters: number[]; cohort?: string | null; in_scope?: boolean };
+type ExamItem = { id: number; kind: "past_paper" | "mock"; title: string; duration_min: number; chapters: number[]; cohort?: string | null; in_scope?: boolean; open_copy?: number | null };
 type Question = { id: number; position: number; statement: string; points: number; model_answer?: string; scheme?: { step: string; points: number }[] | null };
 type Exam = ExamItem & { total_points: number; questions: Question[] };
 type Step = { step: string; points: number; awarded: number; comment: string; page: { source: string; page: number } | null };
 type Grade = { total: number; max: number; questions: { question_id: number; position: number; points: number; awarded: number; scheme_derived: boolean; answer: string; files: number[]; steps: Step[] }[] };
-type Copy = { id: number; exam_id: number; deadline: string; remaining_seconds: number; answers: Record<string, string>; handed_in_at: string | null; grade: Grade | null; correction?: Exam };
+type CopyFile = { index: number; kind: string; question_id: number | null };
+type Copy = { id: number; exam_id: number; deadline: string; remaining_seconds: number; answers: Record<string, string>; handed_in_at: string | null; grade: Grade | null; correction?: Exam; files: CopyFile[] };
 
 export function Exams() {
   const cid = useCid();
@@ -24,6 +26,7 @@ export function Exams() {
   const { data: exams = [] } = useQuery({ queryKey: ["exams", cid], queryFn: () => get<ExamItem[]>(`/api/courses/${cid}/exams`) });
   const { data: history = [] } = useQuery({ queryKey: ["copies", cid], queryFn: () => get<{ id: number; exam_id: number; exam: string; handed_in_at: string; total: number; max: number }[]>(`/api/courses/${cid}/copies`) });
   const qc = useQueryClient();
+  const [ready, setReady] = useState<number | null>(null);  // the exam whose clock is about to start
   const scope = useMutation({
     mutationFn: (e: ExamItem) => send(`/api/courses/${cid}/exams/${e.id}/scope`, { in_scope: !e.in_scope }, "PUT"),
     onSuccess: () => qc.invalidateQueries(),
@@ -75,9 +78,20 @@ export function Exams() {
                   </Button>
                 </span>
               )}
-              <Button size="sm" variant={copies.length ? "outline" : "default"} onClick={() => start.mutate(e.id)} disabled={start.isPending}>
-                {copies.length ? "Sit it again" : "Sit it"}
-              </Button>
+              {e.open_copy ? (  // started on another device (or before a reload): join it, the clock keeps running
+                <Button size="sm" asChild><Link to="/c/$cid/exams/$eid" params={{ cid: String(cid), eid: String(e.id) }} search={{ copy: e.open_copy } as never}>Continue</Link></Button>
+              ) : (
+                <Button size="sm" variant={copies.length ? "outline" : "default"} onClick={() => setReady(ready === e.id ? null : e.id)} aria-expanded={ready === e.id}>
+                  {copies.length ? "Sit it again" : "Sit it"}
+                </Button>
+              )}
+              {ready === e.id && (
+                <div className="flex basis-full flex-wrap items-center gap-3 border-t border-border pt-3 text-sm">
+                  <p className="mr-auto">You'll have <span className="tabular font-medium">{e.duration_min} min</span>, no documents. The copy is handed in when the clock reaches 0:00.</p>
+                  <Button size="sm" variant="ghost" onClick={() => setReady(null)}>Not now</Button>
+                  <Button size="sm" onClick={() => start.mutate(e.id)} disabled={start.isPending}>{start.isPending ? "Starting…" : "Start the clock"}</Button>
+                </div>
+              )}
             </li>
           );
         })}
@@ -110,42 +124,6 @@ export function Exams() {
   );
 }
 
-/** Pen-only ink on a canvas (the palm is ignored); exported as a PNG for grading. */
-function InkPad({ onSave }: { onSave: (png: Blob) => void }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  const [dirty, setDirty] = useState(false);
-  const last = useRef<{ x: number; y: number } | null>(null);
-  useEffect(() => {
-    const c = ref.current!;
-    const r = c.getBoundingClientRect();
-    c.width = r.width * devicePixelRatio; c.height = r.height * devicePixelRatio;
-    const g = c.getContext("2d")!;
-    g.scale(devicePixelRatio, devicePixelRatio);
-    g.fillStyle = "#fff"; g.fillRect(0, 0, r.width, r.height);
-    g.lineCap = "round"; g.lineJoin = "round"; g.strokeStyle = "#111";
-  }, []);
-  const at = (e: React.PointerEvent) => { const r = ref.current!.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-  const draw = (e: React.PointerEvent) => {
-    if (!last.current || (e.pointerType === "touch" && e.width > 20)) return;
-    const g = ref.current!.getContext("2d")!, p = at(e);
-    g.lineWidth = e.pointerType === "pen" ? 1 + e.pressure * 2.5 : 2;
-    g.beginPath(); g.moveTo(last.current.x, last.current.y); g.lineTo(p.x, p.y); g.stroke();
-    last.current = p; setDirty(true);
-  };
-  const clear = () => { const c = ref.current!, g = c.getContext("2d")!; g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); setDirty(false); };
-  return (
-    <div className="space-y-2">
-      <canvas ref={ref} className="h-80 w-full touch-none rounded-md border border-border bg-white" aria-label="Writing area"
-              onPointerDown={(e) => { if (e.pointerType === "touch" && e.width > 20) return; ref.current!.setPointerCapture(e.pointerId); last.current = at(e); }}
-              onPointerMove={draw} onPointerUp={() => { last.current = null; }} onPointerCancel={() => { last.current = null; }} />
-      <div className="flex gap-2">
-        <Button size="sm" variant="outline" disabled={!dirty} onClick={() => ref.current!.toBlob((b) => { if (b) { onSave(b); clear(); } }, "image/png")}><Upload className="size-4" />Add this page</Button>
-        <Button size="sm" variant="ghost" onClick={clear}><Eraser className="size-4" />Clear</Button>
-      </div>
-    </div>
-  );
-}
-
 function Countdown({ deadline, onZero }: { deadline: string; onZero: () => void }) {
   const [left, setLeft] = useState(() => Math.max(0, (Date.parse(deadline) - Date.now()) / 1000));
   useEffect(() => {
@@ -157,36 +135,63 @@ function Countdown({ deadline, onZero }: { deadline: string; onZero: () => void 
     return () => clearInterval(t);
   }, [deadline]); // eslint-disable-line react-hooks/exhaustive-deps
   const m = Math.floor(left / 60), s = Math.floor(left % 60);
-  return <span className={cn("tabular font-mono text-lg", left < 300 && "text-destructive")} role="timer" aria-label="Time left">{Math.floor(m / 60)}:{String(m % 60).padStart(2, "0")}:{String(s).padStart(2, "0")}</span>;
+  const warning = left <= 60 ? "1 minute left: the copy is handed in at 0:00" : left <= 300 ? "5 minutes left" : "";
+  return (
+    <span className="flex flex-col items-center">
+      <span className={cn("tabular font-mono text-lg", left < 300 && "text-destructive")} role="timer" aria-label="Time left">{Math.floor(m / 60)}:{String(m % 60).padStart(2, "0")}:{String(s).padStart(2, "0")}</span>
+      <span className="text-xs font-medium text-destructive" aria-live="assertive">{warning}</span>
+    </span>
+  );
 }
 
 function Sitting({ cid, exam, copy }: { cid: number; exam: Exam; copy: Copy }) {
   const qc = useQueryClient();
-  const [answers, setAnswers] = useState(copy.answers);
-  const [saved, setSaved] = useState(true);
-  const [files, setFiles] = useState<{ index: number; kind: string; question_id: number | null }[]>([]);
+  const kept = `cf-copy-${copy.id}`;  // the answers in this browser too, so a server that can't be reached loses nothing
+  const [answers, setAnswers] = useState<Record<string, string>>(() => { try { return { ...copy.answers, ...JSON.parse(localStorage.getItem(kept) ?? "{}") }; } catch { return copy.answers; } });
+  const [saved, setSaved] = useState(() => JSON.stringify(answers) === JSON.stringify(copy.answers));
+  const [failed, setFailed] = useState(0);  // saves that failed in a row; each one retries
+  const [sending, setSending] = useState<{ qid: number; text: string } | null>(null);  // the page being uploaded and cleaned
+  const [sendError, setSendError] = useState<{ qid: number; text: string } | null>(null);
   const [ink, setInk] = useState<number | null>(null);
   const [confirm, setConfirm] = useState(false);
   const base = `/api/courses/${cid}/copies/${copy.id}`;
   useEffect(() => {
     if (saved) return;
-    const t = setTimeout(() => send(`${base}/answers`, { answers }, "PUT").then(() => setSaved(true), () => {}), 800);
+    try { localStorage.setItem(kept, JSON.stringify(answers)); } catch { /* storage blocked: the server copy is the only one */ }
+    const t = setTimeout(() => send(`${base}/answers`, { answers }, "PUT").then(() => { setSaved(true); setFailed(0); }, () => setFailed((n) => n + 1)), failed ? 4000 : 800);
     return () => clearTimeout(t);
-  }, [answers, saved, base]);
-  const upload = async (file: Blob, kind: string, qid: number) => {
-    const f = new FormData();
-    f.append("file", file, kind === "ink" ? "ink.png" : (file as File).name ?? "photo");
-    f.append("kind", kind); f.append("question_id", String(qid));
-    setFiles((await send<{ files: typeof files }>(`${base}/files`, f)).files);
+  }, [answers, saved, base, failed, kept]);
+  // pages live on the server: the copy is refetched every few seconds, so a photo taken on the phone shows here too
+  const setFiles = (files: CopyFile[]) => qc.setQueryData<Copy>(["copy", cid, copy.id], (c) => c && { ...c, files });
+  const upload = async (blobs: Blob[], qid: number) => {
+    setSendError(null);
+    for (const [i, file] of blobs.entries()) {
+      const kind = file.type === "application/pdf" ? "pdf" : file.type === "image/png" && !(file as File).name ? "ink" : "photo";
+      setSending({ qid, text: kind === "photo" ? `Cleaning photo ${i + 1} of ${blobs.length}…` : `Adding page ${i + 1} of ${blobs.length}…` });
+      const f = new FormData();
+      f.append("file", file, kind === "ink" ? "ink.png" : (file as File).name || "photo");
+      f.append("kind", kind); f.append("question_id", String(qid));
+      try { setFiles((await send<{ files: CopyFile[] }>(`${base}/files`, f)).files); }
+      catch (e) { setSendError({ qid, text: `Page ${i + 1} not added: ${errText(e)}` }); break; }
+    }
+    setSending(null);
+  };
+  const remove = async (index: number) => {
+    try { setFiles((await send<{ files: CopyFile[] }>(`${base}/files/${index}`, undefined, "DELETE")).files); }
+    catch (e) { setSendError({ qid: copy.files[index]?.question_id ?? 0, text: errText(e) }); }
   };
   const handIn = useMutation({
-    mutationFn: async () => { await send(`${base}/answers`, { answers }, "PUT").catch(() => {}); await send(`${base}/hand-in`); return send<Copy>(`${base}/grade`); },
-    onSuccess: (c) => qc.setQueryData(["copy", cid, copy.id], c),
+    mutationFn: async () => {
+      await send(`${base}/answers`, { answers }, "PUT").catch((e) => { throw new Error(`Not handed in: your last answers couldn't be saved (${errText(e)}). They are kept in this browser; press Hand in again.`); });
+      await send(`${base}/hand-in`); return send<Copy>(`${base}/grade`);
+    },
+    onSuccess: (c) => { try { localStorage.removeItem(kept); } catch { /* storage blocked */ } qc.setQueryData(["copy", cid, copy.id], c); },
   });
   return (
     <div>
-      <div className="sticky top-12 z-10 -mx-4 mb-6 flex items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-2 backdrop-blur">
-        <span className="text-sm text-muted-foreground">{saved ? "Saved" : "Saving…"}</span>
+      <div className="sticky top-(--hh) z-10 -mx-4 mb-6 flex items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-2 backdrop-blur">
+        <span className={cn("text-sm", failed ? "font-medium text-destructive" : "text-muted-foreground")} role="status">
+          {saved ? "Saved" : failed ? "Not saved, retrying…" : "Saving…"}</span>
         <Countdown deadline={copy.deadline} onZero={() => handIn.mutate()} />
         {confirm ? (
           <span className="flex gap-1"><Button size="sm" variant="destructive" onClick={() => handIn.mutate()} disabled={handIn.isPending}>{handIn.isPending ? "Grading…" : "Hand in now"}</Button><Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>Keep going</Button></span>
@@ -200,7 +205,7 @@ function Sitting({ cid, exam, copy }: { cid: number; exam: Exam; copy: Copy }) {
         </header>
         <ol className="space-y-10">
           {exam.questions.map((q) => {
-            const mine = files.filter((f) => f.question_id === q.id).length;
+            const mine = (copy.files ?? []).filter((f) => f.question_id === q.id);
             return (
               <li key={q.id}>
                 <div className="flex items-baseline justify-between gap-4">
@@ -212,14 +217,32 @@ function Sitting({ cid, exam, copy }: { cid: number; exam: Exam; copy: Copy }) {
                           value={answers[q.id] ?? ""} onChange={(e) => { setAnswers({ ...answers, [q.id]: e.target.value }); setSaved(false); }} />
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                   <Button size="sm" variant="outline" onClick={() => setInk(ink === q.id ? null : q.id)}><PenLine className="size-4" />Write by hand</Button>
-                  <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input px-3 text-sm hover:bg-accent">
-                    <Camera className="size-4" />Photo or PDF
-                    <input type="file" accept="image/*,application/pdf" capture="environment" className="sr-only"
-                           onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f, f.type === "application/pdf" ? "pdf" : "photo", q.id); e.target.value = ""; }} />
+                  {/* the camera takes one page per tap; the other picker takes several photos or a PDF at once */}
+                  <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input px-3 text-sm hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+                    <Camera className="size-4" aria-hidden />{mine.length ? "Photograph another page" : "Photograph a page"}
+                    <input type="file" accept="image/*" capture="environment" className="sr-only" disabled={!!sending}
+                           onChange={(e) => { upload(Array.from(e.target.files ?? []), q.id); e.target.value = ""; }} />
                   </label>
-                  {mine > 0 && <span className="text-muted-foreground">{mine} page{mine > 1 && "s"} attached</span>}
+                  <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-input px-3 text-sm hover:bg-accent has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring">
+                    <ImagePlus className="size-4" aria-hidden />Photos or PDF
+                    <input type="file" multiple accept="image/*,application/pdf" className="sr-only" disabled={!!sending}
+                           onChange={(e) => { upload(Array.from(e.target.files ?? []), q.id); e.target.value = ""; }} />
+                  </label>
+                  {sending?.qid === q.id && <span className="text-muted-foreground" role="status">{sending.text}</span>}
+                  {sendError?.qid === q.id && <span className="text-destructive" role="alert">{sendError.text}</span>}
                 </div>
-                {ink === q.id && <div className="mt-3"><InkPad onSave={(b) => upload(b, "ink", q.id)} /></div>}
+                {mine.length > 0 && (
+                  <ul className="mt-2 flex flex-wrap gap-2" aria-label={`Pages for question ${q.position + 1}`}>
+                    {mine.map((f, n) => (
+                      <li key={f.index} className="relative">
+                        <a href={`${base}/files/${f.index}`} target="_blank" rel="noreferrer">
+                          <img src={`${base}/files/${f.index}`} alt={`Page ${n + 1} of your answer`} className="h-28 rounded border border-border bg-white object-cover" /></a>
+                        <button type="button" onClick={() => remove(f.index)} aria-label={`Remove page ${n + 1}`}
+                                className="absolute -right-2 -top-2 grid size-7 place-items-center rounded-full border border-border bg-card text-muted-foreground shadow-sm hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring">
+                          <X className="size-3.5" aria-hidden /></button>
+                      </li>))}
+                  </ul>)}
+                {ink === q.id && <div className="mt-3"><InkPad onSave={(b) => upload([b], q.id)} /></div>}
               </li>
             );
           })}
@@ -276,12 +299,13 @@ export function ExamMode() {
   const { eid } = useParams({ strict: false }) as { eid: string };
   const copyId = Number(new URLSearchParams(location.search).get("copy"));
   const exam = useQuery({ queryKey: ["exam", cid, eid], queryFn: () => get<Exam>(`/api/courses/${cid}/exams/${eid}`) });
-  const copy = useQuery({ queryKey: ["copy", cid, copyId], enabled: !!copyId, queryFn: () => get<Copy>(`/api/courses/${cid}/copies/${copyId}`) });
+  const copy = useQuery({ queryKey: ["copy", cid, copyId], enabled: !!copyId, queryFn: () => get<Copy>(`/api/courses/${cid}/copies/${copyId}`),
+    refetchInterval: (q) => (q.state.data && !q.state.data.grade ? 5000 : false) });  // pages from another device; the grade once it is in
   if (!exam.data || !copy.data) return <Page><p className="text-muted-foreground">{copy.error ? errText(copy.error) : "Loading…"}</p></Page>;
   return (
     <Page>
       {copy.data.grade ? <Graded cid={cid} copy={copy.data} />
-        : copy.data.handed_in_at ? <p>Handed in. Grading…</p>
+        : copy.data.handed_in_at ? <p role="status">Handed in. The model is grading your copy, which can take a few minutes; the result shows here by itself.</p>
         : <Sitting cid={cid} exam={exam.data} copy={copy.data} />}
     </Page>
   );

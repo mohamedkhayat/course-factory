@@ -253,3 +253,56 @@ def test_explain_this_differently_asks_the_tutor_about_one_block_citing_only_the
     assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "section_id": sid, "block_id": block["id"],
                                                           "style": "louder"}).status_code == 422
     assert client.get(f"/api/courses/{cid}/tutor/{done['conversation_id']}").json()[0]["text"] == "Explain this differently: simpler"
+
+
+def test_inline_citations_in_a_tutor_block_move_into_its_citations():
+    from course_factory.tutor import cited_out
+    exam, notes = "Examen_BDA_SR_Draft_Français.pdf", "Chapter 2 - Spark RDD.pdf"
+    block = {"component": "prose", "citations": [{"source": notes, "page": 5}], "data": {"text":  # the Block from a real proposal
+             f"Examen : « Écrire la commande » [{exam} p.3] → `rdd5.coalesce(4)`. — « Sauvegarde permanente » [Block 1109]. "
+             "Voir [inventé.pdf p.9]."}}
+    out = cited_out(block, {(notes, 5), (exam, 3)})
+    assert out["data"]["text"] == "Examen : « Écrire la commande » → `rdd5.coalesce(4)`. — « Sauvegarde permanente ». Voir [inventé.pdf p.9]."
+    assert out["citations"] == [{"source": notes, "page": 5}, {"source": exam, "page": 3}]
+
+
+def test_the_tutor_sees_pasted_images_and_attached_blocks_from_any_section(client, material, model):
+    import base64
+    cid, sections = published(client, material, model)
+    seen = {}
+    model.handlers["tutor"] = lambda prompt, files: seen.update(prompt=prompt, files=[f.name for f in files]) or "Vu."
+    other = blocks_of(client, cid, sections[-1]["id"])[0]
+    png = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 20).decode()
+    ask(client, cid, "et ça ?", section_id=sections[0]["id"], images=[png, png], attached=[other["id"]])
+    assert len(seen["files"]) == 2 and all(f.endswith(".png") for f in seen["files"])
+    assert f"[{other['id']}] {other['component']}" in seen["prompt"]
+    bad = client.post(f"/api/courses/{cid}/tutor", json={"question": "x", "section_id": sections[0]["id"], "images": ["data:text/html;base64,PGI+"]})
+    assert bad.status_code == 422
+    assert client.post(f"/api/courses/{cid}/tutor", json={"question": "x", "attached": [999999]}).status_code == 404
+
+
+def test_sections_added_as_context_give_the_tutor_their_pages_and_blocks(client, material, model):
+    cid, sections = published(client, material, model)
+    seen = {}
+    model.handlers["tutor"] = lambda prompt, files: seen.update(prompt=prompt) or "Vu."
+    other = sections[-1]
+    ask(client, cid, "compare", section_id=sections[0]["id"], sections=[other["id"], sections[0]["id"]])
+    assert f'Section "{other["title"]}"' in seen["prompt"]
+    assert f"[{blocks_of(client, cid, other['id'])[0]['id']}]" in seen["prompt"]
+    assert f'Section "{sections[0]["title"]}" (Chapter' not in seen["prompt"]  # the open Section is in the prompt already
+    ask(client, cid, "plain", section_id=sections[0]["id"])
+    assert "added these Sections" not in seen["prompt"]
+    assert client.post(f"/api/courses/{cid}/tutor", json={"question": "x", "sections": [999999]}).status_code == 404
+
+
+def test_a_tutor_that_changes_its_mind_mid_answer_proposes_its_last_proposal(client, material, model):
+    cid, sections = published(client, material, model)
+    sid = sections[0]["id"]
+    first = blocks_of(client, cid, sid)[0]
+    fence = lambda title: "```proposal\n" + json.dumps({"changes": [{"action": "add", "after_block_id": first["id"],  # noqa: E731
+                                                                      "block": NEW | {"data": NEW["data"] | {"title": title}}}]}) + "\n```"
+    model.handlers["tutor"] = lambda prompt, files: (f"Voici.\n\n{fence('Abandonné')}\n\nWait — mieux :\n\n{fence('Retenu')}\n\nPrévisualisez.")  # message 120's shape
+    done = ask(client, cid, "ajoute un exercice", section_id=sid)
+    assert done["proposal"]["changes"][0]["block"]["data"]["title"] == "Retenu"
+    prompt = next(p for s, p in model.prompts if s == "tutor")
+    assert "never reveal the answers" in prompt and "language the learner writes in" in prompt and "your own explanations" in prompt  # the Course language rule, for its Blocks

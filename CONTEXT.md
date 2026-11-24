@@ -60,8 +60,72 @@ _Avoid_: library, registry
 The escape hatch: a Block of free Markdown with math, used when no Component fits the content.
 _Avoid_: raw block, HTML block
 
+**Diagram kind**:
+The shape a diagram takes, chosen from the relation it shows: tree (hierarchy), layers (dependency), nesting (containment), pipeline (process), cycle, state machine, fan-out (one-to-many). The model names the kind, each item's place in it and a short cited explanation per item; code lays it out and draws it. Clicking an item opens a card beside it with its explanation, its page and "Ask the tutor about this", highlighting it and its links while the rest dims; arrow keys walk the items, Escape closes, and in full screen the card docks at the side. Raw Mermaid stays only for faithful redraws of a slide.
+_Avoid_: diagram template, layout
+
+**Animation**:
+Content that changes over time, in one of two renderers. A Stepped animation (the `stepped_animation` Component: a kind diagram plus cited, captioned steps that highlight, move a token, add, remove or relabel) runs in the page on the diagram engine: scrubbable, clickable, sharp at any zoom, used inside Sections. A Video is rendered by Manim from templates the model fills in, always narrated, used for maths and processes and for one overview per Chapter. Templates come in this order: Chapter overview, data and partition flow (records through partitions, narrow vs wide, shuffle, cache), equation transform, function and plot; then matrix and vector operations, and geometry. Videos are rendered in the background once their Section is checked; the Run never waits on them, and a failed render goes to the Review Queue. Videos are narrated by local text-to-speech, which also reads a Section's explaining Blocks aloud on Listen: generated the first time Listen is pressed, then kept until the Section changes.
+_Avoid_: clip, movie
+
+**Course chat**:
+The tutor at Course level: a free-form conversation over every Chapter's material, whose answers mix Markdown with Blocks from the Catalogue (a diagram, a quiz, a worked example) drawn inline as part of the reply, the same renderers as in a Section and checked like any Block. A Block from an answer can be saved into a Section: the chat suggests the Section that teaches the Concepts it uses and the place after the Block it relates to most, the learner confirms or picks elsewhere, and the saved Block goes through the same checks as a generated one, Model-added and marked as from the chat, with Undo. Practice answered in the chat is recorded against the Concepts it tests (so weak Concepts show in Progress and come back sooner in Practice), but the Block itself stays in the conversation: it joins Practice only once saved into a Section, and it never counts toward a Section's progress. It is an App View of its own (Chat), with past conversations beside it and a wide column so Blocks get full width; the Section tutor can hand a conversation over to it. The Section tutor stays for questions on the open Section and for proposals that change it. Both show their work as it happens on one activity line (searching for a term, reading pages as links, writing a Block, checking or fixing it), collapsed to a summary once the answer is done; a Block in an answer shows as a placeholder of its kind until checked, never as raw JSON.
+_Avoid_: assistant, big tutor
+
+**Learner memory**:
+One-line facts about how the owner learns, each with where it came from: a preference they stated ("no write-on-paper exercises"), or a pattern code finds in their results (three misses on narrow vs wide), Explain differently choices, skips and ratings. Saved automatically, shown as "Remembered: …" with Undo where it was made, and listed in Settings to edit or delete. Preferences hold across Courses; patterns in results belong to their Course. The tutor, the Course chat and the writing of Sections read it.
+_Avoid_: profile, personalisation
+
+**Listen**:
+Hearing a Section read aloud by the Voice, following along: the sentence being read is highlighted and kept in view, a click on a sentence jumps there, and a bar holds play, ±10 s, speed and the Voice. It reads the explaining Blocks; code is announced, not read, and practice Blocks are skipped so no answer is heard. Maths is spoken as a person says it, in the Course language ("x au carré plus un"), converted by code from the LaTeX, never read as symbols: what reaches the Voice holds no backslash, dollar, underscore, caret or brace. It stops at the end of the Section and offers the next one, and keeps playing with the screen locked.
+_Avoid_: read aloud, audio mode
+
+**Dictation**:
+Speaking instead of typing in Explain back, the tutor and the Course chat: a local Whisper model on the CPU transcribes in the Course language or English, the learner sees and can fix the transcript before it is sent, a tablet records while the host transcribes, and the audio is deleted once transcribed.
+_Avoid_: voice input, STT
+
+**Challenge**:
+How the tutor and the Course chat treat what the learner says they understood: checked against the material, never praised when wrong or partial. What is wrong or missing is named plainly, then one follow-up question tests it from another side (why, what if, a counter-example, the exam's wording); a right answer earns a harder question, not praise alone. Misunderstandings found this way become Learner memory. Only in Test me, or when the learner answers the tutor's last question; a question the learner skips is dropped.
+_Avoid_: quiz mode, Socratic mode
+
+**Reply mode**:
+How much the tutor and the Course chat do in one answer: Step (a Step answer), Explain (a full answer within the course), Test me (a Challenge), or Beyond the course (wider theory, marked as not from the course). Picked by the learner, else Step for a quoted line of a theoretical Course, else Explain.
+_Avoid_: style (that is "Explain this differently")
+
+**Course-first**:
+How a theoretical Course is written and tutored: the course's own pages are the backbone, in their order and notation; its definitions, derivations, TD exercises and past Questions come before anything the model makes, and nothing is added that neither the pages nor the past Questions contain. A theoretical Section under half from_source (opening and recap aside) is flagged on Review with its course share.
+_Avoid_: grounded mode, source mode
+
+**Anchor**:
+The course page a question is about: the page a quoted line comes from (found by its words), or the cited page of the Block a line was selected in.
+_Avoid_: context page
+
+**Step answer**:
+The tutor's answer to "how does this line follow?": only the missing step, in the course's notation, from the Anchor and the pages before it and the Concepts taught so far; about 120 words and one chain of equations, no new theorem, no question back. Longer is shown and counted as a Failure class.
+_Avoid_: short answer, hint
+
+**Derivation**:
+A Component holding the course's own derivation (a proof, a computation, a TD correction) line by line, each line verbatim from the pages; from_source and cited. Its Card hides one line: "what comes next?".
+_Avoid_: proof Block, worked example (that is the model's own)
+
+**Gap note**:
+On a Derivation line where the course skips a step, at most two sentences on how it follows, written by the model, marked added and closed until tapped; never judged as the course's text.
+_Avoid_: annotation, comment
+
+**Drill**:
+"Quiz me" in the Course chat: one question at a time (a quiz, gaps or Explain back) on the chosen Chapters, leaning on weak Concepts and the exam's Question Types, each answer met with a Challenge, a missed point coming back soon after; it stops at the time asked or when the learner says so, and ends with what was right, what to review (as links to Sections) and what was remembered.
+_Avoid_: quiz session, test
+
+**Course language**:
+The language a Course is written in for its learner, chosen at the found gate: English, French, or mixed (the source's wording in its own language, the model's own explanations in English). Everything the model makes follows it: Blocks, diagram labels and explanations, Video text and narration, and what Listen reads. Quotes and the exact names of commands, functions and files stay as in the material, and Listen and narration read each passage with a Voice for its language. Conversations are the exception: the tutor and the Course chat answer in the language the learner writes in, keeping the material's terms, quotes and exam wording as they are; a Block they write still follows the Course language, since it may be saved into a Section.
+_Avoid_: locale, translation
+
+**Voice**:
+The local text-to-speech model that reads Listen and narrates Videos, picked in Settings and switchable at any time: Kokoro by default (CPU), or Audio8, Klein or OmniVoice. Each Voice runs in its own isolated environment, pinned to an exact revision, and reads in the Course language. Audio is kept per Section and Voice, so switching back costs nothing and a new Voice is generated on the next Listen.
+_Avoid_: TTS engine, speaker
+
 **Source**:
-One file of study material imported into a Course, such as a PDF, a notebook, or a data file. Sources are copies; the original folder is never touched.
+One file of study material imported into a Course, such as a PDF, a notebook, or a data file. Sources are copies; the original folder is never touched. They come from a folder the owner picks, or from an MIT OpenCourseWare course found by search, whose notes, problem sets and exams are downloaded into a folder with one sub-folder per OCW kind.
 _Avoid_: document, upload, file
 
 **Role**:

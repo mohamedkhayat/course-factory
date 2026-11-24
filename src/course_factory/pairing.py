@@ -42,7 +42,7 @@ class Claim(BaseModel):
 def host_ok(host: str) -> bool:
     """Only IP literals and localhost: a DNS-rebinding page arrives with its own domain name."""
     name = urlsplit(f"//{host}").hostname or ""
-    if name == "localhost":
+    if name == "localhost" or name.endswith(".ts.net"):  # tailscale serve keeps its MagicDNS name; only Tailscale controls that zone
         return True
     try:
         ipaddress.ip_address(name)
@@ -75,6 +75,8 @@ class PairingGuard:
         if not host_ok(headers.get("host", "")) or (origin and urlsplit(origin).netloc != headers.get("host")):
             return await self.deny(scope, send, 403, "cross-site or unknown host")
         client = (scope.get("client") or ("", 0))[0]
+        if client in LOOPBACK and headers.get("x-forwarded-for"):  # tailscale serve proxies from loopback: the device is the address it appended
+            client = headers["x-forwarded-for"].split(",")[-1].strip()
         scope.setdefault("state", {})
         if client in LOOPBACK:
             scope["state"]["device"] = {"id": "host", "label": "Host"}

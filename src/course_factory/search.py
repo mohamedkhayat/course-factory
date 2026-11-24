@@ -1,12 +1,18 @@
 """Hybrid search over Passages: FTS5 + sqlite-vec, reranked. A Passage never spans pages, so a hit is a Citation."""
 
+import ctypes
+from itertools import zip_longest
 import sqlite3
-from typing import Protocol
+import sys
+import threading
+from typing import Callable, Protocol
 
 import sqlite_vec
 
 PASSAGE_CHARS = 1200
 CANDIDATES = 30
+RERANKED = 40  # the reranker runs a 568M model on CPU per candidate: 150 of them took minutes and 12+ cores per question
+RERANK_TOKENS = 512  # a Passage is ~300 tokens; the model's default 8192 lets one long pair cost the whole batch
 
 
 class SearchModels(Protocol):
@@ -18,26 +24,58 @@ class SearchModels(Protocol):
 
 
 class LocalSearchModels:
-    """bge-m3 embeddings and bge-reranker-v2-m3 on CPU, loaded on first use from the HF cache."""
+    """bge-m3 embeddings and bge-reranker-v2-m3, loaded on first use from the HF cache. They live on the CPU; `device()` saying
+    "cuda" moves them to the GPU for one call only, so they never keep VRAM a model swapped in later needs."""
 
     dim = 1024
 
-    def __init__(self):
+    def __init__(self, device: Callable[[], str] = lambda: "cpu"):
         self._embedder = self._reranker = None
+        self._device = device
+        self._lock = threading.Lock()  # one inference at a time: concurrent ones each loaded the models and multiplied the memory
 
     def embed(self, texts):
-        if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
+        with self._lock:
+            if self._embedder is None:
+                from sentence_transformers import SentenceTransformer
 
-            self._embedder = SentenceTransformer("BAAI/bge-m3", device="cpu")
-        return self._embedder.encode(texts, normalize_embeddings=True, batch_size=8).tolist()
+                self._embedder = SentenceTransformer("BAAI/bge-m3", device="cpu")
+            m = self._embedder
+            return self._run(m, lambda: m.encode(texts, normalize_embeddings=True, batch_size=8).tolist())
 
     def rerank(self, query, texts):
-        if self._reranker is None:
-            from sentence_transformers import CrossEncoder
+        with self._lock:
+            if self._reranker is None:
+                from sentence_transformers import CrossEncoder
 
-            self._reranker = CrossEncoder("BAAI/bge-reranker-v2-m3", device="cpu")
-        return [float(s) for s in self._reranker.predict([(query, t) for t in texts])]
+                self._reranker = CrossEncoder("BAAI/bge-reranker-v2-m3", device="cpu", max_length=RERANK_TOKENS)
+            m = self._reranker
+            return self._run(m, lambda: [float(s) for s in m.predict([(query, t) for t in texts])])
+
+    def _run(self, model, fn):
+        import torch
+
+        try:
+            if self._device() == "cuda" and torch.cuda.is_available():
+                try:
+                    model.to("cuda", torch.float16)  # half the VRAM: next to Basalt 2.7 GB of the 32 GB are free
+                    return fn()
+                except torch.OutOfMemoryError:  # the chat model filled the GPU: the CPU is slower but answers
+                    print("search: the GPU is full, running on the CPU", file=sys.stderr, flush=True)
+                finally:
+                    model.to("cpu", torch.float32)
+                    torch.cuda.empty_cache()
+            return fn()
+        finally:
+            _trim()
+
+
+def _trim() -> None:
+    """Hands freed memory back to the OS: glibc keeps torch's activations in its arenas, and the app grew to 38 GB in 6 hours."""
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):  # not glibc
+        pass
 
 
 def setup(db: sqlite3.Connection, dim: int) -> None:
@@ -97,19 +135,21 @@ def fts_query(q: str) -> str:
 
 
 def search(db: sqlite3.Connection, models: SearchModels, course_id: int, query: str, k: int = 8) -> list[dict]:
-    ids: list[int] = []
+    fts: list[int] = []
     if fq := fts_query(query):
-        ids += [r[0] for r in db.execute(
+        fts = [r[0] for r in db.execute(
             "SELECT p.id FROM passages_fts f JOIN passages p ON p.id=f.rowid WHERE passages_fts MATCH ? AND p.course_id=? "
             "ORDER BY bm25(passages_fts) LIMIT ?", (fq, course_id, CANDIDATES))]
     vec = sqlite_vec.serialize_float32(models.embed([query])[0])
     # vec0 knn is global; over-fetch then keep this Course's rows
     near = db.execute("SELECT rowid FROM passages_vec WHERE embedding MATCH ? AND k=? ORDER BY distance", (vec, CANDIDATES * 4)).fetchall()
-    ids += [r[0] for r in near]
+    ids = set(fts) | {r[0] for r in near}
     rows = {r["id"]: r for r in db.execute(
         f"SELECT p.id, p.page, p.text, s.name source FROM passages p JOIN sources s ON s.id=p.source_id "
-        f"WHERE p.course_id=? AND p.id IN ({','.join('?' * len(set(ids)))})", (course_id, *set(ids)))} if ids else {}
-    cands = [rows[i] for i in dict.fromkeys(ids) if i in rows]
+        f"WHERE p.course_id=? AND p.id IN ({','.join('?' * len(ids))})", (course_id, *ids))} if ids else {}
+    # the best of each list, taken in turn, so neither crowds out the other within the reranker's budget
+    order = [i for pair in zip_longest(fts, [r[0] for r in near]) for i in pair if i in rows]
+    cands = [rows[i] for i in dict.fromkeys(order)][:RERANKED]
     if not cands:
         return []
     scores = models.rerank(query, [c["text"] for c in cands])

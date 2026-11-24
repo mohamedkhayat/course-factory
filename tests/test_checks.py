@@ -46,6 +46,82 @@ def test_a_wrong_claim_is_still_an_error(claim):
     assert [e for e in errors_of(claim) if e.startswith("sympy:")]
 
 
+@pytest.mark.parametrize("claim", [  # real ops from Traces that failed with "claims.N.op: Input should be ..."
+    {"expr": "(1/3)*(0**2 + 1**2 + 1**2)", "op": "eq", "expected": "2/3"},
+    {"expr": "Abs(1) + Abs(-2) + Abs(3)", "op": "==", "expected": "6"},
+    {"op": "equals", "expr": "diff(-log(1/(1+exp(-x))), x)", "expected": "-exp(-x)/(1+exp(-x))"},
+    {"op": "gradient", "expr": "x**2 + y**2 + x*y", "expected": "2*x + y, x + 2*y", "vars": ["x", "y"]},
+    {"expr": "1/2*(10*x1**2 + 180*x1*x2) - 123*x1", "op": "derivative", "var": "x1", "expected": "10*x1 + 90*x2 - 123"},
+    {"op": "hessian_eigenvalues", "expr": "x**2 + y**2 + x*y", "expected": "1, 3", "vars": ["x", "y"]},  # dropped
+    {"expr": "1/2*(A*exp(eps)*sin(om))**2", "op": "d/dA", "expected": "A*exp(2*eps)*sin(om)**2"},  # dropped
+])
+def test_claim_ops_the_model_aliases_are_not_schema_errors(claim):
+    assert errors_of(claim) == []
+
+
+@pytest.mark.parametrize("claim", [  # real sympy-wrong false alarms: x1 read as x*1, lam as l*a*m
+    {"op": "equal", "expr": "2*x1**2 + 2*x1*x2 + 2*x2**2", "vars": [], "expected": "x1**2 + x2**2 + (x1+x2)**2"},
+    {"op": "diff", "expr": "(w1**2 + w2**2 - 2*w1*a - 2*w2*b + c)/n", "vars": ["w1"], "expected": "2*(w1 - a)/n"},
+    {"op": "equal", "expr": "diff((w1**2 + w2**2 - 2*w1*a - 2*w2*b + c)/n, w1)", "vars": [], "expected": "2*(w1 - a)/n"},
+    {"op": "equal", "expr": "diff(2*(w1**2 + w2**2)/n + 2*lam*w1, w1)", "vars": [], "expected": "4*w1/n + 2*lam"},
+])
+def test_multi_letter_and_indexed_names_are_one_symbol(claim):
+    assert errors_of(claim) == []
+
+
+@pytest.mark.parametrize("claim", [  # real sympy-wrong false alarms: a value at a point the claim never names
+    {"op": "equal", "expr": "diff((x-1)**2 + (x-3)**2, x)", "vars": [], "expected": "-8"},
+    {"op": "diff", "expr": "(x-1)**2 + (x-3)**2", "vars": ["x"], "expected": "-8"},
+    {"op": "hessian", "expr": "x**2 + y**3 - 3*y", "vars": ["x", "y"], "expected": [["2", "0"], ["0", "6"]]},
+    {"op": "equal", "expr": "x**2 + y**3 - 3*y", "vars": [], "expected": "[2*x, 3*y**2 - 3]"},  # a gradient under equal
+    {"op": "equal", "expr": "10*x1 + 90*x2 - 123", "vars": [], "expected": "0"},  # one equation of a system
+    # diff without vars: the variable is whichever one matches
+    {"op": "diff", "expr": "1/2*(x**2 + 4*y**2)", "vars": [], "expected": "4*y"},
+    {"op": "diff", "expr": "1/2*(A*exp(eps)*sin(om))**2", "vars": [], "expected": "A**2*exp(2*eps)*sin(om)*cos(om)"},
+    {"op": "equal", "expr": "-2*log(1/(1+exp(-w)))", "vars": [], "expected": "2*log(1+exp(-w))"},  # a log identity
+])
+def test_a_claim_sympy_cannot_decide_is_skipped(claim):
+    assert errors_of(claim) == []
+
+
+@pytest.mark.parametrize("claim", [  # real wrong claims the model made: still errors
+    {"op": "equal", "expr": "(1/4)*1 + (1/4)*2 + (1/2)*4", "vars": [], "expected": "15/4"},
+    {"op": "equal", "expr": "diff(x**2 + y**2 + a*x*y - 2*x - 2*y, x, 2)", "vars": [], "expected": "2 + a"},
+    {"op": "diff", "expr": "1/2*(x1**2 + 2*x1*x2 + 4*x2**2)", "vars": ["x1"], "expected": "x1 + 2*x2"},
+    {"op": "diff", "expr": "1/2*(x**2 + 4*y**2)", "vars": [], "expected": "3*y"},
+])
+def test_a_wrong_claim_the_model_made_is_an_error(claim):
+    assert [e for e in errors_of(claim) if e.startswith("sympy:")]
+
+
+@pytest.mark.parametrize("claim, wrong", [  # a claim that names its point is checked at that point
+    ({"op": "diff", "expr": "(x-1)**2 + (x-3)**2", "vars": ["x"], "at": {"x": "0"}, "expected": "-8"}, False),
+    ({"op": "diff", "expr": "(x-1)**2 + (x-3)**2", "vars": ["x"], "at": {"x": "0"}, "expected": "-10"}, True),
+    ({"op": "value", "expr": "x**2 + y**3 - 3*y", "point": [0, 1], "expected": "-2"}, False),  # Trace 573
+    ({"op": "value", "expr": "x**2 + y**3 - 3*y", "point": [0, 1], "expected": "-1"}, True),  # Trace 564: f(0,1) = -2
+    ({"op": "hessian_at_point", "expr": "x**2 + y**3 - 3*y", "point": [0, 1], "expected": "[[2, 0], [0, 6]]"}, False),
+    ({"op": "hessian_at_point", "expr": "x**2 + y**3 - 3*y", "point": [0, 1], "expected": "[[2, 0], [0, -6]]"}, True),
+    ({"op": "eval", "expr": "(4-x)**2/2", "var": "x", "at": "1", "expected": "9/2"}, False),
+    ({"op": "eval", "expr": "(4-x)**2/2", "var": "x", "at": "1", "expected": "7/2"}, True),
+])
+def test_a_claim_at_a_point_is_checked_there(claim, wrong):
+    assert bool([e for e in errors_of(claim) if e.startswith("sympy:")]) == wrong
+
+
+@pytest.mark.parametrize("claim", [
+    {"op": "equal", "expr": "x**2 + 1", "vars": [], "expected": "0"},  # no real point gives 0: wrong wherever it is taken
+    {"op": "diff", "expr": "exp(x)", "vars": ["x"], "expected": "-1"},
+    {"op": "equal", "expr": "x**2 + y**2", "vars": [], "expected": "[2*x, 3*y]"},  # a gradient written under equal
+    {"op": "equal", "expr": "x**2 + y**2", "vars": [], "expected": "[[2, 0], [0, 3]]"},  # a Hessian written under equal
+])
+def test_a_claim_with_no_point_is_still_an_error_when_no_point_fits(claim):
+    assert [e for e in errors_of(claim) if e.startswith("sympy:")]
+
+
+def test_an_aliased_op_still_catches_a_wrong_value():
+    assert [e for e in errors_of({"expr": "(1/3)*(0**2 + 1**2 + 1**2)", "op": "eq", "expected": "1/3"}) if e.startswith("sympy:")]
+
+
 def test_a_claim_sympy_cannot_parse_does_not_flag_the_block():
     assert errors_of({"op": "equal", "expr": "f(x) = ??", "vars": [], "expected": "1"}) == []
 
@@ -70,6 +146,14 @@ def test_empty_steps_and_hints_are_dropped():
 
 def test_a_display_formula_left_open_is_closed():
     assert heal("prose", {"markdown": "est\n$$\\rho^*=\\frac{2}{3}."})["markdown"] == "est\n$$\\rho^*=\\frac{2}{3}.$$"
+
+
+def test_a_matrix_row_break_before_a_letter_is_kept():
+    """Course 12 Block 4542: the heal for "\\rho" escaped twice turned the row break of (s s \\ s t) into "\\s", a KaTeX
+    error no repair could fix, since the heal ran again on every repair and on the owner's own edit."""
+    md = r"$(B_s,B_t)\sim\mathcal{N}(0, \begin{pmatrix}s&s\\s&t\end{pmatrix})$ et $\\rho = \\frac{1}{2}$"
+    assert heal("recap", {"takeaways": [md, "b"], "can_do": ["c"]})["takeaways"][0] == \
+        r"$(B_s,B_t)\sim\mathcal{N}(0, \begin{pmatrix}s&s\\s&t\end{pmatrix})$ et $\rho = \frac{1}{2}$"
 
 
 def test_latex_escapes_outside_math_become_text():
@@ -156,6 +240,48 @@ def test_each_new_component_accepts_a_good_block(component):
 def test_a_broken_new_block_is_flagged(component, change, error):
     errors = check_one(component, GOOD[component] | change)[1]
     assert errors and any(error in e for e in errors), errors
+
+
+def dockerfile_blanks(template, answers):
+    return {"title": "Dockerfile", "task": "Containerise the FastAPI service on port 8080.", "language": "dockerfile",
+            "template": template, "blanks": [{"answers": [a]} for a in answers]}
+
+
+def test_a_dockerfile_that_would_fail_to_build_or_start_is_flagged():
+    # Qwen 3.8 (eval 2026-11-21): several sources into a path with no trailing slash fail at docker build
+    errors = check_one("fill_blanks", dockerfile_blanks("FROM python:3.11\nCOPY app.py requirements.txt [[1]]\nRUN pip install -r requirements.txt\n"
+                                                        "CMD [\"python\", \"/srv/app.py\"]", ["/srv"]))[1]
+    assert any("must be a directory ending in /" in e for e in errors), errors
+    # Inkling 2 Mini (same eval): only the requirements are copied, so uvicorn finds no service.py at start
+    errors = check_one("fill_blanks", dockerfile_blanks("[[1]] python:3.11\nWORKDIR /srv/api\nCOPY [[2]] .\nRUN pip install -r service-requirements.txt\n"
+                                                        "CMD [\"uvicorn\", \"service:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8080\"]",
+                                                        ["FROM", "service-requirements.txt"]))[1]
+    assert any("'service'" in e and "no COPY/ADD" in e for e in errors), errors
+
+
+@pytest.mark.parametrize("dockerfile", [
+    "FROM python:3.11\nWORKDIR /srv\nCOPY requirements.txt predict.py .\nCMD [\"python\", \"predict.py\"]",
+    "FROM python:3.9.1\nCOPY ./requirements.txt ./\nWORKDIR /app\nCOPY ingest_data.py ingest_data.py\nENTRYPOINT [ \"python\", \"ingest_data.py\" ]",
+    "FROM python:3.9\nCOPY . /app\nWORKDIR /app\nCMD [\"uvicorn\", \"app:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]",
+    "FROM python:3.12\nCOPY --chown=app requirements.txt src/ /code/\nCMD gunicorn src.main:app -b 0.0.0.0:80",
+    "FROM python:3.12\nCMD [\"python\", \"app.py\"]",  # nothing copied: a bind-mounted dev image
+])
+def test_a_working_dockerfile_passes(dockerfile):
+    assert check_one("code", {"language": "dockerfile", "code": dockerfile})[1] == []
+
+
+def test_a_blank_regex_must_work_in_the_app():
+    postman = {"title": "Postman", "task": "Test POST /predict on localhost:8000 with surface = 95 and etages = 2.", "language": "",
+               "template": "Méthode : [[1]]\nBody JSON : [[2]]", "blanks": [
+                   {"answers": ["POST"], "regex": "POST"},
+                   {"answers": ['{"surface": 95, "etages": 2}'], "regex": r'\{\s*"surface"\s*:\s*95\s*,\s*"etages"\s*:\s*2\s*\}'}]}
+    assert check_one("fill_blanks", postman)[1] == []
+    # Inkling 2 Mini (eval 2026-11-21): the escapes written twice match a backslash, so no typed body is ever accepted
+    twice = postman | {"blanks": [postman["blanks"][0], postman["blanks"][1] | {"regex": r'\\{\\s*"surface"\\s*:\\s*95\\s*,\\s*"etages"\\s*:\\s*2\\s*\\}'}]}
+    assert any("matches none of the accepted answers" in e for e in check_one("fill_blanks", twice)[1])
+    # and "(?i)POST" throws in the browser's RegExp, so the regex never matches there
+    flags = postman | {"blanks": [{"answers": ["POST"], "regex": "(?i)POST"}, postman["blanks"][1]]}
+    assert any("Python-only" in e for e in check_one("fill_blanks", flags)[1])
 
 
 def test_a_plot_only_uses_functions_the_browser_can_draw():
@@ -322,3 +448,34 @@ def test_a_correction_that_argues_with_itself_is_rejected():
 def test_a_code_gap_text_without_its_task_is_rejected():
     """From Advanced BD Block 1180: a `bool` query with five gaps and no task, so `gte` against `gt` was a guess."""
     assert "task" in check_one("fill_blanks", GOOD["fill_blanks"] | {"task": ""})[1][0]
+
+
+def test_dollars_in_a_code_span_are_not_math():
+    """A Makefile's $(VENV_DIR) in a fenced block is code: remark-math leaves it alone, so the check must too (Block 3597)."""
+    from course_factory.checks import math_in
+    text = "Le Makefile :\n\n```makefile\ninstall:\n\t. $(VENV_DIR)/bin/activate && pip install -r requirements.txt\n```\n\nEt `$HOME` puis $x^2$."
+    assert math_in({"text": text}) == [("x^2", False)]
+
+
+# The real Course 14 (SAPUI5) quiz Inkling wrote: the right option is the long, specific one in most questions.
+MANIFEST = [
+    {"prompt": "Le fichier manifest.json contient...", "correct": [2], "explanation": ".", "options": [
+        "les éléments graphiques (UI Controls)", "la partie logique et les event handler des controls UI5",
+        "la configuration de l'application : i18n file, les modèles, les routes, les datasource", "la page HTML qui lance l'application standalone"]},
+    {"prompt": "Quel fichier constitue le point d'entrée de l'application SAPUI5 ?", "correct": [1], "explanation": ".", "options": [
+        "manifest.json", "Component.js (extends sap.ui.core.Component)", "index.html", "App.view.xml (sap.m.App)"]},
+    {"prompt": "Que contient un fichier .controller.js ?", "correct": [2], "explanation": ".", "options": [
+        "les éléments graphiques (UI Controls)", "la configuration de l'application (i18n, modèles, routes, datasource)",
+        "la partie logique de l'application et les event handler des contrôles UI5", "la page HTML de lancement standalone"]}]
+
+
+def test_a_quiz_whose_right_option_is_clearly_the_longest_goes_to_repair():
+    from course_factory.failures import failure_class
+    errs = check_one("quiz", {"questions": MANIFEST})[1]
+    assert [failure_class(e) for e in errs] == ["quiz-cue"] and "questions 1, 2" in errs[0]
+    even = [q | {"options": [o if i == q["correct"][0] else o + " (" + "x" * 40 + ")" for i, o in enumerate(q["options"])]} for q in MANIFEST]
+    assert check_one("quiz", {"questions": even})[1] == []  # wrong options as long: no cue
+    one = MANIFEST[0] | {"options": ["UI", "la configuration de l'application : i18n, modèles, routes", "HTML", "JS"], "correct": [1]}
+    assert "question 1" in check_one("quiz", {"questions": [one]})[1][0]  # one right option twice as long gives that question away
+    names = {"prompt": "Laquelle est annexe ?", "correct": [2], "explanation": ".", "options": ["sap.ca", "sap.ui.table", "sap.ui.richtexteditor", "sap.me"]}
+    assert check_one("quiz", {"questions": [names] * 3})[1] == []  # bare names: their length is the name's

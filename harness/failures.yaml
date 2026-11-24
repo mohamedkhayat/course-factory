@@ -80,9 +80,9 @@ tool-arg:stringified-json:
 
 progression:
   handler: check
-  what: practice that tests a Concept taught later (the Concept ledger), an answer nothing taught or gave, or a drill previewing a later Section's command is flagged course-wide and repaired
-  hardened: 2026-11-10
-  test: tests/test_progression.py::test_practice_expecting_an_answer_nothing_taught_or_gave_is_flagged_and_an_edit_clears_it
+  what: practice that tests a Concept taught later (the Concept ledger), an answer nothing taught or gave, or a drill previewing a later Section's command is flagged course-wide and repaired; a hyphenated Concept name (docker-compose) is one word, so its parts' stems no longer match unrelated words (composant); a starter line kept as is in a code_exercise solution, or a name the fill_blanks template already writes, is not expected of the learner
+  hardened: "2026-11-14 20:52"
+  test: tests/test_progression.py::test_a_hyphenated_command_in_a_concept_name_is_one_word
 
 repeat:
   handler: check
@@ -104,9 +104,9 @@ plan:
 
 quiz-cue:
   handler: check
-  what: an "all/none of the above" option is an error; the right option being the longest in every question is a warning
-  hardened: 2026-11-10
-  test: tests/test_lesson_plan.py
+  what: '"all/none of the above" is an error; so is a right option clearly the longest (1.25x and 8+ chars) in most questions, twice as long in one, or longest in all 3+; bare names are left out; the repair loop rewrites the wrong options'
+  hardened: "2026-11-22 16:03"
+  test: tests/test_checks.py::test_a_quiz_whose_right_option_is_clearly_the_longest_goes_to_repair
 
 diagram-size:
   handler: check
@@ -137,3 +137,87 @@ outline-incomplete:
   what: propose_outline returned valid JSON for the first Chapter only (course 6, qwen 27B, 18 sources); an outline that cites no page of some course notes is rejected and the retry names the notes left out
   hardened: 2026-11-11
   test: tests/test_outline.py
+
+schema:claims.op:enum:
+  handler: heal
+  what: claim op aliases (eq, equals, ==, gradient, derivative...) map to equal/diff/grad/hessian; ops sympy can't decide drop the claim
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_claim_ops_the_model_aliases_are_not_schema_errors
+
+schema:claims.op:missing:
+  handler: heal
+  what: a claim without op gets one from its answer key (derivative, gradient, value...) or from "lhs == rhs" in expr, else equal
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_claims_in_the_shapes_the_model_writes_are_checked_not_flagged
+
+schema:claims.expected:missing:
+  handler: heal
+  what: the answer under derivative/gradient/value/result becomes expected; a claim with no answer at all is dropped
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_claims_in_the_shapes_the_model_writes_are_checked_not_flagged
+
+schema:claims.expected.list:type:
+  handler: heal
+  what: numbers and nested lists in expected are coerced to strings
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_claims_in_the_shapes_the_model_writes_are_checked_not_flagged
+
+schema:claims.expected.str:type:
+  handler: heal
+  what: numbers and nested lists in expected are coerced to strings
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_claims_in_the_shapes_the_model_writes_are_checked_not_flagged
+
+sympy-wrong:
+  handler: check
+  what: false alarms removed (x1/lam read as one symbol, diff without vars tries each variable, log identities expanded, a grad/hessian under equal checked as one); a claim names its point in "at" and is checked there; with no point, it is skipped only when some real point fits
+  test: tests/test_checks.py::test_a_claim_at_a_point_is_checked_there
+  hardened: "2026-11-14 16:26"
+
+sympy-unparsable:
+  handler: heal
+  what: a claim sympy cannot read checks nothing and is skipped instead of flagging the Block
+  hardened: "2026-11-09 15:19"
+  test: tests/test_checks.py::test_a_claim_sympy_cannot_parse_does_not_flag_the_block
+
+bad-json:
+  handler: heal
+  what: a cf_return_result call Qwen writes as text (<tool_call><function=cf_return_result><parameter=...>) is read as the call, each argument as its schema type; empty or prose answers still fail and retry
+  hardened: "2026-11-14 16:26"
+  test: tests/test_pi_step.py::test_a_result_tool_call_written_as_text_is_read_as_the_call
+
+lab-check:
+  handler: heal
+  what: a backslash-n left in Lab code where a line ends (escape_latex read "\\nu, v = ..." as LaTeX) becomes a newline; slow Solutions (120 s), missing modules and wrong asserts still go to repair
+  hardened: "2026-11-14 16:27"
+  test: tests/test_labs.py::test_a_newline_kept_as_latex_nu_in_code_is_a_newline
+
+katex-parse:
+  handler: check
+  what: "math is read outside code spans only, as remark-math renders it: a Makefile's $(VENV_DIR) in a code block is not a KaTeX error"
+  hardened: "2026-11-14 20:44"
+  test: tests/test_checks.py::test_dollars_in_a_code_span_are_not_math
+
+listen-formula:
+  handler: check
+  what: a formula Listen cannot turn into words (a backslash, dollar, underscore, caret or brace left after maths-to-speech) is never sent to a Voice; Listen says "the formula on screen" and the Block goes to the Review Queue
+  hardened: "2026-11-15 12:00"
+  test: tests/test_listen.py::test_formulas_never_reach_a_voice_with_a_symbol_in_them
+
+video-render:
+  handler: check
+  what: a Video that could not be rendered (Manim failed or timed out) goes to the Review Queue with its log; the Block shows its narration as text meanwhile
+  hardened: "2026-11-15 12:00"
+  test: tests/test_video.py::test_a_failed_render_goes_to_the_review_queue_with_its_log
+
+dockerfile-runtime:
+  handler: check
+  what: a Dockerfile that parses but fails at docker build (several COPY sources into a path without a trailing /) or at start (CMD/ENTRYPOINT runs a file no COPY/ADD brings in); seen from Qwen 3.8 and Inkling 2 Mini
+  hardened: "2026-11-22 12:00"
+  test: tests/test_checks.py::test_a_dockerfile_that_would_fail_to_build_or_start_is_flagged
+
+blank-regex:
+  handler: check
+  what: a fill-in-the-blank regex that matches none of its own answers (escapes written twice) or uses Python-only syntax like (?i) that the browser's RegExp rejects
+  hardened: "2026-11-22 12:00"
+  test: tests/test_checks.py::test_a_blank_regex_must_work_in_the_app

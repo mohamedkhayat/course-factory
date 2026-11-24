@@ -10,6 +10,8 @@ import { useCid } from "./run";
 
 type Card = { id: number; front: string; back: string; due: string; next_interval_seconds: Record<string, number> };
 const RATINGS = ["À revoir", "Difficile", "Bien", "Facile"];
+// The API keeps the French values; the buttons speak the app's English.
+const LABEL: Record<string, string> = { "À revoir": "Again", Difficile: "Hard", Bien: "Good", Facile: "Easy" };
 const span = (s: number) => (s < 3600 ? `${Math.max(1, Math.round(s / 60))} min` : s < 86400 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} j`);
 
 type Mistake = { block_id: number; question: number; prompt: string; options: string[]; chosen: number[]; correct: number[]; explanation: string };
@@ -70,7 +72,7 @@ export function Cards() {
                 {RATINGS.map((r) => (
                   <Button key={r} variant={r === "À revoir" ? "outline" : "secondary"} className="h-auto flex-col py-2" disabled={rate.isPending}
                           onClick={() => rate.mutate({ id: card.id, rating: r })}>
-                    <span>{r}</span><span className="tabular text-xs text-muted-foreground">{span(card.next_interval_seconds[r])}</span>
+                    <span>{LABEL[r]}</span><span className="tabular text-xs text-muted-foreground">{span(card.next_interval_seconds[r])}</span>
                   </Button>
                 ))}
               </div>

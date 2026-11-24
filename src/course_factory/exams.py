@@ -125,20 +125,39 @@ def write_mock_exam(ctx: Ctx, cid: int) -> int:
 DIGEST_CHARS = 5000  # per Chapter: keeps a 7-Chapter course's digest near 35k characters
 
 
+FENCED = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+COMMAND_HEADER = re.compile(r"command|code|instruction|syntax|fonction|function|décorateur", re.I)
+
+
+def shown_code(component: str, data: dict) -> str:
+    """The commands and code a Block shows: a terminal's commands, a listing, a code exercise's solution, a commands table's
+    rows, the fenced code of a worked example."""
+    if component == "terminal":
+        return "\n".join(e.get("command", "") for e in data.get("entries", []))
+    if component == "code":
+        return data.get("code", "")
+    if component == "code_exercise":
+        return data.get("solution", "")
+    if component == "table":
+        return "\n".join(" | ".join(map(str, r)) for r in data.get("rows", [])) if COMMAND_HEADER.search(str(data.get("headers", [""])[0])) else ""
+    if component == "worked_example":
+        return "\n".join(m for x in [data.get("problem", ""), *data.get("steps", []), data.get("answer", "")] for m in FENCED.findall(str(x)))
+    return ""
+
+
 def course_digest(ctx: Ctx, cid: int) -> list[dict]:
     """Per Chapter: the Concepts its Sections teach and the commands and code its Blocks show, so a Mock exam asks what was
     taught. Empty before the Chapters are written (the Run writes Mock exams after them)."""
     db = ctx.db
     out = []
     for ch in db.execute("SELECT id, title FROM chapters WHERE course_id=? AND priority!='skip' ORDER BY position", (cid,)).fetchall():
-        concepts = [c for r in db.execute("SELECT teaches FROM sections WHERE chapter_id=? ORDER BY position", (ch["id"],))
-                    for c in json.loads(r["teaches"])]
+        sections = db.execute("SELECT title, teaches FROM sections WHERE chapter_id=? ORDER BY position", (ch["id"],)).fetchall()
+        concepts = [c for r in sections for c in json.loads(r["teaches"])] or [r["title"] for r in sections]  # no Concepts named: titles
         shown, size = [], 0
         for b in db.execute("SELECT b.component, b.data FROM blocks b JOIN sections s ON s.id=b.section_id WHERE s.chapter_id=? "
-                            "AND b.component IN ('terminal', 'code') ORDER BY s.position, b.position", (ch["id"],)):
-            data = json.loads(b["data"])
-            text = "\n".join(e.get("command", "") for e in data.get("entries", [])) if b["component"] == "terminal" else data.get("code", "")
-            text = text.strip()[:800]
+                            "AND b.component IN ('terminal', 'code', 'code_exercise', 'table', 'worked_example') "
+                            "ORDER BY s.position, b.position", (ch["id"],)):
+            text = shown_code(b["component"], json.loads(b["data"])).strip()[:800]
             if text and text not in shown and size + len(text) <= DIGEST_CHARS:
                 shown.append(text)
                 size += len(text)
@@ -189,6 +208,7 @@ def copy_json(ctx: Ctx, row) -> dict:
     out = {"id": row["id"], "exam_id": row["exam_id"], "started_at": row["started_at"], "deadline": row["deadline"],
            "remaining_seconds": max(0, int((deadline - now()).total_seconds())) if not row["handed_in_at"] else 0,
            "answers": json.loads(row["answers"]), "handed_in_at": row["handed_in_at"],
+           "files": [{"index": i, "kind": f["kind"], "question_id": f["question_id"]} for i, f in enumerate(json.loads(row["files"]))],
            "grade": json.loads(row["grade"]) if row["grade"] else None}
     if row["handed_in_at"]:  # the correction is shown only after hand-in
         out["correction"] = load_exam(ctx, row["exam_id"], with_answers=True)

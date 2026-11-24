@@ -8,7 +8,7 @@ import nbformat
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .chapters import language_rule, page_texts
 from .context import Ctx
@@ -39,6 +39,29 @@ class StepPlan(BaseModel):
     check: str  # Python asserts run after the learner's code; never Check plots
     hints: list[str] = []
     wrong: list[str] = Field(min_length=1)  # plausible wrong versions the Check must reject
+
+    @field_validator("starter", "solution", "check", "wrong")
+    @classmethod
+    def newlines(cls, v):
+        return [heal_newlines(c) for c in v] if isinstance(v, list) else heal_newlines(v)
+
+
+def heal_newlines(code: str) -> str:
+    """escape_latex keeps "\\nu, v = ..." as LaTeX \\nu: a backslash-n where a line ends is a SyntaxError; make it a newline."""
+    for _ in range(50):
+        try:
+            compile(code, "<lab>", "exec")
+            return code
+        except SyntaxError as e:
+            lines = code.split("\n")
+            if e.msg != "unexpected character after line continuation character" or not e.lineno or not e.offset:
+                return code
+            line, at = lines[e.lineno - 1], e.offset - 2
+            if line[at:at + 2] != "\\n":
+                return code
+            lines[e.lineno - 1] = line[:at] + "\n" + line[at + 2:]
+            code = "\n".join(lines)
+    return code
 
 
 class LabPlan(BaseModel):

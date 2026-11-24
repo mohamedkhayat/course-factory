@@ -8,7 +8,9 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "av>=16,<17",
     "fastapi>=0.162.2",
+    "faster-whisper>=1.2.1",
     "fsrs>=6.3.2",
     "jsonschema>=4.26.0",
     "jupyter-client>=8.10.0",
@@ -24,6 +26,7 @@ dependencies = [
     "sqlite-vec>=0.1.9",
     "sympy>=1.14.0",
     "torch>=2.15.0",
+    "torchvision>=0.29.2",
     "uvicorn>=0.54.0",
 ]
 
@@ -43,12 +46,13 @@ dev = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = { index = "pytorch-cu132" }  # CUDA build: search runs on the GPU when the model is Basalt
+torchvision = { index = "pytorch-cu132" }  # SAM 3 (scan.py) needs it, built against the same torch
 
 [tool.pytest.ini_options]
 markers = ["slow: needs Docker and the Lab image (run with -m slow)"]

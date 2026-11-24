@@ -43,6 +43,7 @@ def test_citation_opens_the_source_page(client, material, model, data_dir):
     r = client.get(f"/api/courses/{cid}/sources/cours.pdf/pages/1")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content[:4] == b"\x89PNG"
     assert client.get(f"/api/courses/{cid}/sources/cours.pdf/pages/9").status_code == 404
+    assert client.get(f"/api/courses/{cid}/sources/COURS.pdf/pages/1").status_code == 200  # a name the model wrote with another case
     with sqlite3.connect(data_dir / "course-factory.db") as db:  # a Source in a subfolder
         db.execute("UPDATE sources SET name='chap1/cours.pdf' WHERE course_id=? AND name='cours.pdf'", (cid,))
     r = client.get(f"/api/courses/{cid}/sources/chap1%2Fcours.pdf/pages/1")
@@ -290,6 +291,24 @@ def test_an_explain_back_is_graded_on_its_rubric_or_self_marked_and_a_miss_comes
     assert due and "Pourquoi" in due[0]["front"]
 
 
+def test_notebook_and_block_ink(client, material, model):
+    cid, sections = published(client, material, model)
+    sid, bid = sections[0]["id"], sections[0]["blocks"][0]["id"]
+    nb = f"/api/courses/{cid}/sections/{sid}/notebook"
+    assert client.get(nb).json()["scene"] is None
+    scene = {"elements": [{"id": "a", "type": "freedraw", "points": [[0, 0], [3, 4]], "pressures": [0.4, 0.6]}], "appState": {}, "files": {}}
+    assert client.put(nb, json={"scene": scene}).status_code == 200
+    assert client.get(nb).json()["scene"] == scene
+    client.put(nb, json={"scene": {"elements": [{"id": "a", "isDeleted": True}]}})  # everything erased: nothing kept
+    assert client.get(nb).json()["scene"] is None
+    stroke = {"points": [[0.1, 0.2, 0.5], [0.3, 0.2, 0.7]], "color": "#c00", "size": 3}
+    assert client.put(f"/api/courses/{cid}/blocks/{bid}/ink", json={"strokes": [stroke]}).json()["strokes"] == 1
+    assert client.get(f"/api/courses/{cid}/sections/{sid}/ink").json() == {str(bid): [stroke]}
+    client.put(f"/api/courses/{cid}/blocks/{bid}/ink", json={"strokes": []})
+    assert client.get(f"/api/courses/{cid}/sections/{sid}/ink").json() == {}
+    assert client.put(f"/api/courses/{cid}/blocks/999999/ink", json={"strokes": []}).status_code == 404
+
+
 def test_notes_confidence_and_progress(client, material, model, clock):
     cid, sections = published(client, material, model)
     first, second = sections[0], sections[1]
@@ -351,6 +370,22 @@ def test_practice_follows_the_learners_results(client, material, model, clock):
     assert client.post(f"/api/courses/{cid}/blocks/{quiz['id']}/outcome", json={"score": 1}).status_code == 422  # a quiz has no gaps
 
 
+QUIZ = {"component": "quiz", "origin": "model_added", "data": {"questions": [
+    {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}
+
+
+def test_a_single_choice_exam_course_practises_only_single_choice_quizzes(client, material, model, clock):
+    cid = generate(client, material, model, blocks=[CODE_EXERCISE, HAND, QUIZ])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    section = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]
+    client.put(f"/api/courses/{cid}/place", json={"section_id": section["id"]})
+    kinds = lambda: {i["block"]["component"] for i in client.get(f"/api/courses/{cid}/practice").json()["items"]}
+    assert kinds() == {"code_exercise", "exercise", "quiz"}
+    assert client.put(f"/api/courses/{cid}/qcu-practice", json={"on": True}).json()["qcu_practice"] == 1
+    assert kinds() == {"quiz"}
+
+
 def test_a_published_chapter_is_rewritten_and_stays_published_with_its_block_ids(client, material, model):
     cid, sections = published(client, material, model)
     first = client.get(f"/api/courses/{cid}/chapters/{next(iter(chapters(client, cid).values()))['id']}").json()
@@ -359,5 +394,21 @@ def test_a_published_chapter_is_rewritten_and_stays_published_with_its_block_ids
     assert client.post(f"/api/courses/{cid}/chapters/{first['id']}/regenerate").status_code == 202
     assert client.get(f"/api/courses/{cid}/job").json()["state"] == "done"
     assert sum(step == "write_section" for step, _ in model.prompts) == len(first["sections"])
+    assert sum(step == "plan_chapter" for step, _ in model.prompts) == 1  # planned again: a prompt change reaches the plan too
     again = client.get(f"/api/courses/{cid}/chapters/{first['id']}").json()
     assert chapters(client, cid)[first["title"]]["status"] == "published" and [b["id"] for s in again["sections"] for b in s["blocks"]] == before
+
+
+def test_handwriting_is_read_as_latex_and_working_is_checked_line_by_line(client, material, model):
+    import base64
+    from test_grading import png
+    cid = generate(client, material, model, blocks=[HAND, CODE_EXERCISE])
+    for c in chapters(client, cid).values():
+        client.post(f"/api/courses/{cid}/chapters/{c['id']}/publish")
+    hand, code = client.get(f"/api/courses/{cid}/reader").json()[0]["sections"][0]["blocks"]
+    image = "data:image/png;base64," + base64.b64encode(png()).decode()
+    assert client.post(f"/api/courses/{cid}/ink/latex", json={"image": image}).json() == {"text": "$x^2$ écrit (1 image)"}
+    assert client.post(f"/api/courses/{cid}/ink/latex", json={"image": "data:text/plain;base64,aGk="}).status_code == 422
+    lines = client.post(f"/api/courses/{cid}/blocks/{hand['id']}/check-working", json={"image": image}).json()["lines"]
+    assert [l["ok"] for l in lines] == [True, False] and lines[1]["hint"]
+    assert client.post(f"/api/courses/{cid}/blocks/{code['id']}/check-working", json={"image": image}).status_code == 422

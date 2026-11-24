@@ -111,10 +111,10 @@ export function ProgressPage() {
 
       <section aria-labelledby="concepts-h">
         <h2 id="concepts-h" className="mb-1 font-display text-lg font-semibold">Concepts, weakest first</h2>
-        <p className="mb-3 text-sm text-muted-foreground">From your latest result on every quiz, exercise and gap text that tests the Concept.
+        <p className="mb-3 text-sm text-muted-foreground">From your latest result on every quiz, exercise and gap text that tests the Concept, and your latest answer in the Course chat.
           {untested > 0 && ` ${untested} more ${untested > 1 ? "have" : "has"} practice you have not tried.`}</p>
         {tested.length ? (
-          <ul className="grid gap-x-8 gap-y-1 sm:grid-cols-2">
+          <ul className="grid grid-cols-1 gap-x-8 gap-y-1 sm:grid-cols-2">
             {tested.map((c) => (
               <li key={`${c.section_id}-${c.name}`}>
                 <ToSection cid={cid} section={c.section_id} className="flex items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-accent">
@@ -125,6 +125,8 @@ export function ProgressPage() {
                           style={{ width: `${Math.max(8, c.mastery! * 100)}%` }} /></span>
                   <span className="tabular w-20 shrink-0 text-right text-xs text-muted-foreground">
                     {c.mastery! >= 0.8 ? "solid" : c.mastery! >= 0.5 ? "shaky" : "weak"} · {c.tried}/{c.blocks}</span>
+                  {c.chat !== null && <span className="tabular w-16 shrink-0 text-right text-xs text-muted-foreground" title="Your latest answer in the Course chat">
+                    chat {Math.round(c.chat * 100)}%</span>}
                 </ToSection>
               </li>
             ))}

@@ -4,11 +4,15 @@ import "@fontsource/ibm-plex-sans/500.css";
 import "@fontsource/ibm-plex-sans/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "./index.css";
+import "katex/contrib/copy-tex";  // copying rendered maths gives its LaTeX ($…$), not doubled text: the learner pastes passages into the tutor
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
+
+// installable as an app over HTTPS (tailscale serve); plain http over a Tailscale IP is not a secure context, so it stays a tab
+if ("serviceWorker" in navigator && isSecureContext && !import.meta.env.DEV) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 

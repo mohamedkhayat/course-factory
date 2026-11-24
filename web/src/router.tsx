@@ -1,8 +1,9 @@
-import { createRootRoute, createRoute, createRouter, Link, Outlet, useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { createRootRoute, createRoute, createRouter, Link, Outlet, useParams, useRouterState } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Moon, Sun } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { get, type Course } from "@/lib/api";
+import { MediaQueue } from "@/components/media-queue";
 import { Home, Pair, Settings } from "./routes/home";
 import { Run } from "./routes/run";
 import { Reader } from "./routes/reader";
@@ -13,6 +14,7 @@ import { Exams, ExamMode } from "./routes/exams";
 import { Cards, Focus } from "./routes/practice";
 import { Labs, LabView } from "./routes/labs";
 import { ComponentsPage } from "./routes/components";
+import { Chat } from "./routes/chat";
 import { CheatSheetPage, CramPage, Mixed } from "./routes/cram";
 
 function ThemeToggle() {
@@ -31,20 +33,39 @@ function ThemeToggle() {
   );
 }
 
-const NAV = [["read", "Read"], ["practice", "Practice"], ["exams", "Exams"], ["cards", "Cards"], ["sheet", "Cheat Sheet"], ["labs", "Labs"], ["focus", "Focus"], ["progress", "Progress"], ["review", "Review"]] as const;
+const NAV = [["read", "Read"], ["practice", "Practice"], ["chat", "Chat"], ["exams", "Exams"], ["cards", "Cards"], ["sheet", "Cheat Sheet"], ["labs", "Labs"], ["focus", "Focus"], ["progress", "Progress"]] as const;  // Review and Components are under Settings
+
+// the views that render Block content; not practice-round and the like, which a refetch would reroll
+const BLOCK_VIEWS = new Set(["reader", "review", "cram", "sheet"]);
+
+function useCourseEvents(cid?: string) {
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (!cid) return;
+    // another device changed a Block: refetch; open drafts are local state, so they survive
+    const es = new EventSource(`/api/courses/${cid}/events`);
+    es.onmessage = () => qc.invalidateQueries({ predicate: (q) => BLOCK_VIEWS.has(String(q.queryKey[0])) && String(q.queryKey[1]) === cid });
+    return () => es.close();
+  }, [cid, qc]);
+}
 
 function CourseNav() {
   const { cid } = useParams({ strict: false }) as { cid?: string };
+  useCourseEvents(cid);
   const { data: course } = useQuery({ queryKey: ["course", cid], enabled: !!cid, queryFn: () => get<Course>(`/api/courses/${cid}`) });
+  const { data: labs } = useQuery({ queryKey: ["labs", Number(cid)], enabled: !!cid, queryFn: () => get<unknown[]>(`/api/courses/${cid}/labs`) });
+  const nav = useRef<HTMLElement>(null);
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  useEffect(() => { nav.current?.querySelector("[data-status=active]")?.scrollIntoView({ inline: "nearest", block: "nearest" }); }, [path]);  // the current view stays in sight when the row scrolls
   if (!cid) return null;
   return (
     <>
       <span className="text-border">/</span>
-      <Link to="/c/$cid" params={{ cid }} className="max-w-[10rem] shrink-0 truncate font-medium">{course?.name ?? "…"}</Link>
-      <nav className="ml-2 flex min-w-0 gap-1 overflow-x-auto sm:ml-4">
-        {(course?.goal === "cram" ? [["cram", "Cram"] as const, ...NAV] : NAV).map(([to, label]) => (
+      <Link to="/c/$cid" params={{ cid }} className="min-w-0 max-w-[10rem] truncate font-medium max-lg:max-w-none max-lg:flex-1">{course?.name ?? "…"}</Link>
+      <nav id="course-nav" ref={nav} className="flex min-w-0 gap-1 overflow-x-auto max-lg:absolute max-lg:inset-x-0 max-lg:top-12 max-lg:h-11 max-lg:items-center max-lg:border-t max-lg:border-border max-lg:pl-3 max-lg:pr-10 max-lg:[mask-image:linear-gradient(to_right,black_calc(100%-2.5rem),transparent)] lg:ml-4">
+        {(course?.goal === "cram" ? [["cram", "Cram"] as const, ...NAV] : NAV).filter(([to]) => to !== "labs" || labs?.length).map(([to, label]) => (
           <Link key={to} to={`/c/$cid/${to}`} params={{ cid }}
-                className="shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
+                className="shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-sm max-lg:py-3 text-muted-foreground hover:text-foreground"
                 activeProps={{ className: "bg-accent !text-foreground" }}>{label}</Link>
         ))}
       </nav>
@@ -55,21 +76,21 @@ function CourseNav() {
 function Shell() {
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-30 flex h-12 print:hidden items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur">
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-primary focus:px-3 focus:py-2 focus:text-sm focus:text-primary-foreground">Skip to content</a>
+      <header className="sticky top-0 z-30 flex h-(--hh) print:hidden items-center gap-2 border-b border-border bg-background/95 px-4 backdrop-blur max-lg:items-start max-lg:pt-2.5">
         <Link to="/" className="flex items-center gap-2 font-display text-[0.95rem] font-semibold tracking-tight">
           <svg viewBox="0 0 24 24" className="size-5 text-primary" aria-hidden><rect x="3" y="4" width="13" height="16" rx="1.5" fill="currentColor" opacity=".35" /><rect x="7" y="2" width="13" height="16" rx="1.5" fill="currentColor" /><path d="M10 7h7M10 10.5h7M10 14h4" stroke="var(--background)" strokeWidth="1.4" strokeLinecap="round" /></svg>
           <span className="hidden sm:inline">course-factory</span>
         </Link>
         <CourseNav />
         <span className="ml-auto flex shrink-0 items-center gap-1">
-          <Link to="/components" className="hidden rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground md:block"
-                activeProps={{ className: "!text-foreground" }}>Components</Link>
+          <MediaQueue />
           <Link to="/settings" className="rounded-md px-2.5 py-1 text-sm text-muted-foreground hover:text-foreground"
                 activeProps={{ className: "!text-foreground" }}>Settings</Link>
           <ThemeToggle />
         </span>
       </header>
-      <main className="flex-1"><Outlet /></main>
+      <main id="main" tabIndex={-1} className="flex-1 outline-none"><Outlet /></main>
     </div>
   );
 }
@@ -81,7 +102,7 @@ export const router = createRouter({
   routeTree: root.addChildren([
     r("/", Home), r("/pair", Pair), r("/settings", Settings), r("/components", ComponentsPage),
     r("/c/$cid", Run), r("/c/$cid/read", Reader), r("/c/$cid/review", Review), r("/c/$cid/progress", ProgressPage), r("/c/$cid/practice", PracticePage),
-    r("/c/$cid/exams", Exams), r("/c/$cid/exams/$eid", ExamMode),
+    r("/c/$cid/chat", Chat), r("/c/$cid/exams", Exams), r("/c/$cid/exams/$eid", ExamMode),
     r("/c/$cid/cards", Cards), r("/c/$cid/focus", Focus),
     r("/c/$cid/labs", Labs), r("/c/$cid/labs/$lid", LabView),
     r("/c/$cid/cram", CramPage), r("/c/$cid/sheet", CheatSheetPage), r("/c/$cid/mixed", Mixed),

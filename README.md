@@ -92,6 +92,24 @@ The app serves on `127.0.0.1:8765` and keeps its data in `~/.local/share/course-
 
 Per-step models can also be set in Settings. The model server's API key is read from the environment and is never stored in the repository.
 
+### On a tablet
+
+The app installs as a home-screen app (a PWA) once it is served over HTTPS. Tailscale gives it HTTPS with its own certificate:
+
+```bash
+tailscale serve --bg --https=8443 8765
+```
+
+(`--https=8443` leaves the root URL free for other apps; drop it if nothing else is served.) Open `https://<this-pc>.<tailnet>.ts.net:8443` in Chrome on the tablet, then choose Install app (or Add to Home screen) from the menu. It opens full screen. The app works without `CF_HOST` this way, because `tailscale serve` proxies to `127.0.0.1`. A plain `http://100.x.y.z:8765` link still works in a browser tab, but browsers won't install it.
+
+The pen works in these places:
+- **Notes beside the course**: the pen button in the reader opens a notebook for each Section. The tutor sees it when you ask.
+- **Ink on Blocks**: write over the text. Your finger still scrolls.
+- **Handwritten answers** for Exercises and Mock exams. On an Exercise, **Check as I write** marks each line ✓ or ✗ with a hint (never the answer) a few seconds after the pen stops.
+- **Handwritten questions** to the tutor, attached as a page or, with **Type it up**, read into editable Markdown and LaTeX.
+- **Circle to ask**: the lasso in the pen toolbar sends what you went round (words, formulas as LaTeX, or a figure) to the tutor. On a cited page, drag a box over a part to ask about it.
+- **Blank-page recall**: hide the Section, write what you remember, and the tutor compares it with the Section.
+
 ### Tests
 
 ```bash

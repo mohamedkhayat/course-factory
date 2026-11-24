@@ -62,6 +62,33 @@ def test_assistant_text_reads_pi_json_events():
     assert assistant_text("\n".join(map(json.dumps, events))) == '{"ok": true}'
 
 
+@pytest.mark.parametrize("call", [  # read_page Traces 3314, 3384, 4720: the call written as text, not made
+    "<tool_call>\n<cf_return_result>\n<parameter=text>\n# Exemple\n\n$K=1$ [figure: courbes]\n</parameter>\n"
+    "<parameter=readable>\ntrue\n</parameter>\n</function>\n</tool_call>",
+    "<tool_call>\n<function=cf_return_result>\n<parameter=text>\n# Exemple\n\n$K=1$ [figure: courbes]\n</parameter>\n"
+    "<parameter=readable>\nTrue\n</parameter>\n=\n</parameter>\n</function>\n</tool_call>",
+])
+def test_a_result_tool_call_written_as_text_is_read_as_the_call(call):
+    events = [{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": call}]}}]
+    schema = {"properties": {"text": {"type": "string"}, "readable": {"type": "boolean"}}}  # read_page's Reading
+    assert json.loads(assistant_text(json.dumps(events[0]), schema)) == {"text": "# Exemple\n\n$K=1$ [figure: courbes]", "readable": True}
+
+
+def test_a_text_call_reads_each_argument_as_its_schema_type():
+    """A page whose text looks like JSON stays text; only fields the schema types otherwise are parsed."""
+    call = ("<tool_call>\n<function=cf_return_result>\n<parameter=text>\n[1, 2]\n</parameter>\n"
+            "<parameter=readable>\ntrue\n</parameter>\n<parameter=tags>\n[\"a\"]\n</parameter>\n</function>\n</tool_call>")
+    schema = {"properties": {"text": {"type": "string"}, "readable": {"type": "boolean"}, "tags": {"type": "array"}}}
+    event = {"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": call}]}}
+    assert json.loads(assistant_text(json.dumps(event), schema)) == {"text": "[1, 2]", "readable": True, "tags": ["a"]}
+
+
+def test_a_text_call_to_another_tool_is_left_as_text():
+    text = "<tool_call>\n<function=bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>"
+    event = {"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+    assert assistant_text(json.dumps(event)) == text
+
+
 def test_an_array_sent_as_a_json_string_is_parsed_before_validation(tmp_path):
     """Qwen sends "blocks": "[...]"; the extension parses it and the prepared arguments are what the step reads."""
     import shutil

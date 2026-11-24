@@ -110,3 +110,12 @@ def test_lab_tutor_sees_code_output_and_plots_but_not_the_answer(lab, client, mo
     assert "def f(x):\n    pass" in prompt and "TypeError: unsupported operand" in prompt and "\x1b" not in prompt
     assert "return x**2" not in prompt and "f(3) == 9" not in prompt  # no Solution, no Check
     assert client.post(f"/api/courses/{cid}/tutor", json={"question": "?", "lab_step_id": 999}).status_code == 404
+
+
+def test_a_newline_kept_as_latex_nu_in_code_is_a_newline():
+    """Trace 5218: escape_latex read "\\nu, v = np.meshgrid" as LaTeX \\nu, so the code held a backslash-n: a SyntaxError."""
+    from course_factory.labs import StepPlan
+    solution = 'ty = np.linspace(-6, 6, n)\\nu, v = np.meshgrid(tx, ty)\nprint("a\\nb")'
+    step = StepPlan(statement="s", solution=solution, check="assert F", wrong=['x = 1\\nu = 2'])
+    assert step.solution == 'ty = np.linspace(-6, 6, n)\nu, v = np.meshgrid(tx, ty)\nprint("a\\nb")'  # the string's \n stays
+    assert step.wrong == ["x = 1\nu = 2"]

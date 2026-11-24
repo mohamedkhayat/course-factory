@@ -373,15 +373,18 @@ def report(kind: str, delta: str | bool) -> None:
 
 
 def stream_pi_step(db: sqlite3.Connection, backend: Backend, step: str, inputs: dict, workdir: Path,
-                   files: tuple[Path, ...] = (), course_id: int | None = None, stop: threading.Event | None = None) -> Iterator[str]:
-    """Live work with a free-text answer: yields text chunks as they arrive, then writes one Trace. Setting `stop` kills the model."""
+                   files: tuple[Path, ...] = (), course_id: int | None = None, stop: threading.Event | None = None,
+                   sandbox: str | None = None, on_tool: Callable[[dict], None] | None = None) -> Iterator[str]:
+    """Live work with a free-text answer: yields text chunks as they arrive, then writes one Trace. Setting `stop` kills the model.
+    `sandbox`: a running container the model may run shell commands in (course_shell); each call goes to `on_tool` first."""
     version, prompt, chunks, start = harness_version(), render_prompt(step, inputs), [], time.monotonic()
     stream = getattr(backend, "stream", None)
     try:
         for _ in range(QUEUE_RETRIES):
             try:
                 with GATE.lane(live=True):
-                    for chunk in (stream(step, prompt, list(files), workdir, stop=stop) if stream else [backend(step, prompt, list(files), workdir)]):
+                    tools = {"sandbox": sandbox, "on_tool": on_tool} if sandbox else {}
+                    for chunk in (stream(step, prompt, list(files), workdir, stop=stop, **tools) if stream else [backend(step, prompt, list(files), workdir)]):
                         chunks.append(chunk)
                         yield chunk
                 break
@@ -429,12 +432,12 @@ class PiBackend:
     def __init__(self, timeout: int = 900):
         self.timeout = timeout
 
-    def _cmd(self, model, files, extension: Path | None = None):
+    def _cmd(self, model, files, extension: Path | None = None, tool: str = "cf_return_result"):
         cmd = ["pi", "-p", "--mode", "json", "--no-session", "--no-skills", "--no-context-files",
                "--model", model]
         if extension:
             cmd += ["--no-extensions", "--no-builtin-tools", "--no-mcp", "--extension", str(extension),
-                    "--tools", "cf_return_result"]
+                    "--tools", tool]
         else:
             cmd += ["--no-extensions", "--no-tools"]
         return [*cmd, "--", *[f"@{f}" for f in files]]
@@ -453,7 +456,7 @@ class PiBackend:
             lines.append(line)
             if event.get("type") in ("thinking_delta", "text_delta", "toolcall_delta"):  # structured output arrives as a tool call
                 report("thinking" if event["type"] == "thinking_delta" else "output", event.get("delta", ""))
-        return assistant_text("".join(lines))
+        return assistant_text("".join(lines), schema)
 
     def models(self) -> list[dict]:
         """The models pi's configured providers offer, as "provider/model" ids, and whether each takes a thinking level."""
@@ -463,21 +466,31 @@ class PiBackend:
         return [{"id": f"{r[0]}/{r[1]}", "thinking": r[head.index("thinking")] == "yes"}
                 for r in rows[rows.index(head) + 1:] if len(r) == len(head)]
 
-    def stream(self, step, prompt, files, workdir, stop: threading.Event | None = None) -> Iterator[str]:
-        for _, d in self._events(step, prompt, files, workdir, stop=stop):
+    def stream(self, step, prompt, files, workdir, stop: threading.Event | None = None, sandbox: str | None = None,
+               on_tool: Callable[[dict], None] | None = None) -> Iterator[str]:
+        for _, d in self._events(step, prompt, files, workdir, stop=stop, sandbox=sandbox):
             if d.get("type") == "text_delta":
                 yield d.get("delta", "")
+            elif d.get("type") == "tool_execution_start":
+                if on_tool:
+                    on_tool(d.get("args") or {})
+                yield ""  # hands control back so the caller can show the call while it runs
 
     def _events(self, step, prompt, files, workdir, output_schema: dict | None = None,
-                stop: threading.Event | None = None) -> Iterator[tuple[str, dict]]:
-        """pi's JSON event lines, each with its assistant message event ({} for other events). Killed after the timeout."""
+                stop: threading.Event | None = None, sandbox: str | None = None) -> Iterator[tuple[str, dict]]:
+        """pi's JSON event lines, each with its assistant message event (a tool_execution_start event as it is; {} for other
+        events). Killed after the timeout."""
         workdir.mkdir(parents=True, exist_ok=True)
         model = current_model() or model_for(step)  # live streams (tutor) don't go through run_pi_step
-        temp = tempfile.TemporaryDirectory(prefix="course-factory-pi-") if output_schema else None
+        temp = tempfile.TemporaryDirectory(prefix="course-factory-pi-") if output_schema or sandbox else None
         try:
             env = os.environ.copy()
-            extension = None
-            if output_schema and temp:
+            extension, tool = None, "cf_return_result"
+            if sandbox and temp:
+                extension, tool = Path(temp.name) / "course-shell.mjs", "course_shell"
+                extension.write_text(SHELL_EXTENSION)
+                env["CF_SANDBOX"] = sandbox
+            elif output_schema and temp:
                 root = Path(temp.name)
                 schema_path = root / "schema.json"
                 schema_path.write_text(json.dumps(output_schema, ensure_ascii=False))
@@ -488,7 +501,7 @@ class PiBackend:
             stdin = tempfile.TemporaryFile("w+")  # on stdin, not argv: Linux caps one argument at 128 KB
             stdin.write(prompt)
             stdin.seek(0)
-            with stdin, subprocess.Popen(self._cmd(model, files, extension), cwd=workdir, stdin=stdin,
+            with stdin, subprocess.Popen(self._cmd(model, files, extension, tool), cwd=workdir, stdin=stdin,
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) as proc:
                 timer = threading.Timer(min(self.timeout, STEP_TIMEOUT.get(step, self.timeout)), proc.kill)
                 timer.start()
@@ -504,7 +517,8 @@ class PiBackend:
                             ev = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        yield line, (ev.get("assistantMessageEvent") or {}) if ev.get("type") == "message_update" else {}
+                        yield line, ((ev.get("assistantMessageEvent") or {}) if ev.get("type") == "message_update"
+                                     else ev if ev.get("type") == "tool_execution_start" else {})
                     code = proc.wait()
                 finally:
                     if proc.poll() is None:  # the reader went away: don't let it run on
@@ -521,7 +535,37 @@ class PiBackend:
                 temp.cleanup()
 
 
-def assistant_text(jsonl: str) -> str:
+TEXT_CALL = re.compile(r"<tool_call>\s*<(?:function=)?cf_return_result>")
+TEXT_PARAM = re.compile(r"<parameter=(\w+)>\n?(.*?)\n?</parameter>", re.S)
+
+
+def _arg(v: str, kind: str | None):
+    """A text argument read as the type the schema gives its field; untyped or string fields stay text."""
+    if kind in (None, "string"):
+        return v
+    try:
+        return json.loads(v.strip().lower() if v.strip().lower() in ("true", "false") else v)
+    except json.JSONDecodeError:
+        return v  # left as text: the step's validation names the field
+
+
+def _kind(prop: dict) -> str:
+    """"string" when the field may be text (str, str | None); otherwise its JSON type, "json" for a $ref or a union."""
+    kinds = [prop.get("type")] + [p.get("type") for p in prop.get("anyOf", [])]
+    return "string" if "string" in kinds else prop.get("type") or "json"
+
+
+def _text_call(text: str, schema: dict | None = None) -> str | None:
+    """Qwen sometimes writes its cf_return_result call as text in its own XML format instead of making it: read the call."""
+    start = TEXT_CALL.search(text)
+    if not start:
+        return None
+    props = (schema or {}).get("properties", {})
+    args = {k: _arg(v, _kind(props[k]) if k in props else None) for k, v in TEXT_PARAM.findall(text[start.end():])}
+    return json.dumps(args, ensure_ascii=False) if args else None
+
+
+def assistant_text(jsonl: str, schema: dict | None = None) -> str:
     text, error = "", None
     for line in jsonl.splitlines():
         try:
@@ -537,6 +581,7 @@ def assistant_text(jsonl: str) -> str:
                 text = json.dumps(calls[-1].get("arguments", {}), ensure_ascii=False)
             else:
                 text = "".join(p.get("text", "") for p in content if p.get("type") == "text")
+                text = _text_call(text, schema) or text
         elif ev.get("type") == "tool_execution_end" and ev.get("toolName") == "cf_return_result" and not ev.get("isError"):
             if "result" in ((ev.get("result") or {}).get("details") or {}):  # the arguments after prepareArguments
                 text = json.dumps(ev["result"]["details"]["result"], ensure_ascii=False)
@@ -613,3 +658,38 @@ export default function (pi) {
   });
 }
 '''.replace("__LATEX_WORDS__", json.dumps(sorted(LATEX_WORDS)))
+
+
+SHELL_TIMEOUT_MS = 60_000
+SHELL_OUTPUT_CHARS = 20_000
+
+# One tool: a shell command in the Course files container (sandbox.course_box). argv to docker, never a host shell.
+SHELL_EXTENSION = '''
+import { execFile } from "node:child_process";
+
+export default function (pi) {
+  pi.registerTool({
+    name: "course_shell",
+    label: "Course files shell",
+    description: "Run a shell command (sh -c) in a Linux container holding the Course's files, read-only: /course/sources has the "
+      + "uploaded files (PDFs...), /course/text/<same name>.txt has each file's read text with a '=== page N ===' line before each "
+      + "page. Python 3 with numpy, pandas, scipy, sympy is there; no network. /tmp is writable. Output over __CHARS__ characters is cut.",
+    promptSnippet: "Read and search the Course's files with course_shell (ls, grep -n, sed -n, python3)",
+    promptGuidelines: ["Use course_shell to look at the Course's files when the material given is not enough; cite what you read as [<file name> p.<page>]."],
+    parameters: { type: "object", properties: { command: { type: "string", description: "The shell command to run" } }, required: ["command"] },
+    async execute(_id, params, signal) {
+      return await new Promise((resolve) => {
+        execFile("docker", ["exec", process.env.CF_SANDBOX, "sh", "-c", String(params.command)],
+          { timeout: __TIMEOUT__, maxBuffer: 16 * 1024 * 1024, signal },
+          (err, stdout, stderr) => {
+            let out = (stdout || "") + (stderr ? "\\n[stderr]\\n" + stderr : "");
+            if (err && err.killed) out += "\\n[stopped after __TIMEOUT__ ms]";
+            else if (err) out += `\\n[exit ${err.code}]`;
+            if (out.length > __CHARS__) out = out.slice(0, __CHARS__) + `\\n[cut: ${out.length} characters in all]`;
+            resolve({ content: [{ type: "text", text: out || "(no output)" }], details: {} });
+          });
+      });
+    },
+  });
+}
+'''.replace("__TIMEOUT__", str(SHELL_TIMEOUT_MS)).replace("__CHARS__", str(SHELL_OUTPUT_CHARS))

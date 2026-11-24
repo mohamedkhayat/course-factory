@@ -6,7 +6,7 @@ Ask what the course teaches, with its own names, commands and code. The course d
 
 Language: {{language}}
 
-Statements and model answers are Markdown with $inline$ and $$display$$ KaTeX; code and commands go in fenced code blocks with their language. Give each question the Chapter it tests ("chapter", its exact title), its points and a Marking scheme whose points add up to the question's points. A model answer gives the exact command or code expected, then one line on why.
+Statements and model answers are Markdown with $inline$ and $$display$$ KaTeX; code and commands go in fenced code blocks with their language. Give each question the Chapter it tests ("chapter", its exact title), its points and a Marking scheme whose points add up to the question's points. A model answer gives the exact command or code expected, then one line, in the exam's language, on why it is right.
 
 Inside JSON strings, escape every backslash: write "\\frac", not "\frac".
 Answer with only this JSON object:

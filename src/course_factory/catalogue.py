@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 
 from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, ValidationError, model_validator
 
+from .video_templates import NAMES, check_params, describe as describe_templates
+
 Md = str
 
 
@@ -18,11 +20,13 @@ class SympyClaim(BaseModel):
     expr: str
     vars: list[str] = []
     expected: str | list[str] | list[list[str]]
+    at: dict[str, str] | list[str] = {}  # the point the expected value is taken at: {"x": "1"}, or coordinates in vars order
 
 
 OPS = {"equal": "equal", "eq": "equal", "equals": "equal", "=": "equal", "==": "equal", "value": "equal", "evaluate": "equal",
        "simplify": "equal", "diff": "diff", "derivative": "diff", "d": "diff", "grad": "grad", "gradient": "grad",
-       "hessian": "hessian", "hess": "hessian"}
+       "hessian": "hessian", "hess": "hessian", "eval": "equal", "value_at": "equal", "hessian_at_point": "hessian",
+       "gradient_at_point": "grad", "derivative_at_point": "diff"}
 ANSWER_KEYS = {"expected": None, "derivative": "diff", "gradient": "grad", "hessian": "hessian", "value": "equal",
                "result": "equal", "equals": "equal"}
 
@@ -51,7 +55,10 @@ def heal_claim(raw) -> dict | None:
         op = "equal"  # the derivative is already taken in expr
     names = c.get("vars", c.get("var", []))
     names = [n.strip() for n in names.split(",")] if isinstance(names, str) else names
-    return {"op": op, "expr": c["expr"].strip(), "vars": [str(n) for n in names if str(n).strip()], "expected": _strings(c["expected"])}
+    at = c.get("at", c.get("point", {}))
+    at = {str(k): str(v) for k, v in at.items()} if isinstance(at, dict) else _strings(at if isinstance(at, list) else [at])
+    return {"op": op, "expr": c["expr"].strip(), "vars": [str(n) for n in names if str(n).strip()], "expected": _strings(c["expected"]),
+            "at": at}
 
 
 Claims = Annotated[list[SympyClaim], BeforeValidator(lambda v: [c for c in map(heal_claim, v) if c] if isinstance(v, list) else v)]
@@ -67,7 +74,8 @@ class TheoremBox(BaseModel):
 
 
 class WorkedExample(BaseModel):
-    """Use when showing how to solve a typical problem, step by step."""
+    """Use when showing how to solve a typical problem, step by step. `steps` is the worked solution: one step per part of the problem,
+    each starting with its part label ("a.", "b.") when the problem has parts. `answer` is the short final result only, never "see above"."""
 
     title: str
     problem: Md
@@ -76,8 +84,25 @@ class WorkedExample(BaseModel):
     claims: Claims = []
 
 
+class DerivationLine(BaseModel):
+    math: Md
+    note: Md = ""  # gap note: model text, only where the course skips a step, at most two sentences
+
+
+class Derivation(BaseModel):
+    """Use for the course's own derivation (a proof, a computation, a TD correction): each line verbatim from the pages, in their notation.
+    A `note` only on a line where the course skips a step, saying how it follows ("multiply both sides by A"); never on the others."""
+
+    title: str
+    statement: Md = ""
+    lines: list[DerivationLine] = Field(min_length=2)
+    conclusion: Md = ""
+    claims: Claims = []
+
+
 class Exercise(BaseModel):
-    """Use when the learner should solve a problem; mode "hand" for paper calculations, with `steps` revealed one by one and a self-mark; `minutes` sets a time limit."""
+    """Use when the learner should solve a problem; mode "hand" for paper calculations, with `steps` revealed one by one and a self-mark; `minutes` sets a time limit.
+    Not for a few short items to name or classify (a table to fill, a word per line): that is fill_blanks, typed into the page."""
 
     title: str
     statement: Md
@@ -253,6 +278,69 @@ class Diagram(Structured):
     caption: Md = ""
 
 
+class PageRef(BaseModel):
+    source: str
+    page: int
+
+
+class DiagramItem(BaseModel):
+    id: str
+    label: str  # 1-4 words, plain text: no Markdown or math
+    explanation: Md  # one or two sentences, shown in the card when the item is clicked
+    cite: PageRef  # the page of the material the explanation rests on
+    parent: str | None = None  # tree: the parent's id; none for the root
+    layer: int | None = None  # layers: 0 is the top
+    container: str | None = None  # nesting: the id of the item that holds this one; none at the top
+
+
+class KindDiagram(BaseModel):
+    """Use when showing a relation as a picture the learner can click through; choose `kind` from the relation, never from habit: tree = hierarchy (set `parent` on each item, one root with none); layers = dependency or a stack (`layer` 0 at the top, optional `links` [[from, to]]); nesting = containment (`container` on each item inside another); pipeline = a process in order (`order`: all ids); cycle = a process that returns to its start (`order`: all ids, the last leads back to the first); state_machine = states and what moves between them (`links` [[from, to, label]]); fan_out = one to many (`hub` and its `spokes`). Give each item a label and a cited explanation; code lays it out, never give positions. Use diagram (nodes, edges) only for a relation none of these fits."""
+
+    kind: Literal["tree", "layers", "nesting", "pipeline", "cycle", "state_machine", "fan_out"]
+    items: list[DiagramItem] = Field(min_length=1)
+    order: list[str] = []
+    links: list[list[str]] = []
+    hub: str = ""
+    spokes: list[str] = []
+    caption: Md = ""
+
+
+class AnimationStep(BaseModel):
+    caption: Md  # one sentence saying what changes in this step
+    cite: PageRef
+    highlight: list[str] = []  # item ids lit in this step only
+    links: list[list[str]] = []  # [from, to] links lit in this step only
+    move: list[str] = []  # [from, to]: a token moves along this link and stays at `to` until the next move
+    add: list[str] = []  # item ids that appear in this step (absent before it)
+    remove: list[str] = []  # item ids that disappear in this step
+    labels: dict[str, str] = {}  # item id -> new label, kept from this step on
+
+
+class SteppedAnimation(KindDiagram):
+    """Use when a process unfolds over time and the order of changes is the lesson (records moving through partitions, narrow vs wide transformations, a shuffle, a cache filling): a kind diagram (`kind`, `items`, and its structure as for kind_diagram) plus `steps`, 3 to 12, each with a one-sentence `caption` and its `cite` ({"source", "page"}), and what changes: `highlight` item ids, `links` [[from, to]] to light up, `move` [from, to] a token travelling along a link, `add` or `remove` item ids, `labels` {id: new label}. Items named in `add` are absent until that step. Use kind_diagram for a relation that does not change."""
+
+    steps: list[AnimationStep] = Field(min_length=2)
+
+
+class Video(BaseModel):
+    template: Literal[NAMES]  # type: ignore[valid-type]
+    params: dict
+    narration: list[Md] = Field(min_length=1)  # one script per scene, in the Course language; maths as $LaTeX$ is spoken as a person says it
+    caption: Md = ""
+
+    @model_validator(mode="after")
+    def typed_params(self):
+        self.params, scenes = check_params(self.template, self.params)
+        if len(self.narration) != scenes or any(not n.strip() for n in self.narration):
+            raise ValueError(f"{self.template} has {scenes} scenes: give `narration` as {scenes} scripts, one per scene, each a sentence or two")
+        return self
+
+
+Video.__doc__ = ("Use for maths and processes that move, as a narrated video code renders in the background from a fixed template: `template`, its typed `params` and `narration`, "
+                 "a list with one script per scene (a sentence or two each, in the Course language, maths as $LaTeX$, never symbols or code). "
+                 "Templates: " + describe_templates() + " Never write Manim or positions; use stepped_animation for a process the learner should click through in the page.")
+
+
 class Figure(BaseModel):
     """Use when a figure on a page of the material says it best."""
 
@@ -326,7 +414,8 @@ class Blank(BaseModel):
 
 
 class FillBlanks(BaseModel):
-    """Use when the learner should recall key terms or syntax: text (language "") or code with gaps [[1]], [[2]]... each with accepted answers. Gaps never inside $math$."""
+    """Use when the learner should recall key terms or syntax: text (language "") or code with gaps [[1]], [[2]]... each with accepted answers. Gaps never inside $math$.
+    Also for an exam table or dotted lines to complete (……): write the table in Markdown with one [[n]] per cell to fill, and keep each answer a word or a short phrase, with its usual variants."""
 
     title: str
     task: Md = ""  # what the completed code must do, shown above it: the learner picks `gte` over `gt` from this, not by guessing
@@ -425,9 +514,9 @@ class Terminal(BaseModel):
 
 
 CATALOGUE: dict[str, type[BaseModel]] = {
-    "theorem_box": TheoremBox, "worked_example": WorkedExample, "exercise": Exercise, "quiz": Quiz,
+    "theorem_box": TheoremBox, "worked_example": WorkedExample, "derivation": Derivation, "exercise": Exercise, "quiz": Quiz,
     "key_formula": KeyFormula, "callout": Callout, "algorithm": Algorithm, "iteration_table": IterationTable,
-    "plot": Plot, "explorer": Explorer, "diagram": Diagram, "figure": Figure, "table": Table, "code": Code,
+    "plot": Plot, "explorer": Explorer, "diagram": Diagram, "kind_diagram": KindDiagram, "stepped_animation": SteppedAnimation, "video": Video, "figure": Figure, "table": Table, "code": Code,
     "prose": Prose, "fill_blanks": FillBlanks, "code_exercise": CodeExercise, "surface_plot": SurfacePlot,
     "optimizer_animation": OptimizerAnimation, "step_diagram": StepDiagram, "terminal": Terminal,
     "intuition": Intuition, "misconception": Misconception, "recap": Recap, "explain_back": ExplainBack,

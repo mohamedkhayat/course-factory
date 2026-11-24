@@ -38,6 +38,7 @@ class FakeModel:
     def __init__(self):
         self.calls: list[tuple[str, list[Path]]] = []
         self.prompts: list[tuple[str, str]] = []
+        self.sandboxes: list[str | None] = []  # the files container each stream was given
         self.handlers = {
             "read_page": lambda prompt, files: {"text": f"page text of {files[0].name}", "readable": True},
             "propose_roles": self._roles,
@@ -54,7 +55,10 @@ class FakeModel:
             "repair_block": lambda prompt, files: {"block": json.loads(prompt.split("BLOCK:", 1)[1])},  # echoes: fixes nothing
             "lab_tutor": lambda prompt, files: f"Look at what `f` returns. ({len(files)} plots seen)",
             "tutor": lambda prompt, files: "Une fonction est « convexe » si... [cours.pdf p.1] [made_up.pdf p.2]",
+            "chat": self._chat,
             "derive_scheme": lambda prompt, files: {"scheme": [{"step": "Poser le pas", "points": 1}, {"step": "Calculer", "points": 1}]},
+            "read_ink": lambda prompt, files: {"text": f"$x^2$ écrit ({len(files)} image)"},
+            "check_working": lambda prompt, files: {"lines": [{"text": "$x=1$", "ok": True, "hint": ""}, {"text": "$y=3$", "ok": False, "hint": "regarde le signe"}]},
             "transcribe_copy": lambda prompt, files: {"text": f"écrit à la main ({len(files)} images)"},
             "grade_answer": self._grade,
             "build_lab": lambda prompt, files: LAB,
@@ -103,6 +107,13 @@ class FakeModel:
                 {"prompt": "Convexe ?", "options": ["oui", "non"], "correct": [0], "explanation": "Par définition."}]}}]}
 
     @staticmethod
+    def _chat(prompt, files):
+        """A short answer with one cited Block on the Concept "gradient", between two paragraphs."""
+        block = {"component": "theorem_box", "origin": "from_source", "citations": [{"source": "cours.pdf", "page": 2}], "tests": ["gradient"],
+                 "data": {"kind": "definition", "title": "Gradient", "statement": "Le gradient pointe vers la plus forte croissance."}}
+        return f"Voici l'idée [cours.pdf p.2].\n\n```block\n{json.dumps(block)}\n```\n\nEt la suite.\n"
+
+    @staticmethod
     def _plan(prompt, files):
         """One remember objective per Section, practised by a quiz, tagged with every Question Type."""
         types = json.loads(prompt.split("(exact names): ", 1)[1].split("\n", 1)[0] or "[]")
@@ -143,10 +154,85 @@ class FakeModel:
     def models():
         return [{"id": "llama-swap/big", "thinking": True}, {"id": "llama-swap/small", "thinking": False}]
 
-    def stream(self, step, prompt, files, workdir, stop=None):
+    def stream(self, step, prompt, files, workdir, stop=None, sandbox=None, on_tool=None):
+        self.sandboxes.append(sandbox)
+        if sandbox and on_tool:  # a model with the Course files shell runs one command before it answers
+            on_tool({"command": "ls -R /course/text"})
+            yield ""
         text = self(step, prompt, files, workdir)
         for i in range(0, len(text), 12):
             yield text[i : i + 12]
+
+
+class FakeMedia:
+    """Stands in for the local engines: Voices speak silence as long as the words, Dictation hears a canned sentence. Nothing downloads."""
+
+    def __init__(self):
+        self.gpu = False
+        self.have = {"kokoro"}
+        self.spoken: list[tuple[str, str, str, str | None]] = []  # (text, language, voice, speaker) of every speak call
+        self.heard: list[tuple[Path, list[str], bool]] = []  # (recording, languages, file existed) of every transcribe call
+        self.transcript = "bonjour, la convexité"
+        self.installs: list[str] = []
+        self.video = False  # video rendering (Manim) installed
+        self.renders: list[tuple[dict, int, Path]] = []  # (scene spec, narration WAV (channels, sample width, rate), output file) of every render call
+        self.render_error: str | None = None
+        self.retimes: list[tuple] = []  # (picture, old scene lengths, new ones, output) of every picture fitted to another Voice
+
+    def speak(self, text, language, voice, speaker=None):
+        import io
+        import wave
+        from course_factory.media import Speech
+        self.spoken.append((text, language, voice, speaker))
+        d = max(0.4, 0.15 * len(text.split()))
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(8000)
+            w.writeframes(b"\0\0" * int(8000 * d))
+        return Speech(buf.getvalue(), d, [(0.0, d)])
+
+    def transcribe(self, audio, languages):
+        self.heard.append((audio, languages, audio.exists()))
+        return self.transcript
+
+    def installed(self):
+        return set(self.have)
+
+    def install(self, voice, log):
+        self.installs.append(voice)
+        log("fake install")
+        self.have.add(voice)
+
+    def remove(self, voice):
+        self.have.discard(voice)
+
+    def video_installed(self):
+        return self.video
+
+    def install_video(self, log):
+        log("fake install")
+        self.video = True
+
+    def remove_video(self):
+        self.video = False
+
+    def render(self, spec, audio, out):
+        import wave
+        with wave.open(str(audio)) as w:
+            self.renders.append((spec, w.getparams()[:3], out))
+        if self.render_error:
+            raise RuntimeError(self.render_error)
+        out.write_bytes(b"fake mp4")
+        out.with_suffix(".png").write_bytes(b"fake png")
+        out.with_suffix(".picture").write_bytes(b"fake picture")
+        out.with_suffix(".holds.json").write_text(json.dumps([sum(spec["durations"][:i]) + 1.0 for i in range(len(spec["durations"]))]))
+
+    def retime(self, picture, old, new, audio, out):
+        self.retimes.append((picture, old, new, out))
+        out.write_bytes(b"fake mp4")
+        out.with_suffix(".png").write_bytes(b"fake png")
 
 
 class FakeSearch:
@@ -198,7 +284,12 @@ def data_dir(tmp_path):
 
 
 @pytest.fixture
-def client(data_dir, model):
-    with TestClient(create_app(data_dir, model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher()),
+def media():
+    return FakeMedia()
+
+
+@pytest.fixture
+def client(data_dir, model, media):
+    with TestClient(create_app(data_dir, model, FakeSearch(), labs_launcher=lambda cid: LocalLauncher(), media=media),
                     base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as c:
         yield c

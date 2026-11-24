@@ -163,21 +163,37 @@ class Likelihood:
         return max(1, round(self.mpp * sum(pts) / len(pts))) if pts and self.mpp else None
 
 
+def question_json(q) -> dict:
+    """A past Question as the reader shows it: one click from a Block, a Chapter or a Step answer (#29, #30)."""
+    return {"id": q["id"], "exam": q["exam"], "points": q["points"], "statement": q["statement"]}
+
+
+def exam_text(db, cid: int, chapter_id: int | None = None) -> str:
+    """The past Questions the tutors answer "is this in the exam?" from: a Chapter's, or the whole Course's."""
+    qs = [q for q in past_questions(db, cid) if chapter_id is None or q["chapter_id"] == chapter_id]
+    if not qs:
+        return "No past paper question" + (" on this Chapter." if chapter_id else ".")
+    return "\n".join(f"- {q['exam']}, question {q['position'] + 1}, {q['points']:g} pts ({q['chapter'] or 'no Chapter'}): "
+                     + " ".join(q["statement"].split())[:400] for q in qs)
+
+
 def annotate(ctx: Ctx, cid: int, chapters: list[dict]) -> list[dict]:
-    """Adds Cram info to the Reader's Chapters: each Chapter's Cram Profile, each Block's Exam Likelihood, the past
-    Questions it prepares for and an exercise's time limit. Deep Courses are left as they are."""
+    """Adds exam info to the Reader's Chapters: each Chapter's past Questions (the "In the exam" strip, #29), each Block's
+    Exam Likelihood, the past Questions it prepares for and an exercise's time limit, in every goal; and in Cram each
+    Chapter's Cram Profile."""
     db = ctx.db
-    if db.execute("SELECT goal FROM courses WHERE id=?", (cid,)).fetchone()["goal"] != "cram":
-        return chapters
+    cram = db.execute("SELECT goal FROM courses WHERE id=?", (cid,)).fetchone()["goal"] == "cram"
+    past = past_questions(db, cid)
     lk = Likelihood(db, cid)
     for ch in chapters:
-        ch["profile"] = profile_of(ctx, db.execute("SELECT * FROM chapters WHERE id=?", (ch["id"],)).fetchone())
+        ch["exam"] = [question_json(q) for q in past if q["chapter_id"] == ch["id"]]
+        if cram:
+            ch["profile"] = profile_of(ctx, db.execute("SELECT * FROM chapters WHERE id=?", (ch["id"],)).fetchone())
         for s in ch["sections"]:
             for b in s["blocks"]:
                 names = b.get("exam_types", [])
                 info = {"likelihood": lk.of(b["component"], names, ch["id"]), "types": [n for n in names if n in lk.types],
-                        "questions": [{"id": q["id"], "exam": q["exam"], "points": q["points"]}
-                                      for n in names if n in lk.types for q in lk.types[n]["questions"]][:3],
+                        "questions": [question_json(q) for n in names if n in lk.types for q in lk.types[n]["questions"]][:3],
                         "minutes": lk.minutes(b, names)}
                 if any(info.values()):
                     b["cram"] = info
@@ -470,11 +486,21 @@ def mixed_items(ctx: Ctx, cid: int, chapter_id: int | None, types: list[str], n:
             "kind": "question", "question_id": q["id"], "chapter_id": q["chapter_id"], "title": f"{q['exam']} ({q['points']:g} pts)",
             "statement": q["statement"], "answer": q["model_answer"], "scheme": json.loads(q["scheme"] or "null"),
             "type": tname["name"] if tname else None})
+    qcu = db.execute("SELECT qcu_practice FROM courses WHERE id=?", (cid,)).fetchone()[0]
     if not types:
         for row in db.execute("SELECT b.*, c.id chid FROM blocks b JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id "
                               "JOIN reads r ON r.section_id=s.id WHERE c.course_id=? AND c.status='published' AND b.status='ok' "
-                              "AND b.component IN ('exercise', 'worked_example') AND (? IS NULL OR c.id=?)", (cid, chapter_id, chapter_id)):
+                              "AND b.component IN (?, ?) AND (? IS NULL OR c.id=?)",
+                              (cid, *(("quiz", "quiz") if qcu else ("exercise", "worked_example")), chapter_id, chapter_id)):
             d = json.loads(row["data"])
+            if qcu:  # the exam is single-choice only: each single-choice question is one item, its options in the statement
+                for q in d["questions"]:
+                    if not q.get("multiple"):
+                        pools.setdefault(row["chid"], []).append({
+                            "kind": "exercise", "block_id": row["id"], "chapter_id": row["chid"], "title": "QCU",
+                            "statement": q["prompt"] + "\n\n" + "\n".join(f"- **{chr(65 + i)}.** {o}" for i, o in enumerate(q["options"])),
+                            "answer": f"**{chr(65 + q['correct'][0])}.** {q['options'][q['correct'][0]]}\n\n{q['explanation']}", "scheme": None, "type": None})
+                continue
             ex = row["component"] == "exercise"
             pools.setdefault(row["chid"], []).append({
                 "kind": "exercise", "block_id": row["id"], "chapter_id": row["chid"], "title": d["title"],

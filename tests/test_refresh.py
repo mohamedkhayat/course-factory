@@ -73,3 +73,29 @@ def test_refresh_can_regenerate_edited_sections_with_the_edits_as_notes(client, 
     prompt = next(p for step, p in model.prompts if step == "write_section")
     notes = prompt.split("Owner notes from an earlier version of this Section", 1)[1].split("\n", 1)[0]
     assert json.dumps(edited, ensure_ascii=False)[1:40] in notes  # the owner's edit, for the model to keep
+
+
+def test_a_chapter_is_planned_again_with_a_file_added_to_its_folder(client, material, model):
+    cid = generate(client, material, model)
+    before = section_blocks(client, cid)
+    make_pdf(material / "TD2.pdf", 1)  # the professor's slides that came after the Course was built
+    assert client.post(f"/api/courses/{cid}/refresh", json={"edited": "keep"}).status_code == 202
+    seen = []
+    def outline(prompt, files):
+        seen.append(prompt)
+        return {"chapters": [{"title": "Descente", "sections": [
+            {"title": "Gradient", "pages": [{"source": "cours.pdf", "page": 2}], "teaches": ["gradient", "ensemble convexe"]}]},
+            {"title": "Diapos", "sections": [{"title": "Pas optimal", "pages": [{"source": "TD2.pdf", "page": 1}], "teaches": ["pas"]},
+                                             {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]}
+    model.handlers["propose_outline"] = outline
+    ch = chapters(client, cid)["Méthodes de descente"]
+    assert client.post(f"/api/courses/{cid}/chapters/{ch['id']}/regenerate?replan=true").status_code == 202
+    assert client.get(f"/api/courses/{cid}/job").json()["state"] == "done"
+
+    offered = json.loads(seen[0].split("SOURCES:", 1)[1].strip())
+    assert {s["name"]: [p["page"] for p in s["pages"]] for s in offered} == {"TD1.pdf": [1], "TD1_corrige.pdf": [1], "TD2.pdf": [1], "cours.pdf": [2]}  # not Convexité's page
+    secs = client.get(f"/api/courses/{cid}/chapters/{ch['id']}").json()["sections"]
+    assert [s["title"] for s in secs] == ["Gradient", "Pas optimal", "Exercices"]
+    assert secs[0]["teaches"] == ["gradient"]  # taught in Convexité already
+    assert [b["id"] for b in secs[0]["blocks"]] == [b["id"] for b in before["Gradient"]]  # kept position, kept ids
+    assert secs[2]["blocks"] and chapters(client, cid)["Méthodes de descente"]["title"] == "Méthodes de descente"

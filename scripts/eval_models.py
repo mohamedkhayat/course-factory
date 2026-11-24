@@ -6,14 +6,14 @@ Works on a copy of the database, so the Course is never touched. Prints one row 
 import argparse
 import json
 import os
-import shutil
+import sqlite3
 import tempfile
 import time
 from collections import Counter
 from pathlib import Path
 
 from course_factory import db as dbm
-from course_factory.chapters import GroundingBatch, language_rule, SectionDraft, catalogue_text, checked_blocks, page_texts, source_pages, words
+from course_factory.chapters import GroundingBatch, language_rule, SectionDraft, catalogue_text, checked_blocks, page_texts, section_from_text, source_pages, words
 from course_factory.checks import check_blocks
 from course_factory.components import schemas
 from course_factory.context import Ctx
@@ -25,7 +25,9 @@ DATA = Path(os.environ.get("CF_DATA", Path.home() / ".local/share/course-factory
 
 
 def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
-    shutil.copy(DATA / "course-factory.db", work / "course-factory.db")
+    src = sqlite3.connect(f"file:{DATA / 'course-factory.db'}?mode=ro", uri=True)
+    with sqlite3.connect(work / "course-factory.db") as dst:
+        src.backup(dst)  # a plain file copy leaves out what is still in the WAL
     db = dbm.connect(work / "course-factory.db")
     ctx = Ctx(db=db, backend=PiBackend(), data_dir=work, search=None)  # type: ignore[arg-type]  # no search in these steps
     for k in [k for k in os.environ if k.startswith("CF_MODEL_") and k != "CF_MODEL_CONCURRENCY"] + ["CF_FALLBACK_MODEL"]:
@@ -46,7 +48,8 @@ def evaluate(model: str, cid: int, sections: list[int], work: Path) -> dict:
                 "pages": pages, "catalogue": catalogue, "language": language_rule(db, cid),
                 "subject": db.execute("SELECT subject FROM courses WHERE id=?", (cid,)).fetchone()["subject"],
                 "owner_notes": "none", "taught_before": [], "teaches": json.loads(sec["teaches"]), "plan": "none", "gaps": "none",
-                "chapter_map": "none", "cram": "none"}, SectionDraft, work, course_id=cid)
+                "chapter_map": "none", "cram": "none"}, SectionDraft, work, course_id=cid,
+                parse=section_from_text)
         except StepFailed:
             row["sections failed"] += 1
             continue

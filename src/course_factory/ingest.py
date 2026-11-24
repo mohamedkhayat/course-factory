@@ -11,6 +11,7 @@ import pypdfium2 as pdfium
 from pydantic import BaseModel
 
 from .context import Ctx, Role
+from .pdf import LOCK, page_count
 from .pi_step import MODEL_LANES, StepFailed, run_pi_step
 
 DATA_SUFFIXES = {".csv", ".txt", ".json", ".xlsx", ".npy", ".mat", ".dat"}
@@ -55,7 +56,7 @@ def import_sources(ctx: Ctx, cid: int) -> None:
         rel = Path(unicodedata.normalize("NFC", f.relative_to(folder).as_posix()))
         (dest / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, dest / rel)
-        pages = len(pdfium.PdfDocument(str(f))) if f.suffix.lower() == ".pdf" else 0
+        pages = page_count(str(f)) if f.suffix.lower() == ".pdf" else 0
         role = "data" if f.suffix.lower() in DATA_SUFFIXES else None
         # data files have no pages to read, so their Role is known without the model
         db.execute("INSERT OR IGNORE INTO sources (course_id, name, path, pages, role, sha256) VALUES (?,?,?,?,?,?)",
@@ -69,7 +70,8 @@ def read_pages(ctx: Ctx, cid: int) -> None:
     answered = 0
     # shortcut: notebooks are not transcribed yet; they get read when Labs are built.
     for src in db.execute("SELECT * FROM sources WHERE course_id=? AND pages>0", (cid,)).fetchall():
-        pdf = pdfium.PdfDocument(src["path"])
+        with LOCK:
+            pdf = pdfium.PdfDocument(src["path"])
         pending: dict[Future[PageReading], tuple[int, Path]] = {}
 
         def save_finished():
@@ -93,16 +95,20 @@ def read_pages(ctx: Ctx, cid: int) -> None:
                     done = db.execute("SELECT 1 FROM pages WHERE source_id=? AND n=? AND text IS NOT NULL", (src["id"], n)).fetchone()
                     if done:  # resumable: a restart mid-read skips pages already read
                         continue
-                    page = pdf[n - 1]
                     img = img_dir / f"{src['id']}-{n}.png"
                     pdf_text = ""
-                    try:
-                        text_page = page.get_textpage()
-                        pdf_text = text_page.get_text_range().strip()[:10000]
-                        text_page.close()
-                    except Exception:
-                        pass  # scanned pages still go through the image transcription path
-                    page.render(scale=2).to_pil().save(img)
+                    with LOCK:
+                        page = pdf[n - 1]
+                        try:
+                            try:
+                                text_page = page.get_textpage()
+                                pdf_text = text_page.get_text_range().strip()[:10000]
+                                text_page.close()
+                            except Exception:
+                                pass  # scanned pages still go through the image transcription path
+                            page.render(scale=2).to_pil().save(img)
+                        finally:
+                            page.close()
                     future = pool.submit(_read_page, db, backend, src["name"], n, pdf_text, img_dir, img, cid)
                     pending[future] = (n, img)
                     if len(pending) >= MODEL_LANES:
@@ -110,7 +116,8 @@ def read_pages(ctx: Ctx, cid: int) -> None:
                 while pending:
                     save_finished()
             finally:
-                pdf.close()
+                with LOCK:
+                    pdf.close()
     # One bad page is listed at the found gate; no page answered at all is the model being unreachable (no key, server
     # down), and a Course built on that would be empty: fail the step and leave the pages to be read again on Retry.
     if not answered and len(failed) >= 3:

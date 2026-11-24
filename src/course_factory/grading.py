@@ -10,8 +10,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from . import scan
 from . import search as searchm
+from .chapters import language_rule
 from .context import Ctx
+from .pdf import LOCK
 from .exams import SchemeStep, copy_json
 from .pi_step import run_pi_step
 
@@ -46,22 +49,36 @@ def save_upload(folder: Path, upload: UploadFile) -> list[str]:
     folder.mkdir(parents=True, exist_ok=True)
     stem = uuid.uuid4().hex[:10]
     if upload.content_type == "application/pdf":
-        try:
-            pdf = pdfium.PdfDocument(data)
-        except pdfium.PdfiumError:
-            raise HTTPException(422, "not a readable PDF")
-        if len(pdf) > MAX_UPLOAD_PAGES:
-            raise HTTPException(413, f"a PDF of at most {MAX_UPLOAD_PAGES} pages")
-        paths = []
-        for n in range(len(pdf)):
-            p = folder / f"{stem}-{n + 1}.png"
-            pdf[n].render(scale=2).to_pil().save(p)
-            paths.append(str(p))
+        with LOCK:
+            try:
+                pdf = pdfium.PdfDocument(data)
+            except pdfium.PdfiumError:
+                raise HTTPException(422, "not a readable PDF")
+            try:
+                if len(pdf) > MAX_UPLOAD_PAGES:
+                    raise HTTPException(413, f"a PDF of at most {MAX_UPLOAD_PAGES} pages")
+                paths = []
+                for n in range(len(pdf)):
+                    p = folder / f"{stem}-{n + 1}.png"
+                    page = pdf[n]
+                    page.render(scale=2).to_pil().save(p)
+                    page.close()
+                    paths.append(str(p))
+            finally:
+                pdf.close()
         return paths
     if upload.content_type not in IMAGE_TYPES:
         raise HTTPException(415, "send a PNG, JPEG or WebP image, or a PDF")
-    p = folder / f"{stem}{IMAGE_TYPES[upload.content_type]}"
-    p.write_bytes(data)
+    if upload.content_type == "image/png":  # tablet ink and screenshots are already clean
+        p = folder / f"{stem}.png"
+        p.write_bytes(data)
+        return [str(p)]
+    try:
+        page = scan.clean_photo(data)  # a camera photo: the sheet found, flattened, evened out and turned upright
+    except (OSError, ValueError):
+        raise HTTPException(422, "not a readable image")
+    p = folder / f"{stem}.jpg"
+    page.save(p, quality=90)
     return [str(p)]
 
 
@@ -103,7 +120,8 @@ def grade_copy(ctx: Ctx, cid: int, copy) -> dict:
                                   Transcription, workdir, tuple(images), course_id=cid, live=True).text
         answer = "\n\n".join(a for a in (typed.get(str(q["id"]), ""), written) if a.strip())
         graded = run_pi_step(db, ctx.backend, "grade_answer", {
-            "statement": q["statement"], "model_answer": q["model_answer"], "scheme": scheme, "answer": answer or "(no answer)"},
+            "statement": q["statement"], "model_answer": q["model_answer"], "scheme": scheme, "answer": answer or "(no answer)",
+            "language": language_rule(db, cid)},
             QuestionGrade, workdir, course_id=cid, live=True)
         steps = score_steps(scheme, graded)
         for s in steps:  # a missed step points to the page that teaches it
@@ -143,12 +161,25 @@ def router(ctx: Ctx) -> APIRouter:
         db.execute("UPDATE copies SET files=? WHERE id=?", (json.dumps(files), copy_id))
         return {"files": [{"index": i, "kind": f["kind"], "question_id": f["question_id"]} for i, f in enumerate(files)]}
 
+    @r.delete("/api/courses/{cid}/copies/{copy_id}/files/{index}")
+    def remove_file(cid: int, copy_id: int, index: int):
+        """A page photographed badly, before hand-in: the later pages move up one index."""
+        row = copy_or_404(cid, copy_id)
+        if row["handed_in_at"]:
+            raise HTTPException(409, "this Copy was handed in")
+        files = json.loads(row["files"])
+        if not 0 <= index < len(files):
+            raise HTTPException(404, "no such file")
+        Path(files.pop(index)["path"]).unlink(missing_ok=True)
+        db.execute("UPDATE copies SET files=? WHERE id=?", (json.dumps(files), copy_id))
+        return {"files": [{"index": i, "kind": f["kind"], "question_id": f["question_id"]} for i, f in enumerate(files)]}
+
     @r.get("/api/courses/{cid}/copies/{copy_id}/files/{index}")
     def copy_file(cid: int, copy_id: int, index: int):
         files = json.loads(copy_or_404(cid, copy_id)["files"])
         if not 0 <= index < len(files):
             raise HTTPException(404, "no such file")
-        return FileResponse(files[index]["path"])
+        return FileResponse(files[index]["path"], headers={"Cache-Control": "no-cache"})  # an index points to another page after a removal
 
     @r.post("/api/courses/{cid}/copies/{copy_id}/grade")
     def grade(cid: int, copy_id: int):

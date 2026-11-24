@@ -42,6 +42,14 @@ def test_a_tailnet_device_needs_no_code_but_is_not_the_host(client):
         assert friend.post("/api/pairing/start").status_code == 403
 
 
+def test_tailscale_serve_is_a_tailnet_device_not_the_host(client):
+    with TestClient(client.app, base_url="https://box.tail1234.ts.net", client=("127.0.0.1", 40000)) as served:
+        friend = {"x-forwarded-for": "100.112.230.87"}
+        assert served.get("/api/pairing/me", headers=friend).json()["label"] == "Tailscale 100.112.230.87"
+        assert served.post("/api/pairing/start", headers=friend).status_code == 403
+        assert served.get("/api/components", headers={"x-forwarded-for": "8.8.8.8"}).status_code == 401  # not on the tailnet: pair first
+
+
 def test_guessing_revokes_the_code(client, tablet):
     code = client.post("/api/pairing/start").json()["code"]
     wrong = [f"{n:06d}" for n in range(6) if f"{n:06d}" != code][:5]

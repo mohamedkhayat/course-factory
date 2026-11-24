@@ -189,3 +189,42 @@ def test_commands_become_rows_and_repeats_merge():
     assert [(i["kind"], i["title"]) for i in sheet["items"]] == [("definition", "Shard"), ("commands", "CRUD"), ("commands", "CRUD")]
     assert sheet["items"][1]["rows"][0] == {"command": put, "note": "Creates the index with **3 primary shards**."}  # Markdown stays out of the code
     assert sheet["items"][2]["rows"] == [{"command": "DELETE /ventes", "note": "Drops it."}]  # its repeated command merged away
+
+
+def test_a_deep_course_shows_each_chapters_past_questions_and_the_tutors_answer_from_them(client, with_exam, model):
+    """#29 step 1: the "In the exam" strip and a Block's past Questions in every goal; the tutors get the Questions too."""
+    cid = published(client, with_exam, model, goal={"goal": "deep"})
+    chapters = {ch["title"]: ch for ch in client.get(f"/api/courses/{cid}/reader").json()}
+    [q] = chapters["Convexité"]["exam"]
+    assert q["exam"] == "Examen 2024" and "Montrer que" in q["statement"] and q["points"] > 0
+    assert "profile" not in chapters["Convexité"]  # the Cram Profile stays Cram's
+    tagged = next(b for b in chapters["Convexité"]["sections"][0]["blocks"] if b["component"] == "theorem_box")
+    assert "Montrer que" in tagged["cram"]["questions"][0]["statement"]  # one click from the Block
+
+    model.handlers["tutor"] = lambda prompt, files: "Oui."
+    section = chapters["Convexité"]["sections"][0]["id"]
+    list(client.post(f"/api/courses/{cid}/tutor", json={"question": "Is this in the exam?", "section_id": section}).iter_lines())
+    prompt = [p for s, p in model.prompts if s == "tutor"][-1].split("Past exam questions", 1)[1]
+    assert "Examen 2024, question 1" in prompt and "Montrer que" in prompt and "say plainly that no past paper asks it" in prompt
+    model.handlers["chat"] = lambda prompt, files: "Oui."
+    list(client.post(f"/api/courses/{cid}/chat", json={"question": "Is this in the exam?"}).iter_lines())
+    assert "Examen 2024, question 1" in [p for s, p in model.prompts if s == "chat"][-1]
+
+
+def test_a_single_choice_exam_course_drills_single_choice_questions_and_an_exercise_can_become_one(client, with_exam, model, clock):
+    cid = published(client, with_exam, model)
+    blocks = [b for _, b in blocks_of(client, cid)]
+    for ch in client.get(f"/api/courses/{cid}/reader").json():
+        for s in ch["sections"]:
+            client.put(f"/api/courses/{cid}/place", json={"section_id": s["id"]})
+    exercises = lambda: {i["title"] for i in client.get(f"/api/courses/{cid}/cram/mixed?n=30").json() if i["kind"] == "exercise"}
+    assert exercises() == {"Ex"}
+    client.put(f"/api/courses/{cid}/qcu-practice", json={"on": True})
+    items = [i for i in client.get(f"/api/courses/{cid}/cram/mixed?n=30").json() if i["kind"] == "exercise"]
+    assert {i["title"] for i in items} == {"QCU"} and "- **A.** oui" in items[0]["statement"] and items[0]["answer"].startswith("**A.** oui")
+
+    ex = next(b for b in blocks if b["component"] == "exercise")
+    quiz = {"questions": [{"prompt": "Pas optimal ?", "options": ["fixe", "par recherche linéaire"], "correct": [1], "explanation": "On le cherche."}]}
+    saved = client.put(f"/api/courses/{cid}/blocks/{ex['id']}", json={"component": "quiz", "data": quiz}).json()
+    assert saved["component"] == "quiz" and saved["status"] == "ok"
+    assert any("Pas optimal ?" in i["statement"] for i in client.get(f"/api/courses/{cid}/cram/mixed?n=30").json())

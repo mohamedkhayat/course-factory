@@ -245,7 +245,7 @@ def test_traces_record_check_results_and_durations(client, material, model):
     cid = generate(client, material, model, blocks=one_block("theorem_box", {"kind": "theorem", "statement": r"$\frac{1}{$"}))
     traces = client.get(f"/api/courses/{cid}/traces").json()
     section = next(t for t in traces if t["step"] == "write_section" and "block" in (t["checks"] or ""))
-    [check] = json.loads(section["checks"])
+    [check] = [c for c in json.loads(section["checks"]) if "block" in c]  # beside it, the plan and order gaps found at writing
     assert check["block"] == 0 and check["errors"]  # still broken after the repairs
     repair = next(t for t in traces if t["step"] == "repair_block")
     assert json.loads(repair["checks"])["errors"]

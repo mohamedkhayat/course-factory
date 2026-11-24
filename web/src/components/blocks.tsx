@@ -1,16 +1,19 @@
+import { CropToAsk } from "./ink";
 import { Component, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Info, Lightbulb, ListChecks, MessageSquareText, NotebookPen, Sparkles, Timer, X } from "lucide-react";
+import { AlertTriangle, BookOpen, Check, Flag, GraduationCap, Headphones, Info, Lightbulb, ListChecks, MessageSquareText, NotebookPen, Paperclip, Sparkles, Timer, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { exported, get, pageUrl, send, type Block, type Citation, type Standing } from "@/lib/api";
+import { exported, get, pageUrl, practiceUrl, send, type Block, type Citation, type PastQuestion, type Standing } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { fadedSteps, lastStage, LIKELIHOOD } from "@/lib/cram";
+import { ALL_STEPS, fadedSteps, lastStage, LIKELIHOOD } from "@/lib/cram";
+import { DiagramActions, KindDiagram } from "./kind-diagram";
 import { Md, MdLine, Tex } from "./md";
 import { Explorer, Plot } from "./plot";
-import { CodeExercise, FillBlanks, HandCorrection, Terminal, WrittenAnswer } from "./practice";
+import { ChatWritten, CodeExercise, FillBlanks, HandCorrection, Terminal, WrittenAnswer } from "./practice";
 import { OptimizerAnimation, SurfacePlot } from "./surface";
+import { VideoBlock } from "./video";
 
 type P<T = any> = { data: T; cid: number; block: Block };
 
@@ -35,28 +38,69 @@ function TheoremBox({ data }: P) {
   );
 }
 
-/** Study the steps, then practise: the last step is hidden, then every step after the first (faded examples). */
+/** The course's own derivation, line by line. A gap note is the model's, where the course skips a step: closed until tapped, marked added. */
+function Derivation({ data }: P) {
+  const lines: { math: string; note?: string }[] = data.lines;
+  return (
+    <div>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
+      {data.statement && <div className="mt-2 rounded-md border border-border bg-muted/30 px-4 py-3"><Md>{data.statement}</Md></div>}
+      <ol className="mt-3 space-y-1 border-l border-border pl-4">
+        {lines.map((ln, i) => (
+          <li key={i} className="min-w-0">
+            <Md>{ln.math}</Md>
+            {ln.note && (
+              <details className="group mb-1 text-sm">
+                <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                  <Sparkles className="mr-1 inline size-3" aria-hidden />How this line follows <span className="italic">(added)</span>
+                </summary>
+                <div className="mt-1 rounded border border-dashed border-input px-2 py-1"><Md>{ln.note}</Md></div>
+              </details>)}
+          </li>))}
+      </ol>
+      {data.conclusion && <div className="mt-3"><Md>{data.conclusion}</Md></div>}
+    </div>
+  );
+}
+
+/** A step that opens with its own part label ("a.", "b)", "**c.**", "1)") shows that label as its marker. All steps or none. */
+const PART = /^\s*(?:\*\*)?\(?([a-z]|\d{1,2})[.)](?:\*\*)?\s+/i;
+const partLabels = (steps: string[]) => steps.every((s) => PART.test(s)) ? steps.map((s) => s.match(PART)![1] + ".") : null;
+
+/** A problem, its worked solution step by step, then the final answer. Practise hides steps (and the answer) to do them yourself. */
 function WorkedExample({ data }: P) {
   const [stage, setStage] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [mine, setMine] = useState<Record<number, string>>({});
   const steps: string[] = data.steps;
+  const labels = partLabels(steps);
+  const marker = (i: number) => labels ? labels[i] : String(i + 1);
   const hidden = new Set(fadedSteps(steps.length, stage));
   const next = (got: boolean) => { setRevealed(false); setMine({}); if (got) setStage(stage >= lastStage(steps.length) ? 0 : stage + 1); };
+  const h = "mb-1 text-sm font-semibold";
   return (
     <div>
-      <h4 className="flex items-baseline justify-between gap-3 font-medium"><MdLine>{data.title}</MdLine>
-        {stage === 0 && steps.length > 0 && <Button size="sm" variant="outline" className="shrink-0 font-normal" onClick={() => setStage(1)}>Practise it</Button>}
-      </h4>
-      <Md>{data.problem}</Md>
+      <h4 className="font-medium"><MdLine>{data.title}</MdLine></h4>
+      <div className="mt-2 rounded-md border border-border bg-muted/30 px-4 py-3">
+        <p className={h}>Problem</p>
+        <Md className="[&_p]:whitespace-pre-line">{data.problem}</Md>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold">Solution{stage > 0 && <span className="font-normal text-muted-foreground"> · your turn</span>}</p>
+        {stage === 0 && steps.length > 0 && <span className="flex flex-wrap gap-2">
+          {steps.length > 1 && <Button size="sm" variant="outline" className="font-normal" onClick={() => setStage(1)}
+            title="Hides the last step; once you get it, hides more, back to the first">Hide the last step</Button>}
+          <Button size="sm" variant="outline" className="font-normal" onClick={() => setStage(ALL_STEPS)}
+            title="Hides the whole solution so you solve it from the problem alone">Hide every step</Button></span>}
+      </div>
       <ol className="mt-2 space-y-1 border-l border-border pl-4">
         {steps.map((s, i) => (
-          <li key={i} className="flex gap-3"><span className="tabular pt-1 text-sm text-muted-foreground">{i + 1}</span>
-            {hidden.has(i) && !revealed ? <Textarea aria-label={`Step ${i + 1}, your answer`} className="my-1 min-h-16 flex-1 border-dashed text-sm" placeholder="Your turn: write this step here (or on paper)"
+          <li key={i} className="flex gap-3"><span className="tabular w-5 shrink-0 pt-1 text-sm text-muted-foreground">{marker(i)}</span>
+            {hidden.has(i) && !revealed ? <Textarea aria-label={`Step ${marker(i)}, your answer`} className="my-1 min-h-16 flex-1 border-dashed text-sm" placeholder="Your turn: write this step here (or on paper)"
                 value={mine[i] ?? ""} onChange={(e) => setMine({ ...mine, [i]: e.target.value })} />
-              : <div className="flex-1">
+              : <div className="min-w-0 flex-1">
                   {hidden.has(i) && mine[i]?.trim() && <p className="mb-1 whitespace-pre-wrap rounded border border-dashed border-input px-2 py-1 text-sm"><span className="text-muted-foreground">Yours: </span>{mine[i]}</p>}
-                  <div className={cn(hidden.has(i) && "rounded bg-ok/10 px-2")}><Md>{s}</Md></div>
+                  <div className={cn(hidden.has(i) && "rounded bg-ok/10 px-2")}><Md>{labels ? s.replace(PART, "") : s}</Md></div>
                 </div>}
           </li>
         ))}
@@ -70,10 +114,18 @@ function WorkedExample({ data }: P) {
               <Button size="sm" variant="outline" onClick={() => next(false)}>Not yet, again</Button>
             </>
           )}
-          <button type="button" className="ml-auto text-muted-foreground hover:text-foreground" onClick={() => { setStage(0); setRevealed(false); }}>Show all</button>
+          <span className="ml-auto flex gap-3">
+            {stage !== ALL_STEPS && <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { setStage(ALL_STEPS); setRevealed(false); setMine({}); }}>Hide every step</button>}
+            <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => { setStage(0); setRevealed(false); }}>Show all</button>
+          </span>
         </div>
       )}
-      <Reveal label="Answer"><Md>{data.answer}</Md></Reveal>
+      {(stage === 0 || revealed) && (
+        <div className="mt-4 rounded-md border border-ok/40 bg-ok/10 px-4 py-3">
+          <p className={h}>Final answer</p>
+          <Md>{data.answer}</Md>
+        </div>
+      )}
     </div>
   );
 }
@@ -107,7 +159,7 @@ function Exercise({ data, cid, block }: P) {
         {(block.cram?.minutes || data.minutes) ? <ExerciseTimer minutes={block.cram?.minutes || data.minutes} /> : null}
         {shown < data.hints.length && <Button size="sm" variant="outline" onClick={() => setShown(shown + 1)}>Hint {shown + 1} of {data.hints.length}</Button>}
       </div>
-      <WrittenAnswer cid={cid} block={block} />
+      {!block.chat && <WrittenAnswer cid={cid} block={block} />}
       <HandCorrection steps={data.mode === "hand" ? data.steps ?? [] : []} correction={data.correction} cid={cid} block={block}
                       intro="Answer above, then grade it or compare it with the correction yourself." />
     </div>
@@ -126,7 +178,7 @@ function Quiz({ data, cid, block }: P) {
   const submit = async () => {
     const r = exported  // a standalone export checks locally; the app records answers so mistakes and Cards follow
       ? { correct: [...new Set(chosen)].sort().join() === [...new Set<number>(q.correct)].sort().join(), correct_options: q.correct, explanation: q.explanation }
-      : await send<typeof result>(`/api/courses/${cid}/blocks/${block.id}/answers`, { question: i, chosen });
+      : await send<typeof result>(practiceUrl(cid, block, "answers"), { question: i, chosen });
     setResult(r);
     if (r?.correct) setScore(score + 1);
   };
@@ -233,7 +285,7 @@ function Recap({ data }: P<{ takeaways: string[]; can_do: string[] }>) {
       <ul className="mt-2 list-disc space-y-1 pl-5">{data.takeaways.map((t, i) => <li key={i}><Md className="[&_p]:my-0">{t}</Md></li>)}</ul>
       {!!data.can_do?.length && <>
         <p className="mt-3 text-sm font-medium">Vous savez maintenant</p>
-        <ul className="mt-1 space-y-1 text-sm">{data.can_do.map((t, i) => <li key={i} className="flex gap-2"><Check className="mt-1 size-3.5 shrink-0 text-ok" aria-hidden /><MdLine>{t}</MdLine></li>)}</ul>
+        <ul className="mt-1 space-y-1 text-sm">{data.can_do.map((t, i) => <li key={i} className="flex gap-2"><Check className="mt-1 size-3.5 shrink-0 text-ok" aria-hidden /><span className="min-w-0"><MdLine>{t}</MdLine></span></li>)}</ul>
       </>}
     </div>
   );
@@ -245,7 +297,7 @@ function ExplainBack({ data, cid, block }: P<{ concept: string; prompt: string; 
     <div>
       <h4 className="flex items-center gap-2 font-medium"><MessageSquareText className="size-4 text-primary" aria-hidden />Expliquez avec vos mots : {data.concept}</h4>
       <Md>{data.prompt}</Md>
-      <WrittenAnswer cid={cid} block={block} />
+      {block.chat ? <ChatWritten cid={cid} block={block} /> : <WrittenAnswer cid={cid} block={block} />}
       <HandCorrection steps={data.rubric} correction={data.model_answer} cid={cid} block={block}
                       intro="Explain it above, then grade it, or compare it point by point with what a good explanation says." />
     </div>
@@ -382,11 +434,13 @@ function StepDiagram({ data }: P<{ mermaid: string; steps: { highlight: string[]
 
 function Figure({ data, cid }: P) {
   const [big, setBig] = useState(false);
+  const [broken, setBroken] = useState(false);
   return (
     <figure>
+      {broken ? <p className="rounded-md border border-dashed border-border px-3 py-2 text-sm text-muted-foreground">Page {data.page} of {data.source} couldn't load.</p> : (
       <button type="button" onClick={() => setBig(true)} className="block cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-primary" aria-label="Open the figure larger">
-        <img src={pageUrl(cid, data.source, data.page)} alt={data.caption || `${data.source} page ${data.page}`} className="max-h-[480px] rounded-md border border-border" loading="lazy" />
-      </button>
+        <img src={pageUrl(cid, data.source, data.page)} alt={`${data.source} page ${data.page}`} onError={() => setBroken(true)} className="max-h-[480px] rounded-md border border-border" loading="lazy" />
+      </button>)}
       <PageViewer cid={cid} cite={big ? { source: data.source, page: data.page } : null} onClose={() => setBig(false)} />
       <figcaption className="mt-2 text-sm text-muted-foreground"><Md>{data.caption || `${data.source}, p. ${data.page}`}</Md></figcaption>
     </figure>
@@ -427,13 +481,13 @@ new ResizeObserver(function(){parent.postMessage({height:document.body.scrollHei
 }
 
 const RENDER: Record<string, (p: P) => React.ReactNode> = {
-  theorem_box: TheoremBox, worked_example: WorkedExample, exercise: Exercise, quiz: Quiz, key_formula: KeyFormula,
+  theorem_box: TheoremBox, worked_example: WorkedExample, derivation: Derivation, exercise: Exercise, quiz: Quiz, key_formula: KeyFormula,
   callout: Callout, algorithm: Algorithm, iteration_table: IterationTable, plot: ({ data }) => <Plot data={data} />,
-  explorer: ({ data }) => <Explorer data={data} />, diagram: Diagram, figure: Figure,
+  explorer: ({ data }) => <Explorer data={data} />, diagram: Diagram, kind_diagram: ({ data }) => <KindDiagram data={data} />, stepped_animation: ({ data }) => <KindDiagram data={data} />, figure: Figure,
   table: ({ data }) => <Table headers={data.headers} rows={data.rows} caption={data.caption} />, code: Code,
   prose: ({ data }) => <Md>{data.markdown}</Md>, fill_blanks: FillBlanks, code_exercise: CodeExercise, terminal: Terminal,
   surface_plot: ({ data }) => <SurfacePlot data={data} />, optimizer_animation: ({ data }) => <OptimizerAnimation data={data} />,
-  step_diagram: StepDiagram, intuition: Intuition, misconception: Misconception, recap: Recap, explain_back: ExplainBack,
+  video: VideoBlock, step_diagram: StepDiagram, intuition: Intuition, misconception: Misconception, recap: Recap, explain_back: ExplainBack,
 };
 
 const PRACTICE = new Set(["quiz", "fill_blanks", "code_exercise", "exercise", "explain_back", "recap"]);  // progression.PRACTICE, and the recap
@@ -474,13 +528,41 @@ function BlockRender({ block, cid }: { block: Block; cid: number }) {
   );
 }
 
-export function PageViewer({ cid, cite, onClose }: { cid: number; cite: Citation | null; onClose: () => void }) {
+export function PageViewer({ cid, cite, onClose, onAsk }: { cid: number; cite: Citation | null; onClose: () => void; onAsk?: (image: string, cite: Citation) => void }) {
   return (
     <Dialog open={!!cite} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-[min(96vw,80rem)] sm:max-w-[min(96vw,80rem)]">
         <DialogHeader><DialogTitle>{cite?.source}, page {cite?.page}</DialogTitle></DialogHeader>
         {cite?.quote && <blockquote className="border-l border-foreground/40 pl-3 font-serif italic">{cite.quote}</blockquote>}
-        {cite && <img src={pageUrl(cid, cite.source, cite.page)} alt={`${cite.source} page ${cite.page}`} className="max-h-[82vh] w-full rounded-md border border-border object-contain" />}
+        {cite && (onAsk ? <>
+          <p className="text-xs text-muted-foreground">Drag a box over part of the page (pen, mouse or finger) to ask the tutor about it.</p>
+          <CropToAsk src={pageUrl(cid, cite.source, cite.page)} alt={`${cite.source} page ${cite.page}`} onCrop={(img) => onAsk(img, cite)}
+                     className="max-h-[78vh] w-full rounded-md border border-border object-contain" />
+        </> : <img src={pageUrl(cid, cite.source, cite.page)} alt={`${cite.source} page ${cite.page}`} className="max-h-[82vh] w-full rounded-md border border-border object-contain" />)}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Past paper Questions with their exact wording and points: what "In the exam" opens (#29). */
+export function PastQuestions({ questions }: { questions: PastQuestion[] }) {
+  return (
+    <ol className="space-y-3">
+      {questions.map((q) => (
+        <li key={q.id} className="rounded-md border border-border p-3">
+          <p className="tabular mb-1 text-xs text-muted-foreground">{q.exam} · {q.points} pts</p>
+          <Md>{q.statement}</Md>
+        </li>))}
+    </ol>
+  );
+}
+
+export function ExamDialog({ title, questions, onClose }: { title: string; questions: PastQuestion[] | null; onClose: () => void }) {
+  return (
+    <Dialog open={!!questions} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
+        {questions && <PastQuestions questions={questions} />}
       </DialogContent>
     </Dialog>
   );
@@ -493,8 +575,9 @@ const ago = (iso: string) => {
   return days < 1 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
 };
 
-export function ReaderBlock({ block, cid, onCite, onExplain, note, onNote, standing }: {
+export function ReaderBlock({ block, cid, onCite, onExplain, onAttach, onListen, note, onNote, standing }: {
   block: Block; cid: number; onCite: (c: Citation) => void; onExplain?: (block_id: number, style: Style, label: string) => void;
+  onAttach?: (block: Block, item?: { id: string; label: string }) => void; onListen?: (block_id: number) => void;
   note?: string; onNote?: (text: string) => Promise<unknown>; standing?: Standing;
 }) {
   const [explaining, setExplaining] = useState(false);
@@ -503,6 +586,7 @@ export function ReaderBlock({ block, cid, onCite, onExplain, note, onNote, stand
   const [flagging, setFlagging] = useState(false);
   const [flagged, setFlagged] = useState(false);
   const [compare, setCompare] = useState(false);
+  const [exam, setExam] = useState(false);
   const slides = block.component === "diagram" || block.component === "step_diagram"
     ? [...new Map(block.citations.map((c) => [`${c.source}#${c.page}`, c])).values()].filter((c) => pageUrl(cid, c.source, c.page)) : [];
   const flag = async (reason: "wrong" | "unclear") => {
@@ -515,10 +599,13 @@ export function ReaderBlock({ block, cid, onCite, onExplain, note, onNote, stand
       {block.cram?.likelihood && (
         <p className="mb-2 flex flex-wrap items-center gap-2 text-xs">
           <span className={cn("rounded-full px-2 py-0.5 font-medium", LIKELIHOOD[block.cram.likelihood].cls)}>{LIKELIHOOD[block.cram.likelihood].label}</span>
-          {block.cram.questions.map((q) => <span key={q.id} className="tabular text-muted-foreground">{q.exam} · {q.points} pts</span>)}
+          {!!block.cram.questions.length && <button type="button" onClick={() => setExam(true)} title="The past exam questions behind this"
+            className="tabular text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">
+            {block.cram.questions.map((q) => `${q.exam} · ${q.points} pts`).join(", ")}</button>}
+          <ExamDialog title="In the exam" questions={exam ? block.cram.questions : null} onClose={() => setExam(false)} />
         </p>
       )}
-      <BlockBody block={block} cid={cid} />
+      <DiagramActions.Provider value={{ onCite, onAsk: onAttach && ((item) => onAttach(block, item)) }}><BlockBody block={block} cid={cid} /></DiagramActions.Provider>
       {compare && (
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {slides.map((c) => (
@@ -564,7 +651,10 @@ export function ReaderBlock({ block, cid, onCite, onExplain, note, onNote, stand
           <button type="button" aria-expanded={compare} onClick={() => setCompare(!compare)} className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground">
             {compare ? "Hide the slide" : "Compare with the slide"}</button>
         )}
-        <span>{block.origin === "from_source" ? "From source" : "Model-added"}</span>
+        <span>{block.origin === "from_source" ? "From source" : "Model-added"}{block.from_chat && " · from the chat"}</span>
+        {onListen && !PRACTICE.has(block.component) && (
+          <button type="button" onClick={() => onListen(block.id)} title="Read this Block aloud, then pause"
+                  className="inline-flex items-center gap-1 underline decoration-dotted hover:text-foreground"><Headphones className="size-3" />Listen</button>)}
         {standing && (
           <span className={cn("rounded-full px-2 py-0.5 font-medium", standing.last >= 0.8 ? "bg-ok/15 text-ok" : "bg-destructive/15 text-destructive")}>
             {standing.last >= 0.8 ? "Right" : standing.last > 0 ? "Partly right" : "Missed"} {ago(standing.last_at)}
@@ -580,6 +670,8 @@ export function ReaderBlock({ block, cid, onCite, onExplain, note, onNote, stand
             <Sparkles className="size-3" />Explain differently</button>
         ))}
         <span className="ml-auto flex items-center gap-3">
+          {onAttach && <button type="button" onClick={() => onAttach(block)} className="inline-flex items-center gap-1 hover:text-foreground"
+                               title="Attach this Block to your next tutor question"><Paperclip className="size-3" />Ask the tutor</button>}
           {onNote && !note && draft === null && (
             <button type="button" onClick={() => setDraft("")} className="inline-flex items-center gap-1 hover:text-foreground"><NotebookPen className="size-3" />Note</button>
           )}

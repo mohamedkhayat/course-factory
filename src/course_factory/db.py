@@ -7,6 +7,8 @@ from typing import cast
 
 import sqlite_vec
 
+from . import events
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS courses (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, folder TEXT NOT NULL,
@@ -30,6 +32,24 @@ CREATE TABLE IF NOT EXISTS traces (
 """
 
 
+_WHERE = "(SELECT ch.course_id FROM sections s JOIN chapters ch ON ch.id=s.chapter_id WHERE s.id={r}.section_id), " \
+         "(SELECT chapter_id FROM sections WHERE id={r}.section_id), {r}.section_id"
+
+
+def watch_blocks(conn: sqlite3.Connection) -> None:
+    """Every Block write, from any module or thread, publishes a Course event (events.py) for the other devices.
+
+    TEMP triggers live on this connection only, so nothing is written to the database file."""
+    conn.create_function("blocks_changed", 3, events.blocks_changed)
+    try:
+        conn.executescript(
+            f"CREATE TEMP TRIGGER IF NOT EXISTS blocks_ins AFTER INSERT ON main.blocks BEGIN SELECT blocks_changed({_WHERE.format(r='NEW')}); END;"
+            f"CREATE TEMP TRIGGER IF NOT EXISTS blocks_upd AFTER UPDATE ON main.blocks BEGIN SELECT blocks_changed({_WHERE.format(r='NEW')}); END;"
+            f"CREATE TEMP TRIGGER IF NOT EXISTS blocks_del AFTER DELETE ON main.blocks BEGIN SELECT blocks_changed({_WHERE.format(r='OLD')}); END;")
+    except sqlite3.OperationalError:
+        pass  # a fresh database has no blocks table yet: connect() calls this again after the schema
+
+
 class PerThread(threading.local):
     """One sqlite3 connection per thread: a shared connection breaks under FastAPI's thread pool.
 
@@ -42,6 +62,7 @@ class PerThread(threading.local):
         self.conn.enable_load_extension(True)  # sqlite-vec, for search; loaded per connection
         sqlite_vec.load(self.conn)
         self.conn.enable_load_extension(False)
+        watch_blocks(self.conn)
 
     def __getattr__(self, name):
         return getattr(self.conn, name)
@@ -52,6 +73,7 @@ def connect(path: Path) -> sqlite3.Connection:
     db.execute("PRAGMA journal_mode = WAL")
     db.executescript(SCHEMA)
     db.executescript(OUTLINE_SCHEMA)
+    watch_blocks(db)
     for r in db.execute("SELECT id, name FROM sources").fetchall():  # names imported before import composed them
         if not unicodedata.is_normalized("NFC", r["name"]):
             db.execute("UPDATE OR IGNORE sources SET name=? WHERE id=?", (unicodedata.normalize("NFC", r["name"]), r["id"]))
@@ -60,9 +82,9 @@ def connect(path: Path) -> sqlite3.Connection:
                           ("courses", "subject TEXT NOT NULL DEFAULT 'mixed'"),
                           ("sections", "generation_status TEXT NOT NULL DEFAULT 'planned'"),
                           ("questions", "question_type_id INTEGER"), ("chapters", "profile TEXT"),
-                          ("blocks", "exam_types TEXT NOT NULL DEFAULT '[]'"), ("blocks", "previous TEXT"),
+                          ("blocks", "exam_types TEXT NOT NULL DEFAULT '[]'"), ("blocks", "previous TEXT"), ("blocks", "chat_message INTEGER"),
                           ("blocks", "review_queue INTEGER NOT NULL DEFAULT 0"),
-                          ("courses", "hours_per_day REAL NOT NULL DEFAULT 2"), ("courses", "auto_resolve INTEGER NOT NULL DEFAULT 0"), ("sources", "sha256 TEXT"),
+                          ("courses", "hours_per_day REAL NOT NULL DEFAULT 2"), ("courses", "auto_resolve INTEGER NOT NULL DEFAULT 0"), ("courses", "qcu_practice INTEGER NOT NULL DEFAULT 0"), ("sources", "sha256 TEXT"),
                           ("exams", "cohort TEXT"), ("exams", "in_scope INTEGER NOT NULL DEFAULT 1"),
                           ("sections", "teaches TEXT NOT NULL DEFAULT '[]'"), ("blocks", "tests TEXT NOT NULL DEFAULT '[]'"),
                           ("chapters", "plan TEXT"), ("courses", "language TEXT NOT NULL DEFAULT 'mixed'"),
