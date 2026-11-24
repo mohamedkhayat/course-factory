@@ -35,10 +35,10 @@ A Section is an ordered list of **Blocks**, each one a typed Component with its 
 | Kind | Components |
 |---|---|
 | Explaining | `prose`, `intuition`, `theorem_box`, `key_formula`, `algorithm`, `callout`, `misconception`, `recap` |
-| Showing | `worked_example`, `diagram`, `step_diagram`, `table`, `figure`, `plot`, `surface_plot`, `explorer`, `iteration_table`, `optimizer_animation`, `code`, `terminal` |
+| Showing | `worked_example`, `derivation`, `diagram`, `kind_diagram`, `step_diagram`, `table`, `figure`, `plot`, `surface_plot`, `explorer`, `iteration_table`, `optimizer_animation`, `stepped_animation`, `video`, `code`, `terminal` |
 | Practising | `quiz`, `fill_blanks`, `exercise`, `code_exercise`, `explain_back` |
 
-The model can also propose a new Component (schema, samples, a React implementation) when none fits; it is gated before it joins the Catalogue.
+A `kind_diagram` is given as plain data that code draws, and a `video` Block is a template filled with parameters: the model never writes Manim code. The model can also propose a new Component (schema, samples, a React implementation) when none fits; it is gated before it joins the Catalogue.
 
 ## Learning design, enforced by code
 
@@ -60,11 +60,20 @@ A Block that fails goes to a repair step; what still fails is flagged for review
 - **Practice**: one exercise at a time, chosen from your own results. Every quiz, gap text, code exercise and Written answer is recorded per Block; what you missed comes back first, then Blocks on weak Concepts, then what you got right once its gap (1, 3, 7, 14, 30 days) has passed, then what you have not tried. Sections are interleaved.
 - **Progress**: Sections read and rated, practice tried and missed per Section, Concepts weakest first, what to work on next, and your notes.
 - **Tutor**: answers from the Section's pages with citations, and can propose a new or replacement Block. "Explain differently" on any teaching Block asks for a simpler version, an example, an analogy or more depth.
-- **Written answers and Explain back**: write (or photograph) an answer and have it graded step by step against a marking scheme, or self-mark when no model is available.
-- **Cram**: past papers rebuilt into Questions and sorted into Question Types, a plan up to the exam date, exam technique per type, Mock exams, and a printable Cheat Sheet.
+- **Chat**: the tutor at Course level. Answers can contain Blocks (checked like generated ones), and a shell tool searches the Course's sources in a throwaway container with no network.
+- **Listen and Videos**: a Section read aloud by a local Voice, maths turned into words by code; `video` Blocks narrated and rendered with Manim. Both run on one low-priority media lane you can pause; Voices and Manim install only from Settings.
+- **Memory**: one-line facts about how you learn (your preferences, patterns found in your results), read by the tutors and by Section writing.
+- **Written answers and Explain back**: write, type or photograph an answer and have it graded step by step against a marking scheme, or self-mark when no model is available. Photos are cleaned before grading: SAM 3 finds the sheet, which is cropped, flattened, evened out and turned upright. SAM 3 is loaded for each photo and freed right after, on the GPU when it has room, else on the CPU. Several pages can go in one answer, and a page sent from the phone shows on the desktop.
+- **Cram**: past papers rebuilt into Questions and sorted into Question Types, a plan up to the exam date, exam technique per type, Mock exams (sat timed, continued on another device, answers kept if the connection drops), and a printable Cheat Sheet.
 - **Cards**: spaced repetition (FSRS).
 - **Labs**: lab sheets turned into step-by-step notebooks that run in Docker kernels, with a coach that sees your code and outputs.
-- **Tablet**: pair a second device with a six-digit code.
+- **Tablet**: pair a second device with a six-digit code. Open devices see Block changes as they happen.
+
+## Changing a Course
+
+- **Refresh**: after files in the Course folder change, only changed pages are read again and only the Sections citing them are rewritten. New files become Sources.
+- **Regenerate a Chapter**: rewrites its Sections with the current prompts. With `?replan=true` (API only for now), it first plans its Sections again from its Sources and the files added to its folder since (slides that came later). Sections are rewritten in place, so Cards keep their history.
+- **From MIT OpenCourseWare**: search OCW and import a course's files as a new Course.
 
 ## Quickstart
 
@@ -88,6 +97,7 @@ The app serves on `127.0.0.1:8765` and keeps its data in `~/.local/share/course-
 | `CF_MODEL_<STEP>` | Model for one step, e.g. `CF_MODEL_JUDGE_GROUNDING` |
 | `CF_FALLBACK_MODEL` | One extra attempt on this model after the retries |
 | `CF_MODEL_CONCURRENCY` | Model calls at once (default 2); raise it only for a server configured for more |
+| `CF_DATA`, `CF_PORT` | Data directory (default `~/.local/share/course-factory`) and port (default 8765) |
 | `CF_HOST` | addresses to listen on, comma-separated: `127.0.0.1,$(tailscale ip -4)` to reach the app over Tailscale: any device on the tailnet gets in without pairing (not as the host) |
 
 Per-step models can also be set in Settings. The model server's API key is read from the environment and is never stored in the repository.
@@ -145,7 +155,11 @@ src/course_factory/   the pipeline and the API
   chapters.py         writing, checking, repairing, judging Sections
   checks.py           per-Component checks
   cram.py, exams.py   Question Types, past papers, Mock exams
-  tutor.py, grading.py, labs.py, learner.py
+  refresh.py          redo only what changed in the Course folder
+  tutor.py, chat.py, grading.py, labs.py, learner.py, memory.py
+  scan.py             cleaning a photo of a written page (SAM 3)
+  listen.py, voices.py, videos.py, media.py, media_queue.py
+                      read-aloud, Voices, Videos and the media lane
 harness/              one prompt per model step
 web/                  the React UI (Vite, Tailwind, KaTeX, Mermaid, Plotly)
 tests/                pytest on a fake model, plus the fake server
