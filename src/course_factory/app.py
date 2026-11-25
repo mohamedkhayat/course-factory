@@ -556,9 +556,11 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
                           "WHERE b.id=?", (bid,)).fetchone()[0]
 
     def save_block(bid: int, block: dict, flags: dict):
-        db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=? WHERE id=?",
+        # a rewrite's tests are saved, so one that names a real Concept clears "tests X, not a Concept"; none given keeps the old
+        db.execute("UPDATE blocks SET component=?, data=?, citations=?, origin=?, status=?, flags=?, tests=COALESCE(?, tests) WHERE id=?",
                    (block["component"], json.dumps(block["data"], ensure_ascii=False), json.dumps(block["citations"], ensure_ascii=False),
-                    block["origin"], "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False), bid))
+                    block["origin"], "flagged" if flags["errors"] else "ok", json.dumps(flags["errors"] + flags["warnings"], ensure_ascii=False),
+                    json.dumps(block["tests"], ensure_ascii=False) if block.get("tests") else None, bid))
         flag_progression(db, cid_of_block(bid))
         if db.execute("SELECT status FROM blocks WHERE id=?", (bid,)).fetchone()["status"] == "ok":
             db.execute("UPDATE blocks SET review_queue=0 WHERE id=?", (bid,))
@@ -616,17 +618,17 @@ def create_app(data_dir: Path, backend: Backend, search_models: searchm.SearchMo
         return jobs.get(cid, {"state": "none"})
 
     @app.post("/api/courses/{cid}/chapters/{chid}/regenerate", status_code=202)
-    def regenerate_chapter(cid: int, chid: int, tasks: BackgroundTasks, replan: bool = False):
+    def regenerate_chapter(cid: int, chid: int, tasks: BackgroundTasks, replan: bool = False, note: str = ""):
         """Rewrites every Section of the Chapter with the current prompts. Blocks keep their ids by position (so Cards keep
         their history) but not their previous version. A published Chapter is published again once rewritten. `replan` plans
-        its Sections again first, from its Sources and the files added to its folders since."""
+        its Sections again first, from its Sources and the files added to its folders since, following the owner's `note`."""
         was = chapter_or_404(cid, chid)["status"]
         sids = [r["id"] for r in db.execute("SELECT id FROM sections WHERE chapter_id=?", (chid,))]
 
         def work():
             nonlocal sids
             if replan:
-                replan_chapter(ctx, cid, chid)
+                replan_chapter(ctx, cid, chid, note)
                 sids = [r["id"] for r in db.execute("SELECT id FROM sections WHERE chapter_id=?", (chid,))]
             db.execute("UPDATE sections SET generation_status='pending' WHERE chapter_id=?", (chid,))
             db.execute("UPDATE chapters SET plan=NULL WHERE id=?", (chid,))  # planned again with the current prompts too

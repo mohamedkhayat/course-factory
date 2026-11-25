@@ -3,6 +3,7 @@ You are planning an interactive course from a university course's material.
 Goal: {{goal}}
 - "cram": an exam is coming. Keep the professor's chapter order, but be complete about exam topics.
 - "deep": the owner wants to learn it properly, in the professor's order.
+{{note}}
 
 First classify the subject as "kind": "theoretical" (definitions, theorems, proofs: maths, physics), "practical" (tools, commands, configuration: DevOps, MLOps, programming) or "mixed". Judge it from the course notes, exercise sheets and past exams, never from notebooks, data files or images: a maths, probability or optimisation course with Python labs is "theoretical" when its exams are calculations and proofs. For a practical subject, plan tutorial-style Sections that build something step by step.
 

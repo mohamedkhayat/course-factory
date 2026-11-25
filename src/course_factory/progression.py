@@ -263,8 +263,9 @@ def ledger_errors(blocks: list[dict], concepts: dict[str, tuple[int, str]]) -> d
                 errors[b["id"]] = later
         for c in b.get("tests", []) if concepts else []:  # a Course outlined before Concepts were named has no ledger
             if c not in concepts:
+                taught = [k for k, (i, _) in concepts.items() if i <= b["at"]]  # the latest 60: a Chapter 3 Block needs Chapter 3's
                 errors.setdefault(b["id"], []).append(f"tests \"{c}\", which is not a Concept of this Course; use one of: "
-                                                      + ", ".join(list(concepts)[:60]))
+                                                      + ", ".join(taught[-60:]))
             elif concepts[c][0] > b["at"]:
                 errors.setdefault(b["id"], []).append(f"tests \"{c}\", which is taught later, in Section \"{concepts[c][1]}\": "
                                                       "move this practice after it or test only what is taught by now")
@@ -290,7 +291,10 @@ def course_blocks(db, cid: int) -> tuple[list[dict], dict[str, tuple[int, str]]]
                       f"JOIN sections s ON s.id=b.section_id JOIN chapters c ON c.id=s.chapter_id "
                       f"WHERE c.id IN ({','.join('?' * len(chapters))}) ORDER BY c.position, s.position, b.position", chapters).fetchall()
     # a model retypes a Concept's name with another subscript, a typo or a lost brace: read it as the Concept it is nearest to
-    near = lambda t: t if t in concepts else next(iter(difflib.get_close_matches(t, concepts, 1, 0.85)), t)  # noqa: E731
+    # or by its name alone: "marche aléatoire" is "marche aléatoire (S_n = X_1 + ... + X_n)" (a name two Concepts share is neither)
+    names = {c: re.split(r"\s+\(|\s+:\s", c)[0].strip().lower() for c in concepts}
+    by_name = {name: c for c, name in names.items() if list(names.values()).count(name) == 1}
+    near = lambda t: t if t in concepts else by_name.get(t.strip().lower()) or next(iter(difflib.get_close_matches(t, concepts, 1, 0.85)), t)  # noqa: E731
     return [{"id": r["id"], "component": r["component"], "data": json.loads(r["data"]), "tests": [near(t) for t in json.loads(r["tests"])],
              "chapter": r["chapter"], "section": r["section"], "at": at[r["sid"]]} for r in rows], concepts
 

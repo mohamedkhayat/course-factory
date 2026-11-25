@@ -89,8 +89,9 @@ def test_a_chapter_is_planned_again_with_a_file_added_to_its_folder(client, mate
                                              {"title": "Exercices", "pages": [{"source": "TD1.pdf", "page": 1}]}]}]}
     model.handlers["propose_outline"] = outline
     ch = chapters(client, cid)["Méthodes de descente"]
-    assert client.post(f"/api/courses/{cid}/chapters/{ch['id']}/regenerate?replan=true").status_code == 202
+    assert client.post(f"/api/courses/{cid}/chapters/{ch['id']}/regenerate", params={"replan": "true", "note": "au plus 3 Sections"}).status_code == 202
     assert client.get(f"/api/courses/{cid}/job").json()["state"] == "done"
+    assert "owner's note on this Chapter, which comes first: au plus 3 Sections" in seen[0]
 
     offered = json.loads(seen[0].split("SOURCES:", 1)[1].strip())
     assert {s["name"]: [p["page"] for p in s["pages"]] for s in offered} == {"TD1.pdf": [1], "TD1_corrige.pdf": [1], "TD2.pdf": [1], "cours.pdf": [2]}  # not Convexité's page

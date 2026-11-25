@@ -67,9 +67,10 @@ def propose_outline(ctx: Ctx, cid: int) -> None:
     save_outline(ctx, cid, plan)
 
 
-def replan_chapter(ctx: Ctx, cid: int, chid: int) -> None:
+def replan_chapter(ctx: Ctx, cid: int, chid: int, note: str = "") -> None:
     """Plans one Chapter's Sections again from its Sources and the files added to its folders since (a professor's slides that
-    came later): the Sections are rewritten in place by position, so Blocks and Cards of kept positions keep their ids."""
+    came later): the Sections are rewritten in place by position, so Blocks and Cards of kept positions keep their ids.
+    `note` is the owner's say on the plan ("fewer Sections", what the exams ask)."""
     db, current = ctx.db, load_outline(ctx, cid)
     mine = next(ch for ch in current if ch["id"] == chid)
     elsewhere = {(p["source"], p["page"]) for ch in current if ch["id"] != chid for s in ch["sections"] for p in s["pages"]}
@@ -94,8 +95,8 @@ def replan_chapter(ctx: Ctx, cid: int, chid: int) -> None:
                 raise ValueError(f"no Section cites the course notes {', '.join(missing)}: plan Sections for them too.")
             return self
 
-    plan = run_pi_step(db, ctx.backend, "propose_outline", {"goal": goal, "sources": sources}, CoveringPlan,
-                       ctx.course_dir(cid), course_id=cid)
+    inputs = {"goal": goal, "sources": sources} | ({"note": f"\nThe owner's note on this Chapter, which comes first: {note}\n"} if note else {})
+    plan = run_pi_step(db, ctx.backend, "propose_outline", inputs, CoveringPlan, ctx.course_dir(cid), course_id=cid)
     one = ChapterPlan(title=mine["title"], sections=[s for ch in plan.chapters for s in ch.sections])  # these sources are one Chapter
     attach_uncited(db, cid, OutlinePlan(chapters=[one]))
     taught = {c for ch in current if ch["id"] != chid for s in ch["sections"] for c in s["teaches"]}

@@ -112,6 +112,21 @@ def test_check_messages_map_to_failure_classes():
     assert {m: failure_class(m) for m in cases} == cases
 
 
+def test_regenerating_a_block_saves_the_tests_the_rewrite_returns(client, material, model):
+    """Course 12 Block 5476 tested "surmartingale", no Concept: a Regenerate that names a real Concept must clear the flag."""
+    blocks = one_block("key_formula", {"name": "a", "latex": "a", "meaning": "m"})
+    cid = generate(client, material, model, blocks=blocks)
+    _, (a, *_) = chapter_blocks(client, cid)
+
+    def rewrite(prompt, files):
+        block = json.loads(prompt.split("BLOCK:", 1)[1])
+        block["tests"] = ["Sqoop"]
+        return {"block": block}
+    model.handlers["repair_block"] = rewrite
+    out = client.post(f"/api/courses/{cid}/blocks/{a['id']}/regenerate", json={"note": "autre"}).json()
+    assert out["tests"] == ["Sqoop"] and any("not a Concept" in f for f in out["flags"]), out
+
+
 def test_auto_resolve_saves_the_tests_the_repair_returns(client, material, model):
     blocks = one_block("key_formula", {"name": "a", "latex": "\\frac{1}{", "meaning": "m"})
     cid = generate(client, material, model, blocks=blocks)

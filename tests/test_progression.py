@@ -292,6 +292,29 @@ def test_a_concept_name_retyped_with_other_notation_is_read_as_that_concept(tmp_
     assert json.loads(db.execute("SELECT tests FROM blocks").fetchone()[0]) == ["filtration naturelle F_n = σ(X₁, ..., X_n)"]
 
 
+def test_a_concept_declared_by_its_name_without_its_notation_is_that_concept(tmp_path):
+    """Course 12 Block 5437: tests "marche aléatoire", the Concept is "marche aléatoire (S_n = X_1 + ... + X_n)"."""
+    from course_factory.db import connect
+    from course_factory.progression import flag_progression
+    db = connect(tmp_path / "t.db")
+    db.execute("INSERT INTO courses (id, name, folder) VALUES (1, 'c', 'f')")
+    db.execute("INSERT INTO chapters (id, course_id, position, title, status) VALUES (1, 1, 0, 'ch', 'in_review')")
+    teaches = ["marche aléatoire (S_n = X_1 + ... + X_n)", "E(M_{n+p}|F_n) = M_n (p ≥ 0)"]
+    db.execute("INSERT INTO sections (id, chapter_id, position, title, teaches) VALUES (1, 1, 0, 's', ?)", (json.dumps(teaches),))
+    db.execute("INSERT INTO blocks (id, section_id, position, component, data, citations, origin, status, flags, tests) VALUES (1, 1, 0, 'callout', '{}', '[]', 'model_added', 'ok', '[]', ?)",
+               (json.dumps(["marche aléatoire", "E"]),))
+    errors = flag_progression(db, 1)
+    assert list(errors) == [1] and len(errors[1]) == 1 and '"E"' in errors[1][0]  # "E(M_…" is notation, not a name
+    assert json.loads(db.execute("SELECT tests FROM blocks").fetchone()[0])[0] == teaches[0]
+
+
+def test_a_concept_that_is_not_one_is_told_the_concepts_taught_by_now():
+    """Course 12 Block 5391 (Chapter 3) was offered the Course's first 60 Concepts, all from Chapter 1, so no repair could fix it."""
+    concepts = {f"chapitre 1 notion {i}": (0, "Ch1") for i in range(70)} | {"martingale (adapté)": (5, "Martingale"), "plus tard": (9, "Après")}
+    (error,) = ledger_errors([{"id": 1, "at": 5, "component": "callout", "tests": ["surmartingale"], "data": {}}], concepts)[1]
+    assert "martingale (adapté)" in error and "plus tard" not in error
+
+
 def test_a_course_with_no_concepts_named_has_no_ledger_to_break():
     """Course 3 (MLOps) was outlined before Concepts were named: its rewritten practice declared tests that could match nothing."""
     assert ledger_errors([{"id": 2839, "at": 3, "component": "quiz", "tests": ["Flake8"], "data": {}}], {}) == {}
