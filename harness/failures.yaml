@@ -221,3 +221,11 @@ blank-regex:
   what: a fill-in-the-blank regex that matches none of its own answers (escapes written twice) or uses Python-only syntax like (?i) that the browser's RegExp rejects
   hardened: "2026-11-22 12:00"
   test: tests/test_checks.py::test_a_blank_regex_must_work_in_the_app
+
+order:
+  handler: lesson
+  what: a Section goes from its opening prose straight to a theorem_box or key_formula with no concrete case before it (43 of the 74 order warnings; Cram and Deep alike); order warnings stay on the trace, since a rewrite for them doubled the time per Section
+  hardened: "2026-11-25 10:40"
+  test: tests/test_lesson_plan.py::test_the_writer_is_told_to_put_a_case_between_the_opening_and_the_first_definition
+  steps: [write_section]
+  lesson: "Put one concrete case between the opening prose and the first theorem_box or key_formula (a small example in prose, a table, a figure or a worked example), in Cram too: a definition right after the opening is the most frequent order mistake."

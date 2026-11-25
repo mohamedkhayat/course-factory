@@ -87,6 +87,14 @@ WORKED = {"component": "worked_example", "data": {"title": "Système normal et m
 OPENING = {"component": "prose", "data": {"markdown": "C'est la mise en application de tout le chapitre."}}
 
 
+def test_the_writer_is_told_to_put_a_case_between_the_opening_and_the_first_definition():
+    """43 Sections (Course 15 trace 8631: prose, theorem_box "Prometheus", figure) went from the opening prose straight to a
+    theorem_box, though the prompt asks for a concrete case first; a rewrite for it doubled the time, so it is a Lesson."""
+    from course_factory.pi_step import render_prompt
+    prompt = render_prompt("write_section", {})
+    assert "Lessons from earlier runs" in prompt and "between the opening prose and the first theorem_box" in prompt
+
+
 def test_order_gaps_flag_a_cold_opening_and_a_concept_asked_before_it_is_explained():
     assert "opens with a theorem_box" in order_gaps(GAUSS_OPENING, [])[0]
     definition = GAUSS_OPENING[0]
